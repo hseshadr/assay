@@ -58,3 +58,20 @@ def test_case3_should_fail_verification_when_receipt_is_tampered() -> None:
     # And a blanked signature also fails
     forged = receipt.model_copy(update={"signature": "11" * 64})
     assert verify(forged) is False
+
+
+def test_case4_should_abstain_and_not_fabricate_a_point_when_sample_is_thin() -> None:
+    # Given only five samples with the default floor of 30
+    thin = ScoreRequest(
+        metric="binary",
+        metric_version="1",
+        y_true=(0, 1, 0, 1, 0),
+        y_score=(0.2, 0.8, 0.3, 0.7, 0.4),
+    )
+    # When scored
+    receipt = score(thin, signing_key=_KEY, settings=_settings())
+    # Then it abstains — no point number, no interval (never a fabricated value)
+    assert receipt.payload.abstained is True
+    assert receipt.payload.score is None
+    assert receipt.payload.interval_low is None
+    assert receipt.payload.interval_high is None
