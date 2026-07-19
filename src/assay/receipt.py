@@ -130,11 +130,20 @@ def _check_hash(receipt: ScoreReceipt) -> None:
         raise ReplayMismatch("payload hash does not match payload content")
 
 
-def verify_signature(receipt: ScoreReceipt) -> None:
-    """Recompute the hash then verify the detached Ed25519 signature."""
+def verify_signature(receipt: ScoreReceipt, *, expected_public_key: str) -> None:
+    """Verify a receipt against a **pinned** signer key.
+
+    Authenticity requires knowing *whose* signature to trust. The receipt's own
+    ``public_key`` field lives outside the signed payload, so a re-signed forgery
+    can swap in the attacker's key and pass a bare signature check. We therefore
+    reject — independent of the signature — any receipt whose embedded key is not
+    the ``expected_public_key`` the caller pinned out-of-band, then recompute the
+    hash and verify the detached Ed25519 signature under that pinned key."""
     _check_hash(receipt)
+    if receipt.public_key != expected_public_key:
+        raise SignatureInvalid("receipt public key is not the expected signer")
     message = canonical_bytes(receipt.payload.model_dump(mode="json"))
-    verify_key = VerifyKey(bytes.fromhex(receipt.public_key))
+    verify_key = VerifyKey(bytes.fromhex(expected_public_key))
     try:
         verify_key.verify(message, bytes.fromhex(receipt.signature))
     except BadSignatureError as exc:

@@ -121,8 +121,11 @@ def test_should_report_fail_when_signature_is_blanked(tmp_path: Path) -> None:
     receipt = ScoreReceipt.model_validate_json(receipt_path.read_text())
     blanked = receipt.model_copy(update={"signature": "00" * 64})
     receipt_path.write_text(blanked.model_dump_json())
-    # When verified
-    result = _RUNNER.invoke(app, ["verify", "--receipt", str(receipt_path)])
+    # When verified against the pinned public key
+    pub_path = Path(f"{key_path}.pub")
+    result = _RUNNER.invoke(
+        app, ["verify", "--receipt", str(receipt_path), "--public-key", str(pub_path)]
+    )
     # Then the CLI reports failure on the clean verify path and exits non-zero
     assert result.exit_code == 1
     assert "FAIL" in result.stdout

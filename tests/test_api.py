@@ -4,10 +4,12 @@ from nacl.signing import SigningKey
 
 from assay.api import composite_score, replay, score, verify
 from assay.models import CompositeRequest, ScoreRequest, SubScoreInput
+from assay.receipt import sign_payload
 from assay.settings import AssaySettings
 
 _SEED = bytes(range(32))
 _KEY = SigningKey(_SEED)
+_EXPECTED = bytes(_KEY.verify_key).hex()
 
 
 def _classification_request() -> ScoreRequest:
@@ -28,11 +30,23 @@ def test_should_produce_and_verify_a_classification_receipt() -> None:
     # When scored and verified
     receipt = score(request, signing_key=_KEY, settings=AssaySettings())
     # Then it verifies, carries the accuracy point, and an interval
-    assert verify(receipt) is True
+    assert verify(receipt, expected_public_key=_EXPECTED) is True
     assert receipt.payload.score == 1.0
     assert receipt.payload.abstained is False
     assert receipt.payload.calibration is not None
     assert replay(request, receipt, settings=AssaySettings()) is True
+
+
+def test_should_reject_a_forgery_resigned_with_an_attacker_key() -> None:
+    # Given a genuine receipt from the honest signer, pinned out-of-band
+    receipt = score(_classification_request(), signing_key=_KEY, settings=AssaySettings())
+    # When an attacker flips the signed score, re-signs with their OWN key, and
+    # swaps in their own public key (probe-1 forgery)
+    attacker = SigningKey(bytes(range(1, 33)))
+    forged_payload = receipt.payload.model_copy(update={"score": 0.123})
+    forgery = sign_payload(forged_payload, attacker)
+    # Then pinned verification returns False — authenticity is not fooled
+    assert verify(forgery, expected_public_key=_EXPECTED) is False
 
 
 def test_should_abstain_below_the_sample_floor() -> None:
@@ -86,7 +100,7 @@ def test_should_verify_a_composite_receipt_with_propagated_interval() -> None:
     # When scored and verified
     receipt = composite_score(request, signing_key=_KEY)
     # Then it verifies and carries the propagated composite interval
-    assert verify(receipt) is True
+    assert verify(receipt, expected_public_key=_EXPECTED) is True
     assert receipt.payload.score == 0.8
     assert receipt.payload.interval_low == 0.7
     assert receipt.payload.interval_high == 0.9

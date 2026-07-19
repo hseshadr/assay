@@ -12,9 +12,15 @@ from nacl.signing import SigningKey
 
 from assay.api import composite_score, replay, score, verify
 from assay.models import CompositeRequest, ScoreRequest, SubScoreInput
+from assay.receipt import sign_payload
 from assay.settings import AssaySettings
 
 _SEED = bytes(range(32))
+
+
+def _pubkey(key: SigningKey) -> str:
+    """The signer's public key, pinned by the verifier out-of-band."""
+    return bytes(key.verify_key).hex()
 
 
 def _big_request() -> ScoreRequest:
@@ -68,16 +74,23 @@ def _case_reproducible(key: SigningKey, settings: AssaySettings) -> None:
 
 def _case_offline_verify(key: SigningKey, settings: AssaySettings) -> None:
     receipt = score(_big_request(), signing_key=key, settings=settings)
-    assert verify(receipt) is True
+    assert verify(receipt, expected_public_key=_pubkey(key)) is True
     assert replay(_big_request(), receipt, settings=settings) is True
     print("[2] offline verify + replay: signature valid, score recomputes")
 
 
 def _case_tamper(key: SigningKey, settings: AssaySettings) -> None:
     receipt = score(_big_request(), signing_key=key, settings=settings)
+    expected = _pubkey(key)
+    # A blanked signature fails against the pinned signer.
     forged = receipt.model_copy(update={"signature": "00" * 64})
-    assert verify(forged) is False
-    print("[3] tamper detected: forged signature fails verification")
+    assert verify(forged, expected_public_key=expected) is False
+    # A re-signed forgery (attacker flips the score, signs with their OWN key and
+    # swaps in their pubkey) is also rejected — authenticity is pinned, not trusted.
+    attacker = SigningKey(bytes(range(1, 33)))
+    resigned = sign_payload(receipt.payload.model_copy(update={"score": 0.999}), attacker)
+    assert verify(resigned, expected_public_key=expected) is False
+    print("[3] tamper + forgery detected: neither a flipped sig nor a re-signed key passes")
 
 
 def _case_abstain(key: SigningKey, settings: AssaySettings) -> None:
@@ -106,7 +119,7 @@ def _case_composite(key: SigningKey) -> None:
     assert payload.score == 0.8  # noqa: PLR2004
     assert payload.interval_low == 0.7  # noqa: PLR2004
     assert payload.interval_high == 0.9  # noqa: PLR2004
-    assert verify(receipt) is True
+    assert verify(receipt, expected_public_key=_pubkey(key)) is True
     print(f"[6] composite: {payload.score} in [{payload.interval_low}, {payload.interval_high}]")
 
 

@@ -131,10 +131,14 @@ def composite_score(request: CompositeRequest, *, signing_key: SigningKey) -> Sc
     return sign_payload(_composite_payload(request), signing_key)
 
 
-def verify(receipt: ScoreReceipt) -> bool:
-    """Return whether a receipt verifies offline (signature + hash)."""
+def verify(receipt: ScoreReceipt, *, expected_public_key: str) -> bool:
+    """Return whether a receipt verifies offline against a **pinned** signer.
+
+    ``expected_public_key`` is the signer's public key the caller trusts, obtained
+    out-of-band (e.g. the ``.pub`` file from ``keygen``) — never read from the
+    receipt itself, whose embedded key an attacker could swap."""
     try:
-        verify_receipt(receipt)
+        verify_receipt(receipt, expected_public_key=expected_public_key)
     except (SignatureInvalid, ReplayMismatch):
         return False
     return True

@@ -25,8 +25,14 @@ Every arrow is one-directional. Honesty invariants:
    the inputs, so it reproduces byte-for-byte.
 2. **Sample-size floor** → below it, Assay abstains instead of emitting a fabricated
    point estimate.
-3. **Fail-closed verification** → any tampered byte (payload or signature) is
-   detectable offline, with no network and no original inputs.
+3. **Fail-closed verification, with a pinned signer** → any tampered byte (payload
+   or signature) is detectable offline, with no network and no original inputs.
+   But integrity is not authenticity: a receipt only proves *payload integrity
+   under some signer*, because the `public_key` field rides outside the signed
+   payload and an attacker can re-sign a forged payload with their own key. So
+   `verify` takes an `expected_public_key` that the caller pins **out-of-band**
+   (the `.pub` file from `keygen`) and rejects any receipt not signed by exactly
+   that key — the receipt's own embedded key is never trusted.
 
 ## The trust envelope is unification-ready
 

@@ -10,6 +10,7 @@ from assay.settings import AssaySettings
 
 _SEED = bytes(range(32))
 _KEY = SigningKey(_SEED)
+_EXPECTED = bytes(_KEY.verify_key).hex()
 
 
 def _classification_request() -> ScoreRequest:
@@ -42,7 +43,7 @@ def test_case2_should_verify_offline_and_recompute_the_score() -> None:
     request = _classification_request()
     receipt = score(request, signing_key=_KEY, settings=_settings())
     # When verified offline and replayed from the same inputs
-    verified = verify(receipt)
+    verified = verify(receipt, expected_public_key=_EXPECTED)
     replayed = replay(request, receipt, settings=_settings())
     # Then the signature is valid and the score recomputes to the same value
     assert verified is True
@@ -56,10 +57,10 @@ def test_case3_should_fail_verification_when_receipt_is_tampered() -> None:
     swapped = receipt.payload.model_copy(update={"score": 0.123})
     tampered = receipt.model_copy(update={"payload": swapped})
     # Then verification fails (hash no longer matches the payload)
-    assert verify(tampered) is False
+    assert verify(tampered, expected_public_key=_EXPECTED) is False
     # And a blanked signature also fails
     forged = receipt.model_copy(update={"signature": "11" * 64})
-    assert verify(forged) is False
+    assert verify(forged, expected_public_key=_EXPECTED) is False
 
 
 def test_case4_should_abstain_and_not_fabricate_a_point_when_sample_is_thin() -> None:
@@ -137,4 +138,4 @@ def test_case6_should_receipt_a_composite_with_a_propagated_interval() -> None:
     assert payload.interval_low < payload.score < payload.interval_high
     assert payload.composite is not None
     assert len(payload.composite.parts) == 3
-    assert verify(receipt) is True
+    assert verify(receipt, expected_public_key=_EXPECTED) is True

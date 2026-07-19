@@ -22,7 +22,9 @@ def _write_request(path: Path) -> None:
 def test_should_keygen_score_and_verify_end_to_end(tmp_path: Path) -> None:
     # Given a signing key and a request on disk
     key_path = tmp_path / "signing.key"
+    pub_path = tmp_path / "signing.key.pub"
     assert _RUNNER.invoke(app, ["keygen", "--out", str(key_path)]).exit_code == 0
+    assert pub_path.exists()  # keygen also emits the out-of-band public key
     request_path = tmp_path / "req.json"
     _write_request(request_path)
     receipt_path = tmp_path / "receipt.json"
@@ -41,7 +43,9 @@ def test_should_keygen_score_and_verify_end_to_end(tmp_path: Path) -> None:
             str(tmp_path / "ledger.jsonl"),
         ],
     )
-    verified = _RUNNER.invoke(app, ["verify", "--receipt", str(receipt_path)])
+    verified = _RUNNER.invoke(
+        app, ["verify", "--receipt", str(receipt_path), "--public-key", str(pub_path)]
+    )
     # Then both succeed and the receipt file exists
     assert scored.exit_code == 0
     assert receipt_path.exists()
@@ -52,6 +56,7 @@ def test_should_keygen_score_and_verify_end_to_end(tmp_path: Path) -> None:
 def test_should_exit_nonzero_when_verifying_a_tampered_receipt(tmp_path: Path) -> None:
     # Given a receipt whose signature was blanked
     key_path = tmp_path / "signing.key"
+    pub_path = tmp_path / "signing.key.pub"
     _RUNNER.invoke(app, ["keygen", "--out", str(key_path)])
     request_path = tmp_path / "req.json"
     _write_request(request_path)
@@ -72,7 +77,9 @@ def test_should_exit_nonzero_when_verifying_a_tampered_receipt(tmp_path: Path) -
     )
     tampered = receipt_path.read_text().replace(receipt_path.read_text()[-140:-100], "0" * 40)
     receipt_path.write_text(tampered)
-    # When verifying
-    result = _RUNNER.invoke(app, ["verify", "--receipt", str(receipt_path)])
+    # When verifying against the pinned public key
+    result = _RUNNER.invoke(
+        app, ["verify", "--receipt", str(receipt_path), "--public-key", str(pub_path)]
+    )
     # Then the CLI exits non-zero
     assert result.exit_code == 1

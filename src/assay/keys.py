@@ -31,3 +31,21 @@ def load_signing_key(path: Path) -> SigningKey:
     if len(seed) != _SEED_BYTES:
         raise ValueError(f"signing key must be {_SEED_BYTES} bytes, got {len(seed)}")
     return SigningKey(seed)
+
+
+def public_key_hex(key: SigningKey) -> str:
+    """Return the hex-encoded Ed25519 public verify key for ``key``."""
+    return bytes(key.verify_key).hex()
+
+
+def save_public_key(key: SigningKey, *, path: Path) -> None:
+    """Write the hex public verify key to ``path`` for out-of-band distribution.
+
+    The public key is not secret; it is what a verifier pins to authenticate
+    receipts, so it is meant to travel separately from the private seed."""
+    path.write_text(public_key_hex(key), encoding="utf-8")
+
+
+def read_public_key(path: Path) -> str:
+    """Read a hex public verify key written by :func:`save_public_key`."""
+    return path.read_text(encoding="utf-8").strip()
