@@ -49,6 +49,15 @@ def test_should_reject_a_forgery_resigned_with_an_attacker_key() -> None:
     assert verify(forgery, expected_public_key=_EXPECTED) is False
 
 
+def test_should_return_false_when_signature_hex_is_malformed() -> None:
+    # Given a receipt whose signature is not valid hex ("zz")
+    receipt = score(_classification_request(), signing_key=_KEY, settings=AssaySettings())
+    bad = receipt.model_copy(update={"signature": "zz"})
+    # When verified through the bool facade
+    # Then it fails closed (False), not a raw ValueError traceback
+    assert verify(bad, expected_public_key=_EXPECTED) is False
+
+
 def test_should_abstain_below_the_sample_floor() -> None:
     # Given only 5 samples with a floor of 30
     request = ScoreRequest(

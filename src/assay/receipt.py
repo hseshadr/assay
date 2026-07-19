@@ -143,8 +143,11 @@ def verify_signature(receipt: ScoreReceipt, *, expected_public_key: str) -> None
     if receipt.public_key != expected_public_key:
         raise SignatureInvalid("receipt public key is not the expected signer")
     message = canonical_bytes(receipt.payload.model_dump(mode="json"))
-    verify_key = VerifyKey(bytes.fromhex(expected_public_key))
+    # Malformed / wrong-length hex (bytes.fromhex, VerifyKey) raises ValueError; a
+    # bad signature raises BadSignatureError. Both are verification failures, so we
+    # fail closed with a coded SignatureInvalid rather than leaking a raw traceback.
     try:
+        verify_key = VerifyKey(bytes.fromhex(expected_public_key))
         verify_key.verify(message, bytes.fromhex(receipt.signature))
-    except BadSignatureError as exc:
+    except (ValueError, BadSignatureError) as exc:
         raise SignatureInvalid("signature does not match payload") from exc
