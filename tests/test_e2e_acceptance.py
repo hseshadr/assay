@@ -4,8 +4,8 @@ import pytest
 from nacl.signing import SigningKey
 from sklearn.metrics import brier_score_loss
 
-from assay.api import replay, score, verify
-from assay.models import ScoreRequest
+from assay.api import composite_score, replay, score, verify
+from assay.models import CompositeRequest, ScoreRequest, SubScoreInput
 from assay.settings import AssaySettings
 
 _SEED = bytes(range(32))
@@ -93,3 +93,48 @@ def test_case5_should_ship_reproducible_calibration_in_the_receipt() -> None:
     assert calibration.brier == pytest.approx(expected_brier)
     assert len(calibration.reliability) == 2
     assert first.payload.calibration == second.payload.calibration
+
+
+def test_case6_should_receipt_a_composite_with_a_propagated_interval() -> None:
+    # Given three sub-scores on different scales ([0,1], [0,100], [1,5]) weighted 1,1,2
+    subs = (
+        SubScoreInput(
+            name="accuracy",
+            value=0.9,
+            low=0.85,
+            high=0.95,
+            scale_min=0.0,
+            scale_max=1.0,
+            weight=1.0,
+        ),
+        SubScoreInput(
+            name="latency",
+            value=80.0,
+            low=70.0,
+            high=90.0,
+            scale_min=0.0,
+            scale_max=100.0,
+            weight=1.0,
+        ),
+        SubScoreInput(
+            name="rating",
+            value=4.0,
+            low=3.5,
+            high=4.5,
+            scale_min=1.0,
+            scale_max=5.0,
+            weight=2.0,
+        ),
+    )
+    request = CompositeRequest(metric_version="1", subscores=subs)
+    # When composited into a receipt
+    receipt = composite_score(request, signing_key=_KEY)
+    payload = receipt.payload
+    # Then it is one signed composite with a propagated interval bracketing the value
+    assert payload.score == pytest.approx(0.8)
+    assert payload.interval_low == pytest.approx(0.7)
+    assert payload.interval_high == pytest.approx(0.9)
+    assert payload.interval_low < payload.score < payload.interval_high
+    assert payload.composite is not None
+    assert len(payload.composite.parts) == 3
+    assert verify(receipt) is True
