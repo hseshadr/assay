@@ -24,9 +24,10 @@ jobs:
         run: uv python install 3.13
 
       # --frozen: install the committed uv.lock verbatim, so CI cannot silently
-      # re-resolve dependencies.
+      # re-resolve dependencies. --all-extras: the gate exercises the full surface
+      # (scoring face + CLI), now behind the [assay]/[cli] extras.
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --all-extras
 
       - name: Run the gate
         run: uv run poe gate

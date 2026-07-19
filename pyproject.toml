@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "assay"
+name = "avow"
 dynamic = ["version"]
-description = "The scoring engine that refuses to lie: deterministic ML/eval scores returned calibrated, uncertainty-aware, and wrapped in a signed, offline-verifiable receipt."
+description = "The trust kernel: one signed, offline-verifiable receipt envelope (avow) with a scoring face (assay) and an effect-gate face (writ)."
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
@@ -19,18 +19,27 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-# Assay writes ONLY the trust / honesty / composition layer. Every metric,
-# statistics, calibration, canonicalization, and crypto primitive is REUSED
-# from these pinned, maintained libraries — never reimplemented.
+# Base deps = the trust ENVELOPE only (avow + writ). Kept deliberately light so
+# `pip install avow` — and micropip in Pyodide — never pull the scientific stack.
+# Every primitive is REUSED from these pinned, maintained libraries, never reimplemented.
 dependencies = [
+    "pydantic>=2.11",           # typed SignedReceipt model at the I/O boundary
+    "pydantic-settings>=2.11",  # env-driven tunables (no hardcoded thresholds/paths)
+    "pynacl>=1.6",              # Ed25519 detached sign / verify
+    "rfc8785>=0.1.4",           # RFC 8785 JCS canonical JSON for content-addressed identity
+]
+
+[project.optional-dependencies]
+# The scoring face (`import assay`) needs the scientific stack; install `avow[assay]`.
+assay = [
     "scikit-learn>=1.9",  # precision/recall/F1, PR-AUC, ROC-AUC, Brier
     "scipy>=1.18",        # scipy.stats.bootstrap confidence intervals
     "numpy>=2.5",         # array math shared by sklearn + scipy
-    "pydantic>=2.11",     # typed ScoreReceipt model at the I/O boundary
-    "pydantic-settings>=2.11",  # env-driven tunables (no hardcoded thresholds/paths)
-    "pynacl>=1.6",        # Ed25519 detached sign / verify
-    "rfc8785>=0.1.4",     # RFC 8785 JCS canonical JSON for content-addressed identity
-    "typer>=0.27",        # CLI facade
+]
+# The Typer CLI (`avow` script) is optional; install `avow[cli]` (implies [assay]).
+cli = [
+    "typer>=0.27",
+    "avow[assay]",
 ]
 
 [dependency-groups]
