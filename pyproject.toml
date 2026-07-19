@@ -52,13 +52,13 @@ Homepage = "https://github.com/hseshadr/assay"
 Repository = "https://github.com/hseshadr/assay"
 Issues = "https://github.com/hseshadr/assay/issues"
 
-# Version is single-sourced from src/assay/_version.py — hatchling reads it at
-# build time, so installed metadata and assay.__version__ can never drift.
+# Version is single-sourced from src/avow/_version.py — hatchling reads it at
+# build time, so installed metadata and avow.__version__ can never drift.
 [tool.hatch.version]
-path = "src/assay/_version.py"
+path = "src/avow/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/assay"]
+packages = ["src/avow", "src/assay"]
 
 [tool.ruff]
 target-version = "py313"
@@ -77,12 +77,14 @@ ignore = ["S101", "PLR0913"]
 # names. These are the stable, coded public interface consumed across the API,
 # CLI and tests, so N818 (Error suffix) is scoped-off for this one module only.
 "src/assay/errors.py" = ["N818"]
+# The envelope error catalog uses the same semantic (non-Error-suffixed) names.
+"src/avow/errors.py" = ["N818"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 5
 
 [tool.ruff.lint.isort]
-known-first-party = ["assay"]
+known-first-party = ["assay", "avow", "writ"]
 
 [tool.mypy]
 python_version = "3.13"
@@ -105,6 +107,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = [
     "--strict-markers",
+    "--cov=avow",
     "--cov=assay",
     "--cov-report=term-missing",
     "--cov-fail-under=90",
@@ -128,10 +131,10 @@ fail_under = 90.0
 lint = "ruff check src/ tests/"
 fmt-check = "ruff format --check src/ tests/"
 fmt = "ruff format src/ tests/"
-complexity = "xenon --max-absolute A --max-modules A --max-average A src/assay"
+complexity = "xenon --max-absolute A --max-modules A --max-average A src/avow src/assay"
 test = "pytest"
 # `gate` mirrors CI exactly (lint + format-check + typecheck + complexity + test).
 gate = ["lint", "fmt-check", "typecheck", "complexity", "test"]
 
 [tool.poe.tasks.typecheck]
-cmd = "mypy --strict src/assay"
+cmd = "mypy --strict src/avow src/assay"

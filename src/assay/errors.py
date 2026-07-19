@@ -1,14 +1,38 @@
-"""Coded domain-error catalog. Every failure raises a typed AssayError with a
-stable string ``code`` so callers (and the CLI) can branch on cause without
-string-matching messages."""
+"""Coded domain-error catalog for the *scoring* face. Every failure raises a typed
+``AssayError`` with a stable string ``code`` so callers (and the CLI) branch on cause
+without string-matching messages.
+
+The trust-envelope failures (``SignatureInvalid``, ``ReplayMismatch``,
+``CanonicalizationFailed``, ``LedgerIntegrityError``) belong to the shared envelope and
+live in ``avow.errors``; they are re-exported here so the score face's callers keep a
+single import site."""
 
 from __future__ import annotations
 
 from typing import ClassVar
 
+from avow.errors import (
+    CanonicalizationFailed,
+    LedgerIntegrityError,
+    ReplayMismatch,
+    SignatureInvalid,
+)
+
+__all__ = [
+    "AssayError",
+    "CanonicalizationFailed",
+    "InsufficientSamples",
+    "InvalidScoreRequest",
+    "LedgerIntegrityError",
+    "ReplayMismatch",
+    "ScoringExtraMissing",
+    "SignatureInvalid",
+    "UnknownMetric",
+]
+
 
 class AssayError(Exception):
-    """Base class for every Assay domain error."""
+    """Base class for every Assay scoring-face domain error."""
 
     code: ClassVar[str] = "assay.error"
 
@@ -31,25 +55,7 @@ class InsufficientSamples(AssayError):
     code: ClassVar[str] = "assay.insufficient_samples"
 
 
-class CanonicalizationFailed(AssayError):
-    """Payload could not be canonicalized to RFC 8785 JCS bytes."""
+class ScoringExtraMissing(AssayError):
+    """The scoring face was imported without its heavy extra installed."""
 
-    code: ClassVar[str] = "assay.canonicalization_failed"
-
-
-class SignatureInvalid(AssayError):
-    """Ed25519 signature does not match the payload."""
-
-    code: ClassVar[str] = "assay.signature_invalid"
-
-
-class ReplayMismatch(AssayError):
-    """Recomputed content-hash does not match the receipt's stored hash."""
-
-    code: ClassVar[str] = "assay.replay_mismatch"
-
-
-class LedgerIntegrityError(AssayError):
-    """A ledger entry's stored hash disagrees with its recomputed hash."""
-
-    code: ClassVar[str] = "assay.ledger_integrity"
+    code: ClassVar[str] = "assay.scoring_extra_missing"

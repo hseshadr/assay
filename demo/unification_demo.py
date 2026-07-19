@@ -19,11 +19,9 @@ from collections.abc import Callable
 from nacl.signing import SigningKey
 
 from assay.api import score
-from assay.canonical import content_hash
 from assay.models import ScoreRequest
 from assay.receipt import ScoreReceipt
 from assay.settings import AssaySettings
-from assay.verify import verify_receipt
 from assay.writ import (
     Allowlist,
     EffectReceipt,
@@ -31,6 +29,8 @@ from assay.writ import (
     KeyholderEffector,
     governed_gate,
 )
+from avow.canonical import content_hash
+from avow.verify import verify_receipt
 
 _SEED = bytes(range(32))
 _ALLOWED = frozenset({"read"})
