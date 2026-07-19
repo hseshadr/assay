@@ -19,8 +19,13 @@ def generate_signing_key() -> SigningKey:
 
 
 def save_signing_key(key: SigningKey, *, path: Path) -> None:
-    """Write the 32-byte seed to ``path`` with owner-only permissions."""
+    """Write the 32-byte seed to ``path`` with owner-only permissions.
+
+    ``O_CREAT``'s mode only applies when the file is *created*; re-keying over an
+    existing loose-permission file would otherwise keep the old mode. We ``fchmod``
+    the descriptor on every write so the seed is always ``0600``."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _OWNER_ONLY)
+    os.fchmod(fd, _OWNER_ONLY)
     with os.fdopen(fd, "wb") as handle:
         handle.write(bytes(key))
 
