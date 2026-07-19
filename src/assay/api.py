@@ -11,7 +11,12 @@ from assay import __version__
 from assay.calibration import CalibrationReport, calibration_report
 from assay.canonical import content_hash
 from assay.composite import SubScore, composite
-from assay.errors import ReplayMismatch, SignatureInvalid
+from assay.errors import (
+    InsufficientSamples,
+    ReplayMismatch,
+    SignatureInvalid,
+    UnknownMetric,
+)
 from assay.metrics import ClassificationScores, binary_scores, correctness
 from assay.models import CompositeRequest, ScoreRequest, SubScoreInput
 from assay.receipt import (
@@ -28,6 +33,17 @@ from assay.receipt import (
 from assay.settings import AssaySettings
 from assay.uncertainty import Abstention, Estimate, mean_interval
 from assay.verify import verify_receipt
+
+# The metric label a caller names is not free text: it selects which computation
+# Assay performs and is signed into the receipt. Only registered metrics are
+# accepted, so a receipt's `metric` field is verified, never merely asserted.
+_CLASSIFICATION_METRICS = frozenset({"binary"})
+_COMPOSITE_METRICS = frozenset({"weighted_composite"})
+
+
+def _require_metric(name: str, allowed: frozenset[str]) -> None:
+    if name not in allowed:
+        raise UnknownMetric(f"unknown metric {name!r}")
 
 
 def _classification_detail(scores: ClassificationScores) -> ClassificationDetail:
@@ -84,6 +100,7 @@ def _classification_payload(request: ScoreRequest, settings: AssaySettings) -> R
         interval_low=low,
         interval_high=high,
         abstained=abstained,
+        abstain_reason=InsufficientSamples.code if abstained else None,
         classification=_classification_detail(scores),
         calibration=_calibration_detail(report),
     )
@@ -93,6 +110,7 @@ def score(
     request: ScoreRequest, *, signing_key: SigningKey, settings: AssaySettings
 ) -> ScoreReceipt:
     """Score a classification request into a signed, verifiable receipt."""
+    _require_metric(request.metric, _CLASSIFICATION_METRICS)
     return sign_payload(_classification_payload(request, settings), signing_key)
 
 
@@ -128,6 +146,7 @@ def _composite_payload(request: CompositeRequest) -> ReceiptPayload:
 
 def composite_score(request: CompositeRequest, *, signing_key: SigningKey) -> ScoreReceipt:
     """Score a weighted multi-scale composite into a signed receipt."""
+    _require_metric(request.metric, _COMPOSITE_METRICS)
     return sign_payload(_composite_payload(request), signing_key)
 
 

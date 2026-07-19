@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import pytest
 from nacl.signing import SigningKey
 
 from assay.api import composite_score, replay, score, verify
+from assay.errors import InsufficientSamples, UnknownMetric
 from assay.models import CompositeRequest, ScoreRequest, SubScoreInput
 from assay.receipt import sign_payload
 from assay.settings import AssaySettings
@@ -68,10 +70,49 @@ def test_should_abstain_below_the_sample_floor() -> None:
     )
     # When scored
     receipt = score(request, signing_key=_KEY, settings=AssaySettings())
-    # Then the headline score is withheld (no fake point number)
+    # Then the headline score is withheld (no fake point number) and the receipt
+    # carries the coded reason for abstaining, so *why* is verifiable, not asserted
     assert receipt.payload.abstained is True
     assert receipt.payload.score is None
     assert receipt.payload.interval_low is None
+    assert receipt.payload.abstain_reason == InsufficientSamples.code
+
+
+def test_should_not_set_an_abstain_reason_when_a_point_is_emitted() -> None:
+    # Given a request above the sample floor
+    receipt = score(_classification_request(), signing_key=_KEY, settings=AssaySettings())
+    # Then no abstain reason is carried
+    assert receipt.payload.abstained is False
+    assert receipt.payload.abstain_reason is None
+
+
+def test_should_reject_an_unknown_classification_metric() -> None:
+    # Given a request naming a metric Assay does not implement
+    request = ScoreRequest(
+        metric="frobnicate",
+        metric_version="1",
+        y_true=tuple([0, 1] * 20),
+        y_score=tuple([0.2, 0.8] * 20),
+    )
+    # When scored
+    # Then it is rejected with a coded UnknownMetric before anything is signed
+    with pytest.raises(UnknownMetric):
+        score(request, signing_key=_KEY, settings=AssaySettings())
+
+
+def test_should_reject_an_unknown_composite_metric() -> None:
+    # Given a composite request whose metric label is unknown
+    subs = tuple(
+        SubScoreInput(
+            name=n, value=0.5, low=0.4, high=0.6, scale_min=0.0, scale_max=1.0, weight=1.0
+        )
+        for n in ("a", "b", "c")
+    )
+    request = CompositeRequest(metric="mystery", metric_version="1", subscores=subs)
+    # When scored
+    # Then it is rejected with a coded UnknownMetric
+    with pytest.raises(UnknownMetric):
+        composite_score(request, signing_key=_KEY)
 
 
 def test_should_verify_a_composite_receipt_with_propagated_interval() -> None:

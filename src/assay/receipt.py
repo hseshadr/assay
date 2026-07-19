@@ -92,6 +92,7 @@ class ReceiptPayload(BaseModel):
     interval_low: float | None = None
     interval_high: float | None = None
     abstained: bool = False
+    abstain_reason: str | None = None
     classification: ClassificationDetail | None = None
     calibration: CalibrationDetail | None = None
     composite: CompositeDetail | None = None
