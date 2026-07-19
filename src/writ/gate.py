@@ -1,9 +1,9 @@
 """Writ: the *effect* face of the shared trust envelope.
 
-Where the score face (``assay.api``) signs *what a number is*, Writ signs *what an
+Where the score face (``assay``) signs *what a number is*, Writ signs *what an
 effect did* — and gates the effect behind a typed policy. Both faces flow through the
 SAME ``SignedReceipt`` envelope and the SAME ``sign_payload`` / ``verify_signature``
-seam (see ``assay.receipt``): one envelope carries a score for one subject and an
+seam (see ``avow``): one envelope carries a score for one subject and an
 effect for another, with zero changes to the trust boundary. That is the unification.
 
 Governed effect (moat, stated honestly):
@@ -33,7 +33,7 @@ from typing import Literal, Protocol
 from nacl.signing import SigningKey
 from pydantic import BaseModel, ConfigDict
 
-from assay.receipt import SignedReceipt, sign_payload
+from avow import SignedReceipt, sign_payload
 
 type Decision = Literal["allow", "deny"]
 

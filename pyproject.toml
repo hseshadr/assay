@@ -58,7 +58,7 @@ Issues = "https://github.com/hseshadr/assay/issues"
 path = "src/avow/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/avow", "src/assay"]
+packages = ["src/avow", "src/assay", "src/writ"]
 
 [tool.ruff]
 target-version = "py313"
@@ -109,6 +109,7 @@ addopts = [
     "--strict-markers",
     "--cov=avow",
     "--cov=assay",
+    "--cov=writ",
     "--cov-report=term-missing",
     "--cov-fail-under=90",
     "-v",
@@ -131,10 +132,10 @@ fail_under = 90.0
 lint = "ruff check src/ tests/"
 fmt-check = "ruff format --check src/ tests/"
 fmt = "ruff format src/ tests/"
-complexity = "xenon --max-absolute A --max-modules A --max-average A src/avow src/assay"
+complexity = "xenon --max-absolute A --max-modules A --max-average A src/avow src/assay src/writ"
 test = "pytest"
 # `gate` mirrors CI exactly (lint + format-check + typecheck + complexity + test).
 gate = ["lint", "fmt-check", "typecheck", "complexity", "test"]
 
 [tool.poe.tasks.typecheck]
-cmd = "mypy --strict src/avow src/assay"
+cmd = "mypy --strict src/avow src/assay src/writ"

@@ -22,15 +22,15 @@ from assay.api import score
 from assay.models import ScoreRequest
 from assay.receipt import ScoreReceipt
 from assay.settings import AssaySettings
-from assay.writ import (
+from avow.canonical import content_hash
+from avow.verify import verify_receipt
+from writ import (
     Allowlist,
     EffectReceipt,
     EffectRequest,
     KeyholderEffector,
     governed_gate,
 )
-from avow.canonical import content_hash
-from avow.verify import verify_receipt
 
 _SEED = bytes(range(32))
 _ALLOWED = frozenset({"read"})

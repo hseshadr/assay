@@ -4,9 +4,9 @@ import pytest
 from nacl.signing import SigningKey
 from pydantic import ValidationError
 
-from assay.errors import SignatureInvalid
-from assay.receipt import SignedReceipt, payload_digest, verify_signature
-from assay.writ import (
+from avow import SignedReceipt, payload_digest, verify_signature
+from avow.errors import SignatureInvalid
+from writ import (
     Allowlist,
     Effect,
     EffectReceipt,
