@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import pytest
 from nacl.signing import SigningKey
+from sklearn.metrics import brier_score_loss
 
 from assay.api import replay, score, verify
 from assay.models import ScoreRequest
@@ -75,3 +77,19 @@ def test_case4_should_abstain_and_not_fabricate_a_point_when_sample_is_thin() ->
     assert receipt.payload.score is None
     assert receipt.payload.interval_low is None
     assert receipt.payload.interval_high is None
+
+
+def test_case5_should_ship_reproducible_calibration_in_the_receipt() -> None:
+    # Given the deterministic 40-sample request
+    request = _classification_request()
+    # When scored twice
+    first = score(request, signing_key=_KEY, settings=_settings())
+    second = score(request, signing_key=_KEY, settings=_settings())
+    calibration = first.payload.calibration
+    # Then calibration evidence is present, correct, and reproducible
+    assert calibration is not None
+    assert calibration.ece == pytest.approx(0.2)
+    expected_brier = float(brier_score_loss(list(request.y_true), list(request.y_score)))
+    assert calibration.brier == pytest.approx(expected_brier)
+    assert len(calibration.reliability) == 2
+    assert first.payload.calibration == second.payload.calibration
