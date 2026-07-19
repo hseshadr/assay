@@ -45,3 +45,16 @@ def test_case2_should_verify_offline_and_recompute_the_score() -> None:
     # Then the signature is valid and the score recomputes to the same value
     assert verified is True
     assert replayed is True
+
+
+def test_case3_should_fail_verification_when_receipt_is_tampered() -> None:
+    # Given a valid receipt
+    receipt = score(_classification_request(), signing_key=_KEY, settings=_settings())
+    # When the signed score is altered without re-signing
+    swapped = receipt.payload.model_copy(update={"score": 0.123})
+    tampered = receipt.model_copy(update={"payload": swapped})
+    # Then verification fails (hash no longer matches the payload)
+    assert verify(tampered) is False
+    # And a blanked signature also fails
+    forged = receipt.model_copy(update={"signature": "11" * 64})
+    assert verify(forged) is False
