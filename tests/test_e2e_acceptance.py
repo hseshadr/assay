@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from nacl.signing import SigningKey
 
-from assay.api import score
+from assay.api import replay, score, verify
 from assay.models import ScoreRequest
 from assay.settings import AssaySettings
 
@@ -33,3 +33,15 @@ def test_case1_should_reproduce_identical_score_and_hash_for_same_inputs() -> No
     assert first.payload.score == second.payload.score
     assert first.payload_hash == second.payload_hash
     assert first == second
+
+
+def test_case2_should_verify_offline_and_recompute_the_score() -> None:
+    # Given a signed receipt and its original request
+    request = _classification_request()
+    receipt = score(request, signing_key=_KEY, settings=_settings())
+    # When verified offline and replayed from the same inputs
+    verified = verify(receipt)
+    replayed = replay(request, receipt, settings=_settings())
+    # Then the signature is valid and the score recomputes to the same value
+    assert verified is True
+    assert replayed is True
