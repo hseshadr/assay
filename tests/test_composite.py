@@ -58,3 +58,13 @@ def test_should_reject_non_increasing_scale() -> None:
     # Then it is rejected
     with pytest.raises(InvalidScoreRequest):
         composite(bad)
+
+
+def test_should_reject_an_inverted_subscore_interval() -> None:
+    # Given a sub-score whose interval is inverted (low=0.9 > high=0.1)
+    bad = [SubScore("x", 0.5, 0.9, 0.1, 0.0, 1.0, 1.0), *_three_subscores()[:2]]
+    # When composited
+    # Then it is rejected — an inverted interval would propagate a low > high
+    # composite bound, which is not a real uncertainty interval
+    with pytest.raises(InvalidScoreRequest):
+        composite(bad)

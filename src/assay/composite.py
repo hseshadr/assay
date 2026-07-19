@@ -63,10 +63,16 @@ def _require_positive_weight(subscores: Sequence[SubScore]) -> None:
         raise InvalidScoreRequest("each sub-score weight must be positive")
 
 
+def _require_ordered_intervals(subscores: Sequence[SubScore]) -> None:
+    if any(not (s.low <= s.value <= s.high) for s in subscores):
+        raise InvalidScoreRequest("each sub-score must satisfy low <= value <= high")
+
+
 def _validate(subscores: Sequence[SubScore]) -> None:
     _require_min_count(subscores)
     _require_increasing_scales(subscores)
     _require_positive_weight(subscores)
+    _require_ordered_intervals(subscores)
 
 
 def _normalize(x: float, s: SubScore) -> float:
