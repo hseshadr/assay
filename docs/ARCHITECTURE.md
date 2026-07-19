@@ -34,10 +34,42 @@ Every arrow is one-directional. Honesty invariants:
    (the `.pub` file from `keygen`) and rejects any receipt not signed by exactly
    that key — the receipt's own embedded key is never trusted.
 
-## The trust envelope is unification-ready
+## One trust envelope, two faces (score + effect)
 
 `sign_payload` / `verify_signature` / `payload_digest` sign and check the canonical
 JSON of a frozen *subject* — they never inspect its fields. `ReceiptPayload` is the
-*score* face's subject. A future *effect* face ("Writ") would define its own frozen
-subject model and reuse this same hash-sign-verify envelope unchanged; only the
-subject differs, never the trust boundary.
+*score* face's subject. The *effect* face — **Writ** (`assay.writ`) — defines its own
+frozen `EffectSubject` and reuses this same hash-sign-verify envelope unchanged; only
+the subject differs, never the trust boundary. `verify_receipt` is generic over the
+subject, so one public verifier serves both faces (`demo/unification_demo.py`).
+
+### The governed effect gate
+
+```d2
+request: EffectRequest (action, target, args_digest)
+policy: "Policy.permits() — typed predicate (v1: OPA/Rego)"
+gate: "writ.gate — branch on the decision"
+effect: "effector.run — privileged side-effect (ALLOW only)"
+seal: "effector.seal — sign EffectSubject (ALWAYS)"
+receipt: EffectReceipt = SignedReceipt[EffectSubject]
+
+request -> policy -> gate
+gate -> effect: allow
+gate -> seal
+effect -> seal: allow
+seal -> receipt
+```
+
+On **deny** the effect never runs and a signed denial receipt is sealed; on **allow**
+the effector runs the effect, then seals a signed effect receipt. Both are verifiable
+offline through the shared envelope under a pinned signer.
+
+**Un-bypassable seam — honest v0.** The effect credential (the signing key) and the
+privileged effect live only inside the `Effector`. `governed_gate(policy, effector)`
+captures the effector in the single closure the agent receives; the effector is never
+passed out, so the only path to the effect is back through the guard. This is a
+**capability-holding approximation**: the credential is still in-process, reachable by
+same-process reflection. TRUE un-bypassability — a **separate-process broker** or a
+**WASM guest**, where the agent's address space cannot reach the credential — is the
+**v1 hardening**. Even so, a bypass buys little: only the effector's held key can seal a
+receipt that verifies under the pinned signer, so any forged effect fails verification.

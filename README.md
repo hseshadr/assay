@@ -36,6 +36,7 @@ honesty, and composition layer on top.
 ```bash
 uv sync
 uv run python demo/run_demo.py          # proves all 6 acceptance cases
+uv run python demo/unification_demo.py  # ONE envelope + ONE verifier, BOTH faces
 
 # or drive the CLI:
 uv run assay keygen --out signing.key                 # also writes signing.key.pub
@@ -97,11 +98,27 @@ for convenience, but that embedded copy is **not** the trust anchor — a verifi
 must pin the signer's public key it obtained out-of-band (the `.pub` file) and pass
 it to `verify`. Only the private seed must be protected.
 
-**One trust envelope, two future faces.** `sign_payload` / `verify_signature` /
+**One trust envelope, two faces (the moat).** `sign_payload` / `verify_signature` /
 `payload_digest` operate only on the canonical JSON of a frozen *subject* model, so
-they are agnostic to what that subject carries. Today the subject is a *score*
-(`ReceiptPayload`); a future *effect* face ("Writ") can define its own subject and
-reuse this exact hash-sign-verify envelope unchanged.
+they are agnostic to what that subject carries. The *score* face signs a `ReceiptPayload`
+(what a number is). The *effect* face — **Writ** (`assay.writ`) — signs an `EffectSubject`
+(what an effect did) through the **same** envelope, with the trust boundary (`assay.receipt`)
+unchanged. One `verify_receipt(..., expected_public_key=...)` verifies both:
+`demo/unification_demo.py` produces a score receipt and two effect receipts (allow + deny)
+and verifies all three under one pinned key.
+
+**Governed effect.** `writ.gate(request, policy, effector)` evaluates a typed policy: on
+**deny** it signs a denial receipt and never runs the effect; on **allow** the effector
+runs the effect, then signs an effect receipt — both verifiable through the shared envelope.
+The v0 policy decider is a Python predicate (`Allowlist`); **OPA/Rego is the v1 decider**.
+
+**Un-bypassable seam — stated honestly.** The effect credential and the privileged effect
+live only inside the effector, which `governed_gate` captures in the single closure the
+agent receives; the effector itself is never handed over, so the only path to the effect is
+through the guard. This is the **v0 capability-holding approximation**: the credential is
+still in-process, so same-process reflection could reach it. TRUE un-bypassable enforcement
+(a separate-process broker or a WASM guest, where the agent's address space cannot reach the
+credential) is the **v1 hardening**. We do not claim more than that.
 
 See `docs/ARCHITECTURE.md` for the data-flow diagram and `docs/superpowers/plans/`
 for the full TDD build record.
