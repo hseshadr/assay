@@ -36,6 +36,21 @@ def test_should_reject_fewer_than_three_subscores() -> None:
         composite(subscores)
 
 
+def test_should_reject_a_negative_individual_weight() -> None:
+    # Given three valid-scale sub-scores where one weight is negative but the
+    # weights still sum to a positive value (1 - 1 + 1 = 1)
+    subs = [
+        SubScore("a", 0.5, 0.4, 0.6, 0.0, 1.0, -1.0),
+        SubScore("b", 0.5, 0.4, 0.6, 0.0, 1.0, 1.0),
+        SubScore("c", 0.5, 0.4, 0.6, 0.0, 1.0, 1.0),
+    ]
+    # When composited
+    # Then it is rejected — a negative weight inverts a sub-score and can push the
+    # composite (and its interval) out of [0,1], never producing a signed score
+    with pytest.raises(InvalidScoreRequest):
+        composite(subs)
+
+
 def test_should_reject_non_increasing_scale() -> None:
     # Given a sub-score whose scale_max <= scale_min
     bad = [SubScore("x", 1.0, 1.0, 1.0, 5.0, 5.0, 1.0), *_three_subscores()[:2]]

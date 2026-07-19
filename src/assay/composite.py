@@ -59,8 +59,8 @@ def _require_increasing_scales(subscores: Sequence[SubScore]) -> None:
 
 
 def _require_positive_weight(subscores: Sequence[SubScore]) -> None:
-    if sum(s.weight for s in subscores) <= 0:
-        raise InvalidScoreRequest("weights must sum to a positive value")
+    if any(s.weight <= 0 for s in subscores):
+        raise InvalidScoreRequest("each sub-score weight must be positive")
 
 
 def _validate(subscores: Sequence[SubScore]) -> None:
