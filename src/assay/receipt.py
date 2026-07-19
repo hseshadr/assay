@@ -6,12 +6,14 @@ content-hash, and (Ed25519 being deterministic) an identical signature. Verifica
 recomputes the hash (catching tampered content) and checks the detached signature
 (catching a forged or mismatched key).
 
-Unification note (design, not built here): ``sign_payload`` / ``verify_signature`` /
-``payload_digest`` form a payload-agnostic **trust envelope** — they operate only on
-the canonical JSON of a frozen subject model. ``ReceiptPayload`` is the *score* face's
-subject. A future *effect* face ("Writ") would define its own frozen subject model and
-reuse this exact hash-sign-verify seam unchanged; only the subject differs, never the
-envelope. Do not add the effect face here."""
+Unification (literal, not aspirational): ``sign_payload`` / ``verify_signature`` /
+``payload_digest`` are typed over ``SubjectT`` bound to ``BaseModel`` and produce /
+consume a generic ``SignedReceipt[SubjectT]`` envelope — they operate only on the
+canonical JSON of a frozen subject model. ``ReceiptPayload`` is the *score* face's
+subject (``ScoreReceipt = SignedReceipt[ReceiptPayload]``). A future *effect* face
+("Writ") defines its own frozen subject model and reuses this exact hash-sign-verify
+seam with zero type changes; only the subject differs, never the envelope. Do not add
+the effect face here."""
 
 from __future__ import annotations
 
@@ -98,27 +100,41 @@ class ReceiptPayload(BaseModel):
     composite: CompositeDetail | None = None
 
 
-class ScoreReceipt(BaseModel):
-    """A payload plus its content-hash, public key and Ed25519 signature."""
+class SignedReceipt[SubjectT: BaseModel](BaseModel):
+    """A signed subject: the subject plus its content-hash, public key and signature.
+
+    The envelope is generic over ``SubjectT`` (bound to ``BaseModel``) and never
+    inspects the subject's fields — it signs the subject's canonical JSON — so it is
+    agnostic to what the subject carries. ``ReceiptPayload`` is the *score* face's
+    subject; a future *effect* face ("Writ") supplies its own subject and reuses this
+    exact envelope. The subject bound is the literal "one envelope, many subjects"
+    unification claim."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    payload: ReceiptPayload
+    payload: SubjectT
     payload_hash: str
     public_key: str
     signature: str
 
 
-def payload_digest(payload: ReceiptPayload) -> str:
-    """Content-hash of the canonical payload."""
+# The score face's concrete envelope. ``ScoreReceipt`` stays the public name callers
+# import; it is ``SignedReceipt`` parametrized with the score subject.
+ScoreReceipt = SignedReceipt[ReceiptPayload]
+
+
+def payload_digest(payload: BaseModel) -> str:
+    """Content-hash of a canonical subject (any frozen model)."""
     return content_hash(payload.model_dump(mode="json"))
 
 
-def sign_payload(payload: ReceiptPayload, signing_key: SigningKey) -> ScoreReceipt:
-    """Hash and Ed25519-sign a payload into a verifiable receipt."""
+def sign_payload[SubjectT: BaseModel](
+    payload: SubjectT, signing_key: SigningKey
+) -> SignedReceipt[SubjectT]:
+    """Hash and Ed25519-sign any frozen subject into a verifiable receipt."""
     message = canonical_bytes(payload.model_dump(mode="json"))
     signature = signing_key.sign(message).signature
-    return ScoreReceipt(
+    return SignedReceipt(
         payload=payload,
         payload_hash=payload_digest(payload),
         public_key=bytes(signing_key.verify_key).hex(),
@@ -126,12 +142,14 @@ def sign_payload(payload: ReceiptPayload, signing_key: SigningKey) -> ScoreRecei
     )
 
 
-def _check_hash(receipt: ScoreReceipt) -> None:
+def _check_hash[SubjectT: BaseModel](receipt: SignedReceipt[SubjectT]) -> None:
     if payload_digest(receipt.payload) != receipt.payload_hash:
         raise ReplayMismatch("payload hash does not match payload content")
 
 
-def verify_signature(receipt: ScoreReceipt, *, expected_public_key: str) -> None:
+def verify_signature[SubjectT: BaseModel](
+    receipt: SignedReceipt[SubjectT], *, expected_public_key: str
+) -> None:
     """Verify a receipt against a **pinned** signer key.
 
     Authenticity requires knowing *whose* signature to trust. The receipt's own
