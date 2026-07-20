@@ -19,12 +19,12 @@ from collections.abc import Callable
 from nacl.signing import SigningKey
 
 from assay.api import score
-from assay.canonical import content_hash
 from assay.models import ScoreRequest
 from assay.receipt import ScoreReceipt
 from assay.settings import AssaySettings
-from assay.verify import verify_receipt
-from assay.writ import (
+from avow.canonical import content_hash
+from avow.verify import verify_receipt
+from writ import (
     Allowlist,
     EffectReceipt,
     EffectRequest,

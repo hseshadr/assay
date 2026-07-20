@@ -24,12 +24,44 @@ jobs:
         run: uv python install 3.13
 
       # --frozen: install the committed uv.lock verbatim, so CI cannot silently
-      # re-resolve dependencies.
+      # re-resolve dependencies. --all-extras: the gate exercises the full surface
+      # (scoring face + CLI), now behind the [assay]/[cli] extras.
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --all-extras
 
       - name: Run the gate
         run: uv run poe gate
+
+  # The TS Lego `@edgeproc/avow`. Its conformance suite replays the SAME golden
+  # vectors (testdata/vectors/*.json) the Python gate generates, asserting the TS
+  # canonicalizer + verifier reproduce Python's bytes/hashes/signatures exactly.
+  # A cross-language byte divergence fails HERE, in CI, never in production.
+  ts-gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.5.0
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # lint (biome) -> typecheck (tsc strict) -> vitest conformance -> build.
+      - name: Run the TS gate
+        run: pnpm gate
 
   # Full-history secret scan.
   gitleaks:

@@ -11,7 +11,7 @@ import hashlib
 
 import rfc8785
 
-from assay.errors import CanonicalizationFailed
+from avow.errors import CanonicalizationFailed
 
 # A JSON object genuinely has runtime string keys at this I/O boundary; this is
 # the one place a str-keyed mapping is a value, not a record.

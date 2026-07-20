@@ -7,9 +7,7 @@ from __future__ import annotations
 
 from nacl.signing import SigningKey
 
-from assay import __version__
 from assay.calibration import CalibrationReport, calibration_report
-from assay.canonical import content_hash
 from assay.composite import SubScore, composite
 from assay.errors import (
     InsufficientSamples,
@@ -32,7 +30,9 @@ from assay.receipt import (
 )
 from assay.settings import AssaySettings
 from assay.uncertainty import Abstention, Estimate, mean_interval
-from assay.verify import verify_receipt
+from avow import __version__
+from avow.canonical import content_hash
+from avow.verify import verify_receipt
 
 # The metric label a caller names is not free text: it selects which computation
 # Assay performs and is signed into the receipt. Only registered metrics are

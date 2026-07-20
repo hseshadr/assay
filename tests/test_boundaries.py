@@ -12,9 +12,9 @@ from typer.testing import CliRunner
 from assay.cli import app
 from assay.composite import SubScore, composite
 from assay.errors import InvalidScoreRequest
-from assay.keys import load_signing_key
 from assay.metrics import binary_scores
 from assay.receipt import ScoreReceipt
+from avow.keys import load_signing_key
 
 _RUNNER = CliRunner()
 
