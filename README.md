@@ -153,7 +153,7 @@ try:
     verify_signature(forged, expected_public_key=trusted_key)
     print("forged receipt ....... VALID  <- this must never happen")
 except Exception as exc:
-    print(f"forged receipt ....... REJECTED ({type(exc).__name__})")
+    print(f"forged receipt ....... REJECTED ({type(exc).__name__}: {exc.code})")
 
 # The ONLY reason it was rejected is that we pinned the bank's key.
 print(f"key inside forgery matches bank? {forged.public_key == trusted_key}")
@@ -161,13 +161,24 @@ print(f"key inside forgery matches bank? {forged.public_key == trusted_key}")
 
 ```
 forged receipt is self-consistent: sha256:441280ee2... signed OK by attacker
-forged receipt ....... REJECTED (SignatureInvalid)
+forged receipt ....... REJECTED (SignerMismatch: avow.signer_mismatch)
 key inside forgery matches bank? False
 ```
 
 **Never trust the key embedded in the receipt.** It rides along for convenience; it is
 not the trust anchor. `verify_signature` *requires* you to pass the key you already
 trust, precisely so this mistake is hard to make by accident.
+
+Note the code: **`avow.signer_mismatch`**, not `avow.signature_invalid`. Those are two
+different events and they are coded apart, because you may want to react differently:
+
+| Code | Class | What happened |
+|---|---|---|
+| `avow.signer_mismatch` | `SignerMismatch` | Signed by a key you do not trust — a **provenance** failure. The signature is never even checked. |
+| `avow.signature_invalid` | `SignatureBytesInvalid` | The signer matched, but the bytes fail the curve check — a **tamper** failure. |
+
+Both subclass `SignatureInvalid`, so `except SignatureInvalid:` still catches either one
+if you do not care which. You never have to match on the message text.
 
 ## Three things you can sign
 

@@ -53,8 +53,15 @@ boolean you might forget to check:
 
 - `ReplayMismatch` (`avow.replay_mismatch`) — the payload was altered after
   signing (its recomputed hash no longer matches).
-- `SignatureInvalid` (`avow.signature_invalid`) — the receipt's embedded key is
-  not the pinned key, or the signature doesn't verify.
+- `SignerMismatch` (`avow.signer_mismatch`) — the receipt's embedded key is not
+  the pinned key: signed by someone you don't trust, a **provenance** failure.
+  The signature is never even checked.
+- `SignatureBytesInvalid` (`avow.signature_invalid`) — the signer matched but the
+  signature doesn't verify: a **tamper** failure.
+
+The last two both extend `SignatureInvalid`, so `instanceof SignatureInvalid`
+still catches either if you don't need to tell them apart. These are the same
+codes the Python kernel raises for the same two cases.
 
 The order mirrors the Python kernel exactly: recompute the hash, then reject any
 receipt whose embedded `public_key` isn't the pinned one (that field lives
@@ -104,7 +111,8 @@ No custody overclaim.
 - `verifySignature(receipt, expectedPublicKey): Promise<void>` — fail-closed.
 - `generateSeedHex(): string`, `publicKeyHex(seedHex): Promise<string>`.
 - Errors: `AvowError`, `CanonicalizationFailed`, `ReplayMismatch`,
-  `SignatureInvalid` — each with a stable `.code`.
+  `SignatureInvalid` and its two subclasses `SignerMismatch` /
+  `SignatureBytesInvalid` — each with a stable `.code`.
 
 ## Develop
 

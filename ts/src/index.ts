@@ -11,7 +11,9 @@ export {
   AvowError,
   CanonicalizationFailed,
   ReplayMismatch,
+  SignatureBytesInvalid,
   SignatureInvalid,
+  SignerMismatch,
 } from "./errors.js";
 export { generateSeedHex, publicKeyHex } from "./keys.js";
 export { type SignedReceipt, signPayload, verifySignature } from "./receipt.js";
