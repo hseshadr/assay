@@ -1,6 +1,6 @@
 # assay — .github/workflows/publish.yml
 # One repo, TWO OIDC releases on a `v*` tag: the Python `avow` kernel to PyPI AND the
-# byte-compatible TS Lego `@edgeproc/avow` (ts/) to npm. The pair is versioned together,
+# byte-compatible TypeScript package `@edgeproc/avow` (ts/) to npm. The pair is versioned together,
 # so a single `git tag vX.Y.Z && git push --tags` fans out to two token-free jobs — there
 # is NO PyPI token and NO npm write token in this repo.
 #

@@ -32,7 +32,7 @@ jobs:
       - name: Run the gate
         run: uv run poe gate
 
-  # The TS Lego `@edgeproc/avow`. Its conformance suite replays the SAME golden
+  # The TypeScript package `@edgeproc/avow`. Its conformance suite replays the SAME golden
   # vectors (testdata/vectors/*.json) the Python gate generates, asserting the TS
   # canonicalizer + verifier reproduce Python's bytes/hashes/signatures exactly.
   # A cross-language byte divergence fails HERE, in CI, never in production.
