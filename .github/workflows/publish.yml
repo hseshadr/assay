@@ -1,0 +1,53 @@
+# assay — .github/workflows/publish.yml
+# One repo, TWO OIDC releases on a `v*` tag: the Python `avow` kernel to PyPI AND the
+# byte-compatible TS Lego `@edgeproc/avow` (ts/) to npm. The pair is versioned together,
+# so a single `git tag vX.Y.Z && git push --tags` fans out to two token-free jobs — there
+# is NO PyPI token and NO npm write token in this repo.
+#
+# BOTH NAMES ARE ALREADY LIVE at 0.1.0: PyPI `avow` and npm `@edgeproc/avow` were published
+# by hand, so the name-creation bootstrap is DONE — do not hand-publish again. A tag push
+# that re-runs this workflow at an unchanged version will be REJECTED by both registries
+# (they refuse to overwrite an existing version). Bump the version before tagging.
+#
+# Remaining one-time bootstrap (needs a human, once per registry):
+#   * PyPI (avow): register the GitHub Actions trusted publisher ({owner, assay,
+#     publish.yml}). The workflow filename + repo + owner ARE the credential.
+#   * npm (@edgeproc/avow): register the trusted publisher ({owner, assay, publish.yml}).
+#     Every tag push after that runs through here, token-free.
+#
+# npm truths (see ts-publish.yml): `--provenance` writes a PUBLIC transparency-log entry,
+# so provenance stays FALSE until assay goes public. `repository.url` in ts/package.json
+# must exactly match the GitHub repo or the publish fails with ENEEDAUTH — it is present
+# and correct as of this commit.
+#
+# NOTE: hseshadr/ci is referenced at @ci-v2, which is not cut yet (pending). The reusable
+# OIDC workflows live on the ci repo's feat/oidc-publish branch until that tag is created.
+name: Publish (OIDC)
+on:
+  push:
+    tags: ["v*"]
+# Top-level read-only; each job grants the OIDC write scope on itself only (the ci repo
+# security policy forbids a top-level `id-token: write`).
+permissions:
+  contents: read
+jobs:
+  # Python `avow` -> PyPI. Re-runs `uv run poe gate` on the tagged ref before building.
+  publish-pypi:
+    permissions:
+      id-token: write # OIDC — PyPI verifies this against the registered trusted publisher.
+      contents: read
+    uses: hseshadr/ci/.github/workflows/python-publish.yml@ci-v2
+    with:
+      working-directory: "."
+      sync-args: "--frozen --all-extras"
+
+  # TS `@edgeproc/avow` (ts/) -> npm. Re-runs `pnpm gate` (lint -> tsc -> vitest
+  # conformance -> build); no browser step, so it runs in ts-publish as-is.
+  publish-npm:
+    permissions:
+      id-token: write # OIDC — npm verifies this against the registered trusted publisher.
+      contents: read
+    uses: hseshadr/ci/.github/workflows/ts-publish.yml@ci-v2
+    with:
+      working-directory: ts
+      provenance: false # flip true only in the wave the repo goes public
