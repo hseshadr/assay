@@ -40,7 +40,8 @@ import { verifySignature, type SignedReceipt } from "@edgeproc/avow";
 
 // The signer's public key, pinned out-of-band (published on your site, in your
 // bundle manifest, etc.). Never trust the key carried inside the receipt alone.
-const PUBLISHER_KEY = "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c";
+// (Inert placeholder shown — substitute the 64-hex key you actually pinned.)
+const PUBLISHER_KEY = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
 async function check(receipt: SignedReceipt<{ kind: string; score: number }>) {
   await verifySignature(receipt, PUBLISHER_KEY); // throws on any tampering
