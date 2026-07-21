@@ -86,7 +86,9 @@ class Policy(Protocol):
     """A typed guard: may this request proceed? v0 is a Python predicate; the v1
     decider is OPA/Rego. The gate branches only on this boolean."""
 
-    def permits(self, request: EffectRequest) -> bool: ...
+    # A Protocol body is a structural-typing stub; it is never executed. Marked
+    # explicitly rather than hidden by a broad coverage-exclusion regex.
+    def permits(self, request: EffectRequest) -> bool: ...  # pragma: no cover
 
 
 class Allowlist:
@@ -103,9 +105,10 @@ class Effector(Protocol):
     """Sole holder of the effect credential. Runs the effect and seals receipts with
     its held signing key. The agent never receives this object — only the bound gate."""
 
-    def run(self, request: EffectRequest) -> None: ...
+    # Protocol stubs; never executed (see Policy.permits).
+    def run(self, request: EffectRequest) -> None: ...  # pragma: no cover
 
-    def seal(self, subject: EffectSubject) -> EffectReceipt: ...
+    def seal(self, subject: EffectSubject) -> EffectReceipt: ...  # pragma: no cover
 
 
 class KeyholderEffector:

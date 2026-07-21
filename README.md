@@ -30,9 +30,22 @@ database, and get one of two answers:
 
 There is no "close enough". Change one digit anywhere in it and the check fails.
 
+## Before you install
+
+Two things that will otherwise trip you up:
+
+- **Python 3.13 or newer is required.** On 3.12 or older `pip install avow` fails while
+  resolving, with a message that does not mention the Python version. Check with
+  `python --version` first.
+- **The package is `avow`; the command is `assay`.** You `pip install avow` and
+  `import avow`, but the command line the CLI extra installs is called `assay`. There is
+  no `avow` command. (`avow` is the envelope everything is built on; `assay` is the
+  scoring face that ships the CLI.)
+
 ## See it catch a tampered record
 
 ```bash
+python --version   # must be 3.13+
 pip install avow
 ```
 
@@ -280,11 +293,13 @@ The denied delete produced a signed receipt but never touched the system.
 
 ## Command line
 
-For signing and checking receipts without writing code:
+For signing and checking receipts without writing code. The distribution is `avow`; the
+command it installs is **`assay`** (there is no `avow` command). Python 3.13+ required.
 
 ```bash
-pip install 'avow[cli]'
+pip install 'avow[cli]'                        # installs the `assay` command
 
+assay --help                                   # note: `assay`, not `avow`
 assay keygen --out signing.key                 # also writes signing.key.pub
 echo '{"metric":"binary","metric_version":"1","y_true":[0,1,0,1],"y_score":[0.2,0.8,0.3,0.7]}' > req.json
 assay score --request req.json --key signing.key --out receipt.json --ledger ledger.jsonl
@@ -297,6 +312,22 @@ wrote public key: signing.key.pub
 wrote receipt: receipt.json
 OK: receipt verified
 ```
+
+### Auditing the ledger — `verify-ledger` (unreleased)
+
+> **`verify-ledger` is not in the published release.** PyPI serves `avow` 0.1.0, which
+> has no `verify-ledger` command — running it there fails with
+> `No such command 'verify-ledger'`. It is on `main` and unreleased. Until the next
+> release is tagged, install from source:
+>
+> ```bash
+> git clone https://github.com/hseshadr/assay.git
+> cd assay
+> pip install '.[cli]'      # Python 3.13+; use a fresh venv
+> assay verify-ledger --help
+> ```
+>
+> Everything above this section works on the published 0.1.0.
 
 `score` also appended that receipt to `ledger.jsonl`. A ledger is checkable on its own —
 each entry is identified by the hash of its own contents, so an edit anywhere in the file
@@ -323,6 +354,18 @@ FAIL: avow.ledger_integrity: tampered ledger entry: sha256:c63170d649d1c24bca47f
 
 Exit code `1`, and the coded cause names both the failure and the entry that caused it.
 The check re-derives every entry's hash and fails closed on the first disagreement.
+
+A ledger it cannot read is also a failure, not a pass. Mistype the path and you get:
+
+```
+FAIL: avow.ledger_unreadable: ledger is not a readable file: ledgr.jsonl
+```
+
+rather than `OK: ledger verified, 0 entries intact` — which would be a clean bill of
+health for a file that was never opened. The same applies to a directory in the file's
+place, a file whose permissions deny reading, and a line that is not a parseable receipt
+(`avow.ledger_entry_malformed`). A ledger that *exists and is empty* still passes with
+zero entries: that is a legitimate initial state, not an unanswered question.
 
 ## Honest limits
 
@@ -460,11 +503,16 @@ rather than in production.
 <summary><b>Working on avow itself</b></summary>
 
 ```bash
+git clone https://github.com/hseshadr/assay.git && cd assay
 uv sync --all-extras
-uv run poe gate                          # ruff, ruff-format, mypy --strict, xenon A, pytest
+uv run poe gate                          # Python: ruff, ruff-format, mypy --strict, xenon A, pytest
+uv run poe gate-ts                       # TypeScript: biome, tsc --noEmit, vitest, build (needs pnpm)
+uv run poe gate-all                      # both, mirroring CI's two jobs
 uv run python demo/run_demo.py           # measurement face: 6 honesty acceptance cases
 uv run python demo/unification_demo.py   # one envelope + one verifier, both faces
 ```
+
+[`QUICKSTART.md`](QUICKSTART.md) is the shortest path from clone to a verified receipt.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the data-flow diagram, the import
 edges, and the native-vs-browser story.
@@ -473,9 +521,16 @@ edges, and the native-vs-browser story.
 
 ## Status
 
-v0, deterministic — no LLM anywhere in the path. The full test pyramid is green under
-`uv run poe gate` (ruff, ruff-format, mypy `--strict`, xenon A, pytest with a coverage
-floor), and CI mirrors the gate. Read the honest limits above before depending on it.
+v0, deterministic — no LLM anywhere in the path.
+
+Two gates, mirroring CI's two jobs. `uv run poe gate` covers **Python only** (ruff,
+ruff-format, mypy `--strict`, xenon A, pytest with statement *and* branch coverage
+against a floor); `uv run poe gate-ts` covers the TypeScript package (biome, `tsc`
+strict, vitest, build). `uv run poe gate-all` runs both.
+
+Published releases: `avow` 0.1.0 on PyPI, `@edgeproc/avow` 0.1.0 on npm. `main` is ahead
+of both — see [`CHANGELOG.md`](CHANGELOG.md) for what is unreleased, and install from
+source to use it. Read the honest limits above before depending on any of it.
 
 ## License
 

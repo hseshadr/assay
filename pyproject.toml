@@ -36,7 +36,8 @@ assay = [
     "scipy>=1.18",        # scipy.stats.bootstrap confidence intervals
     "numpy>=2.5",         # array math shared by sklearn + scipy
 ]
-# The Typer CLI (`avow` script) is optional; install `avow[cli]` (implies [assay]).
+# The Typer CLI is optional; install `avow[cli]` (implies [assay]). The distribution
+# is `avow` but the console script it installs is `assay` — see [project.scripts].
 cli = [
     "typer>=0.27",
     "avow[assay]",
@@ -132,6 +133,9 @@ addopts = [
     "--cov=avow",
     "--cov=assay",
     "--cov=writ",
+    # Branch coverage, not just statement coverage: a line can be executed while one
+    # side of its condition never is, and an integrity tool cannot afford that blind spot.
+    "--cov-branch",
     "--cov-report=term-missing",
     "--cov-fail-under=90",
     "-v",
@@ -146,7 +150,11 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
     "@abstractmethod",
-    "\\.\\.\\.",
+    # Anchored to a bare `...` stub body ONLY. The unanchored `\.\.\.` this
+    # replaces also matched the ellipsis inside `tuple[X, ...]` annotations, which
+    # silently excluded every function whose signature carried one — including the
+    # ledger's own read_all/verify_integrity. Coverage must not be able to hide code.
+    "^\\s*\\.\\.\\.$",
 ]
 fail_under = 90.0
 
@@ -156,8 +164,17 @@ fmt-check = "ruff format --check src/ tests/"
 fmt = "ruff format src/ tests/"
 complexity = "xenon --max-absolute A --max-modules A --max-average A src/avow src/assay src/writ"
 test = "pytest"
-# `gate` mirrors CI exactly (lint + format-check + typecheck + complexity + test).
+# `gate` mirrors the CI `gate` job exactly: lint + format-check + typecheck +
+# complexity + test. It is PYTHON ONLY — the TypeScript package has its own gate,
+# mirroring the separate CI `ts-gate` job. `gate-all` runs both, as CI does.
 gate = ["lint", "fmt-check", "typecheck", "complexity", "test"]
+gate-all = ["gate", "gate-ts"]
+
+# Mirrors the CI `ts-gate` job (biome -> tsc --noEmit -> vitest -> build).
+# Needs pnpm; the Python gate above does not.
+[tool.poe.tasks.gate-ts]
+cmd = "pnpm gate"
+cwd = "ts"
 
 [tool.poe.tasks.typecheck]
 cmd = "mypy --strict src/avow src/assay src/writ"

@@ -124,6 +124,18 @@ def test_should_verify_an_intact_ledger_through_the_cli(tmp_path: Path) -> None:
     assert "1" in result.stdout
 
 
+def test_should_fail_closed_when_the_ledger_path_does_not_exist(tmp_path: Path) -> None:
+    # Given a ledger path that was never written (a typo is indistinguishable from it)
+    missing = tmp_path / "typo.jsonl"
+    # When the ledger is verified through the CLI
+    result = _RUNNER.invoke(app, ["verify-ledger", "--ledger", str(missing)])
+    # Then it exits non-zero and names the coded cause, rather than reporting
+    # "0 entries intact" — a fail-open pass for a ledger it never read
+    assert result.exit_code == 1
+    assert "avow.ledger_unreadable" in result.stdout
+    assert "OK" not in result.stdout
+
+
 def test_should_fail_closed_when_the_ledger_was_tampered_on_disk(tmp_path: Path) -> None:
     # Given a ledger entry edited on disk after it was written
     ledger = tmp_path / "ledger.jsonl"
