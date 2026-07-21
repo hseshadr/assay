@@ -2,7 +2,7 @@
 
 One distribution (`avow`), three import packages, one dependency direction.
 
-## The three Legos and their import edges
+## The three packages and their import edges
 
 `assay` (scoring) and `writ` (effect) both import the `avow` envelope; `avow` imports
 neither. The arrows point one way only, which is what lets the envelope install without
@@ -121,5 +121,7 @@ cross-language byte identity **gated, not assumed**:
   serialization (ECMAScript shortest round-trip) is the known hazard, so the vectors
   deliberately include `0.5`, `0.1`, `1e21`, `-0.0`, `1e-7`; any divergence fails in CI.
 
-The TypeScript Lego and its conformance job land in a follow-up phase; this repo already
-ships the vectors that pin the contract.
+The TypeScript package `@edgeproc/avow` has already shipped — its source lives in this
+repo at `ts/`, it is published on npm, and the `ts-gate` job in CI replays the vectors in
+`testdata/vectors/` against it, so a cross-language divergence fails in CI, not
+production.

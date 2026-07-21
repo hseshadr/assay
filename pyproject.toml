@@ -70,7 +70,7 @@ path = "src/avow/_version.py"
 packages = ["src/avow", "src/assay", "src/writ"]
 
 [tool.hatch.build.targets.sdist]
-# Python-distribution sources only; the TS Lego ships separately as @edgeproc/avow on npm.
+# Python-distribution sources only; the TypeScript package ships separately as @edgeproc/avow on npm.
 only-include = [
   "src",
   "tests",
