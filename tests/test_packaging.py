@@ -4,8 +4,11 @@ micropip) never pulls scikit-learn."""
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
+
+import avow
 
 
 def _cfg() -> dict[str, object]:
@@ -42,3 +45,12 @@ def test_base_dependencies_carry_no_cli_dep() -> None:
     assert isinstance(project, dict)
     base = " ".join(project["dependencies"])
     assert "typer" not in base
+
+
+def test_python_and_typescript_packages_carry_the_same_version() -> None:
+    # Given one `v*` tag that fans out to BOTH registries (see .github/workflows/publish.yml)
+    ts_version = json.loads(Path("ts/package.json").read_text(encoding="utf-8"))["version"]
+    # Then the two must agree: bumping only one would push an already-published version
+    # to the other registry, which npm and PyPI both reject — a release that fails at the
+    # very last step, long after the tag is public.
+    assert ts_version == avow.__version__

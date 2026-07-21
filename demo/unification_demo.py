@@ -1,6 +1,6 @@
 """Unification demo: ONE signed-receipt envelope + ONE verifier serve BOTH faces.
 
-The moat, made literal. Assay's *score* face signs "what a number is"; Writ's *effect*
+One envelope, two kinds of claim. Assay's *score* face signs "what a number is"; Writ's *effect*
 face signs "what an effect did" and gates the effect behind a typed policy. This demo
 produces one Assay score receipt and two Writ effect receipts (an allow and a deny),
 then verifies ALL THREE with the SAME ``verify_receipt(..., expected_public_key=...)``

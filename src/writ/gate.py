@@ -6,7 +6,7 @@ SAME ``SignedReceipt`` envelope and the SAME ``sign_payload`` / ``verify_signatu
 seam (see ``avow``): one envelope carries a score for one subject and an
 effect for another, with zero changes to the trust boundary. That is the unification.
 
-Governed effect (moat, stated honestly):
+How the effect is governed:
 
 * ``EffectSubject`` is Writ's signable subject — the effect-face analog of the score
   face's ``ReceiptPayload``.
@@ -23,7 +23,15 @@ captured by the gate closure. Same-process reflection (walking ``__closure__``, 
 could still reach it, so this is a *capability-holding approximation*, not enforcement.
 TRUE un-bypassability (a separate-process broker or a WASM guest, where the agent's
 address space cannot reach the credential) is the v1 hardening. Do not overclaim.
-The v0 policy decider is a Python predicate; OPA/Rego is the v1 decider."""
+The v0 policy decider is a Python predicate; OPA/Rego is the v1 decider.
+
+**Honest v0 caveat — ``args_digest`` is asserted by the caller, not bound.** The gate
+signs the digest it is handed and never recomputes it, because it never receives the
+raw arguments. A caller that submits a digest of one thing and performs another still
+gets a validly-signed receipt. So a receipt attests *"this signer claimed this action,
+target and digest, and the policy decided this"* — not *"these are the arguments the
+effect ran with"*. Binding it means the request carrying the real arguments and the
+gate deriving the digest, which changes ``EffectRequest``'s public shape: a v1 change."""
 
 from __future__ import annotations
 
@@ -40,9 +48,12 @@ type Decision = Literal["allow", "deny"]
 
 class EffectRequest(BaseModel):
     """What an agent asks the gate to perform. The credential to perform it is NOT
-    here — it lives inside the effector the agent never receives. ``args_digest`` is
-    a content hash of the real arguments, so the signed subject never carries raw
-    payloads."""
+    here — it lives inside the effector the agent never receives.
+
+    ``args_digest`` is the caller's *claim* about the arguments, kept as a hash so the
+    signed subject never carries raw payloads. The gate signs that claim without
+    checking it against anything (see this module's docstring): it is asserted, not
+    bound."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

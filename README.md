@@ -1,6 +1,6 @@
 # avow
 
-**Proof of what your software decided — a receipt nobody can edit afterwards.**
+**Proof of what your software decided — a receipt that is tamper-evident: edit it and it stops verifying.**
 
 ---
 
@@ -298,6 +298,32 @@ wrote receipt: receipt.json
 OK: receipt verified
 ```
 
+`score` also appended that receipt to `ledger.jsonl`. A ledger is checkable on its own —
+each entry is identified by the hash of its own contents, so an edit anywhere in the file
+is detectable **without the signing key**. Anyone holding the file can audit it:
+
+```bash
+assay verify-ledger --ledger ledger.jsonl
+```
+
+```
+OK: ledger verified, 1 entry intact
+```
+
+Now edit one stored score in the file — change `"score":1.0` to `"score":0.6`, the sort of
+quiet correction that leaves no trace in an ordinary log — and ask again:
+
+```bash
+assay verify-ledger --ledger ledger.jsonl
+```
+
+```
+FAIL: avow.ledger_integrity: tampered ledger entry: sha256:c63170d649d1c24bca47f91ca8b58a38bb49d3b37dce2b88d4c357b1d857a68a
+```
+
+Exit code `1`, and the coded cause names both the failure and the entry that caused it.
+The check re-derives every entry's hash and fails closed on the first disagreement.
+
 ## Honest limits
 
 Stated plainly, because each of these is a real boundary on what avow currently gives you.
@@ -314,6 +340,14 @@ Stated plainly, because each of these is a real boundary on what avow currently 
   is the v1 hardening. We claim no more than that.
 - **The v0 policy decider is a plain Python predicate** (`Allowlist`). OPA/Rego is the v1
   decider.
+- **`writ` signs the `args_digest` its caller hands it; it does not recompute it.** The
+  gate never sees the raw arguments, so it cannot check that the digest actually
+  describes them. A caller that passes a digest of one thing and performs another gets a
+  validly-signed receipt attesting the wrong arguments. What the receipt therefore
+  proves is "this signer claimed this action, target and digest, and the policy decided
+  this" — not "these are the arguments the effect ran with". Closing the gap means the
+  request carrying the real arguments and the gate deriving the digest itself; that
+  changes `EffectRequest`'s public shape, so it is a v1 change, not a patch.
 - **Browser key custody is same-origin, not hardware-backed.** In the browser build, keys
   are protected by the origin boundary alone — there is no secure element or OS keychain
   behind them.
@@ -397,10 +431,11 @@ signed denial receipt and never runs the effect; on **allow** the effector runs 
 effect, then seals a signed effect receipt. Both outcomes are verifiable through the
 shared envelope.
 
-`EffectRequest.args_digest` is a content hash of the real arguments, so the signed record
-never carries raw payloads.
+`EffectRequest.args_digest` is a hash rather than the arguments themselves, so the signed
+record never carries raw payloads. It is the caller's claim about those arguments: the
+gate signs it without recomputing it.
 
-See the honest limits above for exactly how far the enforcement seam goes in v0.
+See the honest limits above for exactly how far the enforcement seam and that digest go in v0.
 
 </details>
 
@@ -439,8 +474,8 @@ edges, and the native-vs-browser story.
 ## Status
 
 v0, deterministic — no LLM anywhere in the path. The full test pyramid is green under
-`uv run poe gate` (ruff, ruff-format, mypy `--strict`, xenon A, 100% coverage), and CI
-mirrors the gate. Read the honest limits above before depending on it.
+`uv run poe gate` (ruff, ruff-format, mypy `--strict`, xenon A, pytest with a coverage
+floor), and CI mirrors the gate. Read the honest limits above before depending on it.
 
 ## License
 

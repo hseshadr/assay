@@ -1,8 +1,7 @@
 """Smoke test: the package imports and exposes a semantic version.
 
-This is the green-baseline anchor. Real behavior arrives via the TDD plan in
-``docs/superpowers/plans/2026-07-19-assay-v0.md``.
-"""
+The cheapest possible failure signal — if this breaks, the package does not import at
+all and every richer test below it is reporting on nothing."""
 
 from __future__ import annotations
 

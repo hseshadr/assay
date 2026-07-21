@@ -6,7 +6,7 @@ One distribution `avow`, three import packages: `avow` (envelope), `assay` (scor
 1. `uv sync --all-extras` — installs all three faces + the CLI + tooling for dev.
 2. `uv run python demo/run_demo.py` — scoring face: six honesty acceptance cases.
 3. `uv run python demo/unification_demo.py` — one envelope + one verifier, both faces.
-4. `uv run poe gate` — ruff, ruff-format, mypy `--strict`, xenon A, tests (100% coverage).
+4. `uv run poe gate` — ruff, ruff-format, mypy `--strict`, xenon A, tests.
 
 Install matrix (for consumers):
 
@@ -23,6 +23,7 @@ uv run assay keygen --out signing.key                 # also writes signing.key.
 echo '{"metric":"binary","metric_version":"1","y_true":[0,1,0,1],"y_score":[0.2,0.8,0.3,0.7]}' > req.json
 uv run assay score --request req.json --key signing.key --out receipt.json --ledger ledger.jsonl
 uv run assay verify --receipt receipt.json --public-key signing.key.pub   # -> OK: receipt verified
+uv run assay verify-ledger --ledger ledger.jsonl   # -> OK: ledger verified, 1 entry intact
 ```
 
 Regenerate the cross-language golden vectors after any canonicalization change:
