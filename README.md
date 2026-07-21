@@ -352,15 +352,17 @@ assay verify-ledger --ledger ledger.jsonl
 OK: ledger verified, 1 entry intact
 ```
 
-Now edit one stored score in the file — change `"score":1.0` to `"score":0.6`, the sort of
-quiet correction that leaves no trace in an ordinary log — and ask again:
+Four samples is below the abstention floor, so that receipt honestly records
+`"abstained":true` and no score. Now edit the stored entry to claim a confident answer
+it never gave — change `"abstained":true` to `"abstained":false`, the sort of quiet
+correction that leaves no trace in an ordinary log — and ask again:
 
 ```bash
 assay verify-ledger --ledger ledger.jsonl
 ```
 
 ```
-FAIL: avow.ledger_integrity: tampered ledger entry: sha256:c63170d649d1c24bca47f91ca8b58a38bb49d3b37dce2b88d4c357b1d857a68a
+FAIL: avow.ledger_integrity: tampered ledger entry: sha256:d82e3eda6264eb298565019b54ceb9f29d5d5ca7453ef49fda8904203cf7a6d4
 ```
 
 Exit code `1`, and the coded cause names both the failure and the entry that caused it.

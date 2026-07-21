@@ -124,6 +124,47 @@ def test_should_verify_an_intact_ledger_through_the_cli(tmp_path: Path) -> None:
     assert "1" in result.stdout
 
 
+# The README's command-line walkthrough uses this exact four-sample request, which is
+# below the abstention floor. This test pins what that walkthrough actually produces, so
+# the documented tamper step cannot drift away from the file a reader really gets.
+_README_REQUEST = (
+    '{"metric":"binary","metric_version":"1","y_true":[0,1,0,1],"y_score":[0.2,0.8,0.3,0.7]}'
+)
+
+
+def test_should_detect_the_tamper_the_readme_walkthrough_documents(tmp_path: Path) -> None:
+    # Given the ledger the README's own walkthrough produces
+    key_path = tmp_path / "signing.key"
+    _RUNNER.invoke(app, ["keygen", "--out", str(key_path)])
+    request_path = tmp_path / "req.json"
+    request_path.write_text(_README_REQUEST)
+    ledger = tmp_path / "ledger.jsonl"
+    _RUNNER.invoke(
+        app,
+        [
+            "score",
+            "--request",
+            str(request_path),
+            "--key",
+            str(key_path),
+            "--out",
+            str(tmp_path / "receipt.json"),
+            "--ledger",
+            str(ledger),
+        ],
+    )
+    stored = ledger.read_text()
+    # Then it honestly recorded an abstention — the README tells the reader to edit
+    # this field, so it must actually be the field on disk
+    assert '"abstained":true' in stored
+    # When that abstention is flipped to claim a confident answer it never gave
+    ledger.write_text(stored.replace('"abstained":true', '"abstained":false'))
+    result = _RUNNER.invoke(app, ["verify-ledger", "--ledger", str(ledger)])
+    # Then the ledger check catches it, exactly as the README shows
+    assert result.exit_code == 1
+    assert "avow.ledger_integrity" in result.stdout
+
+
 def test_should_fail_closed_when_the_ledger_path_does_not_exist(tmp_path: Path) -> None:
     # Given a ledger path that was never written (a typo is indistinguishable from it)
     missing = tmp_path / "typo.jsonl"
