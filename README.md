@@ -1,162 +1,446 @@
-# Avow
+# avow
 
-**The trust kernel: one signed receipt, three Legos.**
+**Proof of what your software decided — a receipt nobody can edit afterwards.**
 
-Avow turns a claim into a **receipt you can check** — a small, signed record that
-proves *exactly what was claimed* and fails loudly if a single byte is changed. It
-ships as one installable distribution (`avow`) that exposes three import packages you
-can pick and choose:
+---
 
-| Package | It is… | Depends on | Install |
-|---|---|---|---|
-| **`avow`** | the shared **envelope** — sign, hash, verify a receipt | pydantic, pynacl, rfc8785 | `pip install avow` |
-| **`assay`** | the **scoring** face — an honest number, wrapped in a receipt | `avow` + scikit-learn/scipy/numpy | `pip install 'avow[assay]'` |
-| **`writ`** | the **effect** face — a policy-gated action, sealed as a receipt | `avow` only | `pip install avow` |
+Your card gets declined at a checkout.
 
-The command-line tool lives behind `pip install 'avow[cli]'`.
+You call the bank and ask why. Someone reads a reason off a screen: the fraud system
+scored the transaction as risky, so it blocked it.
 
-> **One rule you can hold in your head:** the envelope signs the *canonical bytes of a
-> frozen subject* and never looks inside. So the exact same sign/verify code carries a
-> score for the scoring face and an action for the effect face. One envelope, many
-> subjects. The dependency arrows only ever point **into** `avow` — `assay → avow` and
-> `writ → avow`; `avow` imports neither, which is why installing the envelope alone
-> never pulls the heavy science stack.
+But that reason is just a row in a database. Rows can be changed. Nobody — not you, not
+the bank's own auditor, not a regulator — can tell whether that number is what the
+software actually produced at the moment it blocked your card, or whether somebody
+adjusted it afterwards, once you complained.
 
-## Why it exists
+That is the gap `avow` closes.
 
-A raw claim — `f1 = 0.83`, or "I deleted account 7" — is a statement with no receipt.
-You cannot tell whether the score ran on 12 examples or 12,000, or whether the action
-was actually allowed. Avow wraps the claim in a **signed receipt** carrying the inputs'
-content hash and an Ed25519 signature. Anyone holding the receipt can re-check it
-offline — and verification fails if anything was tampered.
+## What it does
 
-**The trust boundary, stated honestly.** A receipt proves *payload integrity under some
-signer*. It does **not**, on its own, prove *authenticity* — the signer's public key
-rides in the receipt outside the signed bytes, so an attacker can re-sign a forged
-payload with their own key. Authenticity therefore requires **pinning the signer's
-public key out-of-band**: you pass the key you already trust (the `.pub` from `keygen`)
-to `verify`, and Avow rejects any receipt not signed by exactly that key. Never trust
-the key embedded in the receipt.
+When your software makes a decision, avow has it write a **receipt**: a small record of
+exactly what was decided, sealed with cryptography at the moment of the decision.
 
-## Quickstart (copy-paste)
+Think of a store receipt — except this one cannot be reprinted or altered. You can hand
+it to anyone. They can check it on their own laptop, offline, with no access to your
+database, and get one of two answers:
+
+- **valid** — this is exactly what the software decided, byte for byte
+- **invalid** — someone changed it
+
+There is no "close enough". Change one digit anywhere in it and the check fails.
+
+## See it catch a tampered record
 
 ```bash
-# dev setup (this repo installs all faces + tooling):
-uv sync --all-extras
-uv run poe gate                          # ruff · ruff-format · mypy --strict · xenon A · pytest (100%)
-uv run python demo/run_demo.py           # scoring face: 6 honesty acceptance cases
-uv run python demo/unification_demo.py   # ONE envelope + ONE verifier, BOTH faces
+pip install avow
 ```
-
-**Envelope only** — sign and verify any frozen subject (base install, no science stack):
 
 ```python
 from pydantic import BaseModel, ConfigDict
+
 from avow import generate_signing_key, public_key_hex, sign_payload, verify_signature
 
-class Claim(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    what: str
-    value: float
 
-key = generate_signing_key()
-pinned = public_key_hex(key)                 # pin this out-of-band
-receipt = sign_payload(Claim(what="f1", value=0.83), key)
-verify_signature(receipt, expected_public_key=pinned)   # raises on any tamper
+class FraudCheck(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    transaction_id: str
+    decision: str
+    risk_score: float
+    model_version: str
+
+
+key = generate_signing_key()        # the bank's private signing key
+trusted_key = public_key_hex(key)   # published once; this is what checkers pin
+
+receipt = sign_payload(
+    FraudCheck(
+        transaction_id="txn-9471",
+        decision="blocked",
+        risk_score=0.83,
+        model_version="fraud-v4",
+    ),
+    key,
+)
+
+verify_signature(receipt, expected_public_key=trusted_key)
+print("original receipt ..... VALID")
+
+# Someone edits the stored record to make the block look better justified.
+tampered = receipt.model_copy(
+    update={"payload": receipt.payload.model_copy(update={"risk_score": 0.99})}
+)
+
+try:
+    verify_signature(tampered, expected_public_key=trusted_key)
+    print("edited receipt ....... VALID  <- this must never happen")
+except Exception as exc:
+    print(f"edited receipt ....... REJECTED ({type(exc).__name__})")
 ```
 
-**Scoring face** (`pip install 'avow[assay]'`) — an honest number in a receipt:
+```
+original receipt ..... VALID
+edited receipt ....... REJECTED (ReplayMismatch)
+```
+
+Nudging `0.83` to `0.99` — a change that would be invisible in a database — makes the
+receipt fail to verify. That is the whole idea.
+
+## What a receipt proves, and what it does not
+
+This is the part most signing libraries gloss over, so read it before you rely on avow.
+
+A receipt proves **integrity**: the contents have not changed since they were signed.
+
+It does **not**, on its own, prove **authenticity** — that *your* system is the one that
+signed it.
+
+Here is why, concretely. The signer's public key travels inside the receipt, but
+*outside* the portion that is actually signed. So an attacker can write any payload they
+like, sign it with a key they generated themselves, and drop their own public key into
+the receipt. That forgery is internally consistent: its hash and its signature agree with
+each other perfectly.
+
+The only thing that stops it is **pinning** — deciding in advance which public key you
+trust, obtaining it through a separate channel (the `.pub` file from `keygen`, your
+config, your secret manager), and passing that key to the verifier:
 
 ```python
-from avow import generate_signing_key, public_key_hex
+from pydantic import BaseModel, ConfigDict
+
+from avow import generate_signing_key, public_key_hex, sign_payload, verify_signature
+
+
+class FraudCheck(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    transaction_id: str
+    decision: str
+    risk_score: float
+    model_version: str
+
+
+bank = generate_signing_key()
+trusted_key = public_key_hex(bank)      # what you pin, out-of-band
+
+attacker = generate_signing_key()       # a key anyone can make in one line
+forged = sign_payload(
+    FraudCheck(
+        transaction_id="txn-9471",
+        decision="approved",            # a total fabrication
+        risk_score=0.01,
+        model_version="fraud-v4",
+    ),
+    attacker,
+)
+
+# The forgery is internally consistent: its hash and signature agree with each other.
+print(f"forged receipt is self-consistent: {forged.payload_hash[:16]}... signed OK by attacker")
+
+try:
+    verify_signature(forged, expected_public_key=trusted_key)
+    print("forged receipt ....... VALID  <- this must never happen")
+except Exception as exc:
+    print(f"forged receipt ....... REJECTED ({type(exc).__name__})")
+
+# The ONLY reason it was rejected is that we pinned the bank's key.
+print(f"key inside forgery matches bank? {forged.public_key == trusted_key}")
+```
+
+```
+forged receipt is self-consistent: sha256:441280ee2... signed OK by attacker
+forged receipt ....... REJECTED (SignatureInvalid)
+key inside forgery matches bank? False
+```
+
+**Never trust the key embedded in the receipt.** It rides along for convenience; it is
+not the trust anchor. `verify_signature` *requires* you to pass the key you already
+trust, precisely so this mistake is hard to make by accident.
+
+## Three things you can sign
+
+Avow ships as one installable package with three importable pieces. The first is the
+core; the other two are ready-made shapes built on it.
+
+### 1. Anything — `avow`, the envelope
+
+Shown above. You define what a decision looks like, avow seals and checks it. It never
+looks inside your data, so the same sign-and-verify code works for any record.
+
+### 2. A measurement that refuses to overstate — `assay`
+
+A number like "our model is 89% accurate" is only meaningful if enough examples stood
+behind it. Measure 12 cases and you can get any number you like; it is noise.
+
+`assay` computes the score **and** its error bar, and when the sample is too thin it
+returns nothing at all rather than inventing a figure. Both outcomes come back inside a
+signed receipt.
+
+```bash
+pip install 'avow[assay]'
+```
+
+```python
+import random
+
 from assay import score, verify
 from assay.models import ScoreRequest
 from assay.settings import AssaySettings
+from avow import generate_signing_key, public_key_hex
 
 key = generate_signing_key()
-request = ScoreRequest(metric="binary", metric_version="1",
-                       y_true=(0, 1, 0, 1), y_score=(0.2, 0.8, 0.3, 0.7))
-receipt = score(request, signing_key=key, settings=AssaySettings())
-print(receipt.payload.score)   # calibrated point — or None when the sample is too thin
-assert verify(receipt, expected_public_key=public_key_hex(key)) is True
+settings = AssaySettings()  # sample-size floor: 30
+
+
+def evaluate(label: str, n: int) -> None:
+    rng = random.Random(7)
+    # a fraud model that is good, not perfect
+    y_true = tuple(int(rng.random() < 0.3) for _ in range(n))
+    y_score = tuple(min(1.0, max(0.0, rng.gauss(0.75 if t else 0.25, 0.22))) for t in y_true)
+
+    receipt = score(
+        ScoreRequest(metric="binary", metric_version="1", y_true=y_true, y_score=y_score),
+        signing_key=key,
+        settings=settings,
+    )
+    assert verify(receipt, expected_public_key=public_key_hex(key))
+
+    r = receipt.payload
+    if r.abstained:
+        print(f"{label:<10} n={n:<4} accuracy = (none) -- {r.abstain_reason}")
+    else:
+        print(
+            f"{label:<10} n={n:<4} accuracy = {r.score:.2f}  "
+            f"95% interval [{r.interval_low:.2f}, {r.interval_high:.2f}]"
+        )
+
+
+evaluate("pilot", 12)
+evaluate("full eval", 400)
 ```
 
-**Effect face** (`writ`, base install) — a policy-gated, sealed action:
+```
+pilot      n=12   accuracy = (none) -- assay.insufficient_samples
+full eval  n=400  accuracy = 0.89  95% interval [0.86, 0.92]
+```
+
+The pilot run declines to produce a number. The full run reports 0.89 *and* admits the
+true value is somewhere in [0.86, 0.92]. The receipt also carries precision, recall, F1,
+PR-AUC, ROC-AUC, and a calibration report — see the reference section.
+
+### 3. An action that was actually allowed — `writ`
+
+Before your code does something irreversible — delete a record, move money, send an email
+— `writ` checks a policy. If the policy says no, the action never runs. Either way you
+get a signed receipt of what was asked and what was decided, so "the agent deleted it"
+and "we blocked the agent" are both provable after the fact.
+
+This matters most when the caller is an AI agent you do not fully control.
 
 ```python
-from avow import generate_signing_key, public_key_hex, verify_signature
+from avow import content_hash, generate_signing_key, public_key_hex, verify_signature
 from writ import Allowlist, EffectRequest, KeyholderEffector, governed_gate
 
 key = generate_signing_key()
-def do_it(_req: EffectRequest) -> None: ...          # the privileged effect
-gate = governed_gate(Allowlist(frozenset({"read"})),
-                     KeyholderEffector(effect=do_it, signing_key=key))
-receipt = gate(EffectRequest(action="read", target="ledger-7", args_digest="sha256:abc"))
-verify_signature(receipt, expected_public_key=public_key_hex(key))
-print(receipt.payload.decision)                       # "allow" — or "deny", still sealed
+performed: list[str] = []  # stands in for the real system being changed
+
+
+def perform(request: EffectRequest) -> None:
+    """The privileged action. Reached ONLY through an allow decision."""
+    performed.append(f"{request.action} {request.target}")
+
+
+# The trusted host wires policy + action + key into the gate, then hands the agent
+# exactly one thing: the gate. The agent never receives the key or the action itself.
+agent_gate = governed_gate(
+    Allowlist(frozenset({"read"})),
+    KeyholderEffector(effect=perform, signing_key=key),
+)
+
+for action in ("read", "delete"):
+    receipt = agent_gate(
+        EffectRequest(
+            action=action,
+            target="customer-4471",
+            args_digest=content_hash({"reason": "agent cleanup task"}),
+        )
+    )
+    verify_signature(receipt, expected_public_key=public_key_hex(key))
+    print(f"agent asked to {action:<6} -> {receipt.payload.decision:<5} (signed receipt verified)")
+
+print(f"actually performed: {performed}")
 ```
 
-**CLI** (`pip install 'avow[cli]'`):
+```
+agent asked to read   -> allow (signed receipt verified)
+agent asked to delete -> deny  (signed receipt verified)
+actually performed: ['read customer-4471']
+```
+
+The denied delete produced a signed receipt but never touched the system.
+
+## Command line
+
+For signing and checking receipts without writing code:
 
 ```bash
-uv run assay keygen --out signing.key                 # also writes signing.key.pub
+pip install 'avow[cli]'
+
+assay keygen --out signing.key                 # also writes signing.key.pub
 echo '{"metric":"binary","metric_version":"1","y_true":[0,1,0,1],"y_score":[0.2,0.8,0.3,0.7]}' > req.json
-uv run assay score --request req.json --key signing.key --out receipt.json --ledger ledger.jsonl
-uv run assay verify --receipt receipt.json --public-key signing.key.pub   # -> OK: receipt verified
+assay score --request req.json --key signing.key --out receipt.json --ledger ledger.jsonl
+assay verify --receipt receipt.json --public-key signing.key.pub
 ```
 
-## Under the hood (for developers)
+```
+wrote signing key: signing.key
+wrote public key: signing.key.pub
+wrote receipt: receipt.json
+OK: receipt verified
+```
 
-**`avow` — the envelope.** `sign_payload` / `verify_signature` / `payload_digest`
-operate only on the canonical JSON of a frozen `SignedReceipt[SubjectT]` subject.
-Canonicalization is **RFC 8785 (JCS)** — a byte-stable JSON form — hashed with SHA-256
-and signed with **Ed25519** (`PyNaCl`). Payloads carry **no timestamp**, so identical
-inputs yield an identical, reproducible, offline-verifiable receipt. `avow.ledger` is an
-append-only, content-addressed JSONL log with a fail-closed integrity check, generic
-over the subject. Coded failures live in `avow.errors` (`avow.*` codes under `AvowError`).
+## Honest limits
 
-**`assay` — the scoring face.** A thin trust + honesty + composition layer over reused
-libraries (it computes no metric math itself): scikit-learn for precision/recall/F1,
-PR-AUC, ROC-AUC and Brier; `scipy.stats.bootstrap` for percentile intervals with a
-**sample-size floor** (below it, Assay abstains rather than invent a point estimate);
-population-weighted **ECE** for calibration; a positive-weighted composite with a
-propagated interval. `assay.receipt` defines the score subjects; the envelope signs
-them. Its errors are `assay.*` under `AssayError`. Import `assay` without the
-`[assay]` extra and you get a coded `ScoringExtraMissing`, never a raw traceback.
+Stated plainly, because each of these is a real boundary on what avow currently gives you.
 
-**`writ` — the effect face.** `writ.gate(request, policy, effector)` evaluates a typed
-policy: on **deny** it seals a signed denial receipt and never runs the effect; on
-**allow** the effector runs the effect, then seals a signed effect receipt — both
-verifiable through the shared envelope. The v0 policy decider is a Python predicate
-(`Allowlist`); **OPA/Rego is the v1 decider**.
+- **A receipt proves integrity, not authenticity, unless you pin the key.** See the
+  section above. This is the single easiest way to misuse the library.
+- **`writ`'s enforcement is in-process (v0).** The signing key and the privileged action
+  live only inside the effector, which the gate captures in a closure; the agent receives
+  the closure and never the effector, so the only route to the action is through the
+  guard. But the credential is still in the same process, so same-process reflection
+  (walking `__closure__`, for instance) could reach it. This is a capability-holding
+  *approximation*, not true enforcement. Real un-bypassability — a separate-process
+  broker or a WASM guest, where the caller's address space cannot reach the credential —
+  is the v1 hardening. We claim no more than that.
+- **The v0 policy decider is a plain Python predicate** (`Allowlist`). OPA/Rego is the v1
+  decider.
+- **Browser key custody is same-origin, not hardware-backed.** In the browser build, keys
+  are protected by the origin boundary alone — there is no secure element or OS keychain
+  behind them.
+- **Receipts carry no timestamp.** That is deliberate: it makes them reproducible (the
+  same inputs always yield the same receipt). It also means a receipt cannot tell you
+  *when* it was made. If you need that, record it outside the receipt or append to the
+  ledger.
 
-**Un-bypassable seam — stated honestly.** The effect credential and the privileged
-effect live only inside the effector, which `governed_gate` captures in the single
-closure the agent receives; the effector itself is never handed over, so the only path
-to the effect is through the guard. This is the **v0 capability-holding approximation**:
-the credential is still in-process, so same-process reflection could reach it. TRUE
-un-bypassable enforcement (a separate-process broker or a WASM guest, where the agent's
-address space cannot reach the credential) is the **v1 hardening**. We claim no more.
+## Reference
 
-**Signing-key custody.** `assay keygen` (and `avow.keys`) write a 32-byte Ed25519 seed
-to a `0600` file and the public key to a companion `.pub`. Keys are never logged and
-never committed (`*.key` is gitignored). The public key also travels inside each receipt
-for convenience, but that embedded copy is **not** the trust anchor — a verifier pins
-the out-of-band key and passes it to `verify`.
+<details>
+<summary><b>Packages and install matrix</b></summary>
 
-**Cross-language byte identity.** `testdata/vectors/` holds golden vectors generated by
-`tests/gen_vectors.py` (canonical bytes + hashes, and receipts signed with a fixed
-non-secret test seed). The Python suite replays them in `tests/test_vectors.py`; a
-future TypeScript `@edgeproc/avow` replays the *same files* byte-for-byte, so any RFC
-8785 number-serialization divergence fails in CI, not in production.
+One distribution, `avow`, exposes three import packages:
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the data-flow diagram, the
-import edges, and the native-vs-browser story.
+| Package | What it is | Depends on | Install |
+|---|---|---|---|
+| **`avow`** | the shared **envelope** — sign, hash, verify a receipt | pydantic, pynacl, rfc8785 | `pip install avow` |
+| **`assay`** | the **measurement** face — an honest number in a receipt | `avow` + scikit-learn/scipy/numpy | `pip install 'avow[assay]'` |
+| **`writ`** | the **action** face — a policy-gated effect, sealed as a receipt | `avow` only | `pip install avow` |
+
+Dependency arrows only ever point **into** `avow`: `assay → avow` and `writ → avow`.
+Avow imports neither, which is why installing the envelope alone never pulls in the heavy
+scientific stack. Importing `assay` without the `[assay]` extra raises a coded
+`ScoringExtraMissing`, not a raw `ModuleNotFoundError`.
+
+</details>
+
+<details>
+<summary><b>How the sealing works</b></summary>
+
+Some terms, each in one line:
+
+- **Content hash** — a short fingerprint of some data. Change any byte and the
+  fingerprint changes completely. Avow uses SHA-256.
+- **Canonicalization (RFC 8785 / JCS)** — one fixed way to write a JSON object as bytes,
+  so that the same data always produces the same bytes regardless of key order or
+  language. Without it, two systems could hash "the same" record differently.
+- **Ed25519** — a signature scheme. A private key signs; the matching public key checks.
+  Signing is deterministic: the same message and key always give the same signature.
+- **Frozen subject** — the record being signed, declared immutable so it cannot be
+  modified after signing.
+
+`sign_payload` / `verify_signature` / `payload_digest` operate only on the canonical JSON
+of a frozen subject, and never inspect its fields. That is why the same envelope carries a
+measurement for `assay` and an action for `writ` with no change to the trust boundary.
+
+Because payloads carry no timestamp, identical inputs yield an identical, reproducible,
+offline-verifiable receipt.
+
+`avow.ledger` is an append-only, content-addressed JSONL log with a fail-closed integrity
+check, generic over the subject. Coded failures live in `avow.errors` (`avow.*` codes
+under `AvowError`).
+
+</details>
+
+<details>
+<summary><b>Inside <code>assay</code></b></summary>
+
+A thin trust, honesty, and composition layer over reused libraries — it computes no
+metric math itself:
+
+- scikit-learn for precision, recall, F1, PR-AUC, ROC-AUC and Brier score
+- `scipy.stats.bootstrap` for percentile intervals, with a **sample-size floor**; below
+  it, assay abstains rather than invent a point estimate
+- population-weighted **ECE** (expected calibration error) for calibration
+- a positive-weighted composite with a propagated interval
+
+`assay.receipt` defines the measurement subjects; the envelope signs them. Errors are
+`assay.*` under `AssayError`. Every tunable — the sample floor, resample count,
+confidence level, bin count — lives in `AssaySettings` and is overridable via `ASSAY_*`
+environment variables.
+
+</details>
+
+<details>
+<summary><b>Inside <code>writ</code></b></summary>
+
+`writ.gate(request, policy, effector)` evaluates a typed policy. On **deny** it seals a
+signed denial receipt and never runs the effect; on **allow** the effector runs the
+effect, then seals a signed effect receipt. Both outcomes are verifiable through the
+shared envelope.
+
+`EffectRequest.args_digest` is a content hash of the real arguments, so the signed record
+never carries raw payloads.
+
+See the honest limits above for exactly how far the enforcement seam goes in v0.
+
+</details>
+
+<details>
+<summary><b>Key custody and cross-language vectors</b></summary>
+
+`assay keygen` (and `avow.keys`) write a 32-byte Ed25519 seed to a `0600` file and the
+public key to a companion `.pub`. Keys are never logged and never committed (`*.key` is
+gitignored). The public key also travels inside each receipt for convenience, but that
+embedded copy is **not** the trust anchor — a verifier pins the out-of-band key and passes
+it to `verify`.
+
+`testdata/vectors/` holds golden vectors generated by `tests/gen_vectors.py` (canonical
+bytes and hashes, plus receipts signed with a fixed non-secret test seed). The Python
+suite replays them in `tests/test_vectors.py`; the TypeScript `@edgeproc/avow` replays the
+*same files* byte for byte, so any RFC 8785 number-serialization divergence fails in CI
+rather than in production.
+
+</details>
+
+<details>
+<summary><b>Working on avow itself</b></summary>
+
+```bash
+uv sync --all-extras
+uv run poe gate                          # ruff, ruff-format, mypy --strict, xenon A, pytest
+uv run python demo/run_demo.py           # measurement face: 6 honesty acceptance cases
+uv run python demo/unification_demo.py   # one envelope + one verifier, both faces
+```
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the data-flow diagram, the import
+edges, and the native-vs-browser story.
+
+</details>
 
 ## Status
 
-v0 shipped — deterministic (no LLM). Full pyramid green under `uv run poe gate`
-(ruff, ruff-format, mypy `--strict`, xenon A, 100% coverage). CI mirrors the gate.
+v0, deterministic — no LLM anywhere in the path. The full test pyramid is green under
+`uv run poe gate` (ruff, ruff-format, mypy `--strict`, xenon A, 100% coverage), and CI
+mirrors the gate. Read the honest limits above before depending on it.
 
 ## License
 
