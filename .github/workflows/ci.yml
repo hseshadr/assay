@@ -59,9 +59,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # lint (biome) -> typecheck (tsc strict) -> vitest conformance -> build.
+      # lint (biome) -> typecheck (tsc strict) -> vitest conformance -> build,
+      # across every workspace package (avow + receipt-ui), not just the root.
       - name: Run the TS gate
-        run: pnpm gate
+        run: pnpm -r --include-workspace-root gate
 
   # Full-history secret scan.
   gitleaks:
