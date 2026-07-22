@@ -324,21 +324,10 @@ wrote receipt: receipt.json
 OK: receipt verified
 ```
 
-### Auditing the ledger — `verify-ledger` (unreleased)
+### Auditing the ledger — `verify-ledger`
 
-> **`verify-ledger` is not in the published release.** PyPI serves `avow` 0.1.0, which
-> has no `verify-ledger` command — running it there fails with
-> `No such command 'verify-ledger'`. It is on `main` and unreleased. Until the next
-> release is tagged, install from source:
->
-> ```bash
-> git clone https://github.com/hseshadr/assay.git
-> cd assay
-> pip install '.[cli]'      # Python 3.13+; use a fresh venv
-> assay verify-ledger --help
-> ```
->
-> Everything above this section works on the published 0.1.0.
+> `verify-ledger` ships in the published `avow` 0.1.1 — `pip install 'avow[cli]'`
+> (Python 3.13+; use a fresh venv) and run `assay verify-ledger --help`.
 
 `score` also appended that receipt to `ledger.jsonl`. A ledger is checkable on its own —
 each entry is identified by the hash of its own contents, so an edit anywhere in the file
@@ -541,9 +530,9 @@ ruff-format, mypy `--strict`, xenon A, pytest with statement *and* branch covera
 against a floor); `uv run poe gate-ts` covers the TypeScript package (biome, `tsc`
 strict, vitest, build). `uv run poe gate-all` runs both.
 
-Published releases: `avow` 0.1.0 on PyPI, `@edgeproc/avow` 0.1.0 on npm. `main` is ahead
-of both — see [`CHANGELOG.md`](CHANGELOG.md) for what is unreleased, and install from
-source to use it. Read the honest limits above before depending on any of it.
+Published releases: `avow` 0.1.1 on PyPI, `@edgeproc/avow` 0.1.1 on npm — see
+[`CHANGELOG.md`](CHANGELOG.md) for what each release contains. Read the honest limits
+above before depending on any of it.
 
 ## License
 

@@ -39,9 +39,8 @@ uv run assay verify --receipt receipt.json --public-key signing.key.pub   # -> O
 uv run assay verify-ledger --ledger ledger.jsonl   # -> OK: ledger verified, 1 entry intact
 ```
 
-`verify-ledger` is **not in the published 0.1.0** — it exists only on `main`, which is
-what the clone above gives you. Installing `avow[cli]` from PyPI and running it fails
-with `No such command 'verify-ledger'`. See [`CHANGELOG.md`](CHANGELOG.md).
+`verify-ledger` ships in the published 0.1.1 — `pip install 'avow[cli]'` from PyPI
+gives you the same command the clone above does. See [`CHANGELOG.md`](CHANGELOG.md).
 
 Pointed at a path it cannot read, `verify-ledger` fails closed with
 `avow.ledger_unreadable` rather than reporting zero entries intact.
