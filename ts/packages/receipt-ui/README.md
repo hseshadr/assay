@@ -49,6 +49,28 @@ and renders just the one-line verdict; `ReceiptPanel` adds the envelope metadata
 The verdict lives in the `useReceiptVerification` hook if you want to build your
 own presentation; `StatusPill` is the standalone verdict chip.
 
+## Localize
+
+Every rendered string is injectable: pass a `labels` object (type
+`ReceiptLabels`) to `StatusPill`, `ReceiptBadge` or `ReceiptPanel`. It is a
+deep partial — omit anything to keep the built-in English default:
+
+```tsx
+<ReceiptPanel
+  receipt={receipt}
+  expectedPublicKey={SIGNER_KEY}
+  labels={{
+    status: { verified: { text: t("receipt.verified") } },
+    panel: { receipt: t("receipt.section"), algorithm: t("receipt.algorithm") },
+  }}
+/>;
+```
+
+`labels.status` overrides the verdict chip per state (`checking` / `verified` /
+`invalid` / `wrong-key`, each `{ text?, icon? }`); `labels.panel` overrides the
+panel's meta strings (`receipt` — the section aria-label — plus `algorithm`,
+`signerKey`, `payloadHash`, `signature`).
+
 ## Develop
 
 ```sh

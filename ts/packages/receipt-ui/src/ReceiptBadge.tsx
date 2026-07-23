@@ -19,5 +19,5 @@ export function ReceiptBadge<S extends JsonValue>(
     props.expectedPublicKey,
     verify,
   );
-  return <StatusPill status={status} />;
+  return <StatusPill status={status} labels={props.labels} />;
 }
