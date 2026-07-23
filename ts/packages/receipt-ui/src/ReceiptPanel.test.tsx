@@ -49,6 +49,78 @@ describe("ReceiptPanel envelope metadata", () => {
   });
 });
 
+describe("ReceiptPanel injectable labels", () => {
+  const dtTexts = (region: HTMLElement) =>
+    Array.from(region.querySelectorAll("dt")).map((dt) => dt.textContent);
+
+  it("keeps the exact 0.1.0 meta labels and aria-label when labels is omitted", () => {
+    render(<ReceiptPanel receipt={valid} expectedPublicKey={signerKey} />);
+    const region = screen.getByRole("region", { name: "Signed receipt" });
+    expect(dtTexts(region)).toEqual([
+      "Algorithm",
+      "Signer key",
+      "Payload hash",
+      "Signature",
+    ]);
+  });
+
+  it("renders injected meta labels and section aria-label", () => {
+    render(
+      <ReceiptPanel
+        receipt={valid}
+        expectedPublicKey={signerKey}
+        labels={{
+          panel: {
+            receipt: "Signierter Beleg",
+            algorithm: "Algorithmus",
+            signerKey: "Schlüssel des Unterzeichners",
+            payloadHash: "Hash der Nutzdaten",
+            signature: "Signaturwert",
+          },
+        }}
+      />,
+    );
+    const region = screen.getByRole("region", { name: "Signierter Beleg" });
+    expect(dtTexts(region)).toEqual([
+      "Algorithmus",
+      "Schlüssel des Unterzeichners",
+      "Hash der Nutzdaten",
+      "Signaturwert",
+    ]);
+  });
+
+  it("merges partial panel labels with the English defaults", () => {
+    render(
+      <ReceiptPanel
+        receipt={valid}
+        expectedPublicKey={signerKey}
+        labels={{ panel: { algorithm: "Algorithmus" } }}
+      />,
+    );
+    const region = screen.getByRole("region", { name: "Signed receipt" });
+    expect(dtTexts(region)).toEqual([
+      "Algorithmus",
+      "Signer key",
+      "Payload hash",
+      "Signature",
+    ]);
+  });
+
+  it("forwards status labels to the embedded pill", async () => {
+    render(
+      <ReceiptPanel
+        receipt={valid}
+        expectedPublicKey={signerKey}
+        verify={() => Promise.resolve()}
+        labels={{ status: { verified: { text: "Vérifié" } } }}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain("Vérifié"),
+    );
+  });
+});
+
 describe("ReceiptPanel verification verdict", () => {
   it("embeds the status pill and reaches VERIFIED with a resolving verify", async () => {
     render(

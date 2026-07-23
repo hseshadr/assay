@@ -13,9 +13,12 @@ export { ReceiptBadge } from "./ReceiptBadge.js";
 export { ReceiptPanel } from "./ReceiptPanel.js";
 export { StatusPill } from "./StatusPill.js";
 export type {
+  PanelLabels,
+  ReceiptLabels,
   ReceiptPanelProps,
   ReceiptStatus,
   ReceiptVerificationProps,
+  StatusLabelOverride,
   VerifyFn,
 } from "./types.js";
 export { useReceiptVerification } from "./useReceiptVerification.js";

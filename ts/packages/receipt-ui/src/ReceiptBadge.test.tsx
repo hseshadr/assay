@@ -117,6 +117,23 @@ describe("ReceiptBadge fails closed and trusts the injected verify", () => {
   });
 });
 
+describe("ReceiptBadge injectable labels", () => {
+  it("forwards labels to the pill: injected verified text renders", async () => {
+    render(
+      <ReceiptBadge
+        receipt={valid}
+        expectedPublicKey={signerKey}
+        labels={{ status: { verified: { text: "Vérifié" } } }}
+      />,
+    );
+    await waitFor(() =>
+      expect(status().getAttribute("data-status")).toBe("verified"),
+    );
+    expect(status().textContent).toContain("Vérifié");
+    expect(status().textContent).not.toContain("Verified");
+  });
+});
+
 describe("ReceiptBadge accessibility", () => {
   it("exposes a status role and conveys state by text + icon, not color", async () => {
     render(<ReceiptBadge receipt={valid} expectedPublicKey={signerKey} />);

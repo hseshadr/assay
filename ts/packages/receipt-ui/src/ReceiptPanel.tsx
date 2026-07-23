@@ -17,31 +17,35 @@ const ALGORITHM = "Ed25519";
 export function ReceiptPanel<S extends JsonValue>(
   props: ReceiptPanelProps<S>,
 ): ReactElement {
-  const { receipt, expectedPublicKey, renderPayload } = props;
+  const { receipt, expectedPublicKey, renderPayload, labels } = props;
   const verify = props.verify ?? verifySignature;
   const status = useReceiptVerification(receipt, expectedPublicKey, verify);
+  const meta = labels?.panel;
   return (
-    <section aria-label="Signed receipt" className="receipt-panel">
-      <StatusPill status={status} />
+    <section
+      aria-label={meta?.receipt ?? "Signed receipt"}
+      className="receipt-panel"
+    >
+      <StatusPill status={status} labels={labels} />
       <dl className="receipt-panel__meta">
         <div className="receipt-panel__row">
-          <dt>Algorithm</dt>
+          <dt>{meta?.algorithm ?? "Algorithm"}</dt>
           <dd>{ALGORITHM}</dd>
         </div>
         <div className="receipt-panel__row">
-          <dt>Signer key</dt>
+          <dt>{meta?.signerKey ?? "Signer key"}</dt>
           <dd>
             <code>{shortenHex(receipt.public_key)}</code>
           </dd>
         </div>
         <div className="receipt-panel__row">
-          <dt>Payload hash</dt>
+          <dt>{meta?.payloadHash ?? "Payload hash"}</dt>
           <dd>
             <code>{shortenHex(receipt.payload_hash)}</code>
           </dd>
         </div>
         <div className="receipt-panel__row">
-          <dt>Signature</dt>
+          <dt>{meta?.signature ?? "Signature"}</dt>
           <dd>
             <code>{shortenHex(receipt.signature)}</code>
           </dd>
