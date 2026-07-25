@@ -10,6 +10,20 @@ from assay.cli import app
 _RUNNER = CliRunner()
 
 
+def _verify_ledger(tmp_path: Path, ledger: Path):
+    """Invoke verify-ledger with the keygen'd public key pinned out-of-band."""
+    return _RUNNER.invoke(
+        app,
+        [
+            "verify-ledger",
+            "--ledger",
+            str(ledger),
+            "--public-key",
+            str(tmp_path / "signing.key.pub"),
+        ],
+    )
+
+
 def _write_request(path: Path) -> None:
     y_true = [0, 1] * 20
     y_score = [0.2, 0.8] * 20
@@ -117,7 +131,7 @@ def test_should_verify_an_intact_ledger_through_the_cli(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.jsonl"
     _score_into(tmp_path, ledger)
     # When the ledger is verified through the CLI
-    result = _RUNNER.invoke(app, ["verify-ledger", "--ledger", str(ledger)])
+    result = _verify_ledger(tmp_path, ledger)
     # Then it passes and reports how many entries it checked
     assert result.exit_code == 0
     assert "OK" in result.stdout
@@ -159,17 +173,19 @@ def test_should_detect_the_tamper_the_readme_walkthrough_documents(tmp_path: Pat
     assert '"abstained":true' in stored
     # When that abstention is flipped to claim a confident answer it never gave
     ledger.write_text(stored.replace('"abstained":true', '"abstained":false'))
-    result = _RUNNER.invoke(app, ["verify-ledger", "--ledger", str(ledger)])
+    result = _verify_ledger(tmp_path, ledger)
     # Then the ledger check catches it, exactly as the README shows
     assert result.exit_code == 1
     assert "avow.ledger_integrity" in result.stdout
 
 
 def test_should_fail_closed_when_the_ledger_path_does_not_exist(tmp_path: Path) -> None:
-    # Given a ledger path that was never written (a typo is indistinguishable from it)
+    # Given a pinned public key but a ledger path that was never written (a typo is
+    # indistinguishable from it)
+    _RUNNER.invoke(app, ["keygen", "--out", str(tmp_path / "signing.key")])
     missing = tmp_path / "typo.jsonl"
     # When the ledger is verified through the CLI
-    result = _RUNNER.invoke(app, ["verify-ledger", "--ledger", str(missing)])
+    result = _verify_ledger(tmp_path, missing)
     # Then it exits non-zero and names the coded cause, rather than reporting
     # "0 entries intact" — a fail-open pass for a ledger it never read
     assert result.exit_code == 1
@@ -183,7 +199,7 @@ def test_should_fail_closed_when_the_ledger_was_tampered_on_disk(tmp_path: Path)
     _score_into(tmp_path, ledger)
     ledger.write_text(ledger.read_text().replace('"metric":"binary"', '"metric":"forged"'))
     # When the ledger is verified through the CLI
-    result = _RUNNER.invoke(app, ["verify-ledger", "--ledger", str(ledger)])
+    result = _verify_ledger(tmp_path, ledger)
     # Then it exits non-zero and names the coded cause
     assert result.exit_code == 1
     assert "avow.ledger_integrity" in result.stdout

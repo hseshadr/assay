@@ -44,7 +44,7 @@ def test_case2_should_verify_offline_and_recompute_the_score() -> None:
     receipt = score(request, signing_key=_KEY, settings=_settings())
     # When verified offline and replayed from the same inputs
     verified = verify(receipt, expected_public_key=_EXPECTED)
-    replayed = replay(request, receipt, settings=_settings())
+    replayed = replay(request, receipt)
     # Then the signature is valid and the score recomputes to the same value
     assert verified is True
     assert replayed is True

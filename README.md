@@ -326,15 +326,19 @@ OK: receipt verified
 
 ### Auditing the ledger — `verify-ledger`
 
-> `verify-ledger` ships in the published `avow` 0.1.1 — `pip install 'avow[cli]'`
-> (Python 3.13+; use a fresh venv) and run `assay verify-ledger --help`.
+> The signature-verifying `verify-ledger` lands in `avow` 0.2.0 (this repo). The
+> published 0.1.x shipped an earlier hash-only audit — upgrade for real tamper-evidence.
+> Install with `pip install 'avow[cli]'` (Python 3.13+; use a fresh venv) and run
+> `assay verify-ledger --help`.
 
-`score` also appended that receipt to `ledger.jsonl`. A ledger is checkable on its own —
-each entry is identified by the hash of its own contents, so an edit anywhere in the file
-is detectable **without the signing key**. Anyone holding the file can audit it:
+`score` also appended that receipt to `ledger.jsonl`. A ledger is checkable on its own,
+using the signer's **public** key — never the secret signing key. A content hash alone
+is not enough: an adversary who edits an entry can recompute its (public) hash, so
+tamper-evidence rests on the Ed25519 signature, which only the private seed can produce.
+Anyone holding the file and the public key can audit it:
 
 ```bash
-assay verify-ledger --ledger ledger.jsonl
+assay verify-ledger --ledger ledger.jsonl --public-key signing.key.pub
 ```
 
 ```
@@ -347,15 +351,16 @@ it never gave — change `"abstained":true` to `"abstained":false`, the sort of 
 correction that leaves no trace in an ordinary log — and ask again:
 
 ```bash
-assay verify-ledger --ledger ledger.jsonl
+assay verify-ledger --ledger ledger.jsonl --public-key signing.key.pub
 ```
 
 ```
-FAIL: avow.ledger_integrity: tampered ledger entry: sha256:d82e3eda6264eb298565019b54ceb9f29d5d5ca7453ef49fda8904203cf7a6d4
+FAIL: avow.ledger_integrity: tampered ledger entry: sha256:a2ada15199d7586958d9754a4adeba4d13a4e73122f9604f65a536fb4a4bad7e
 ```
 
 Exit code `1`, and the coded cause names both the failure and the entry that caused it.
-The check re-derives every entry's hash and fails closed on the first disagreement.
+The check re-derives every entry's hash **and** verifies its signature under the pinned
+key, failing closed on the first disagreement.
 
 A ledger it cannot read is also a failure, not a pass. Mistype the path and you get:
 
@@ -443,9 +448,10 @@ measurement for `assay` and an action for `writ` with no change to the trust bou
 Because payloads carry no timestamp, identical inputs yield an identical, reproducible,
 offline-verifiable receipt.
 
-`avow.ledger` is an append-only, content-addressed JSONL log with a fail-closed integrity
-check, generic over the subject. Coded failures live in `avow.errors` (`avow.*` codes
-under `AvowError`).
+`avow.ledger` is an append-only, content-addressed JSONL log whose fail-closed audit
+re-derives each entry's hash **and** verifies its Ed25519 signature against a pinned public
+key, generic over the subject. Coded failures live in `avow.errors` (`avow.*` codes under
+`AvowError`).
 
 </details>
 
@@ -471,10 +477,12 @@ environment variables.
 <details>
 <summary><b>Inside <code>writ</code></b></summary>
 
-`writ.gate(request, policy, effector)` evaluates a typed policy. On **deny** it seals a
-signed denial receipt and never runs the effect; on **allow** the effector runs the
-effect, then seals a signed effect receipt. Both outcomes are verifiable through the
-shared envelope.
+`writ.gate(request, policy, effector, *, emit=...)` evaluates a typed policy. On **deny**
+it seals a signed `not_run` receipt and never runs the effect. On **allow** it seals an
+`attempted` receipt and hands it to `emit` **before** running the effect, then runs it and
+seals the `succeeded` / `failed` outcome — so a failed or partial privileged effect always
+leaves a signed attestation of the attempt. Wire `emit` to `avow.ledger.append` for
+durable, atomic capture; every sealed receipt is verifiable through the shared envelope.
 
 `EffectRequest.args_digest` is a hash rather than the arguments themselves, so the signed
 record never carries raw payloads. It is the caller's claim about those arguments: the
@@ -498,6 +506,10 @@ bytes and hashes, plus receipts signed with a fixed non-secret test seed). The P
 suite replays them in `tests/test_vectors.py`; the TypeScript `@edgeproc/avow` replays the
 *same files* byte for byte, so any RFC 8785 number-serialization divergence fails in CI
 rather than in production.
+
+`@edgeproc/receipt-ui` (in `ts/packages/receipt-ui`) is the browser rendering layer: small,
+fail-closed React components that verify a receipt against a pinned key and show the
+verdict, built on the TypeScript `@edgeproc/avow` envelope above.
 
 </details>
 
@@ -530,7 +542,8 @@ ruff-format, mypy `--strict`, xenon A, pytest with statement *and* branch covera
 against a floor); `uv run poe gate-ts` covers the TypeScript package (biome, `tsc`
 strict, vitest, build). `uv run poe gate-all` runs both.
 
-Published releases: `avow` 0.1.1 on PyPI, `@edgeproc/avow` 0.1.1 on npm — see
+Published releases: `avow` 0.1.1 on PyPI, `@edgeproc/avow` 0.1.1 on npm (0.2.0 prepared
+in this repo, not yet released) — see
 [`CHANGELOG.md`](CHANGELOG.md) for what each release contains. Read the honest limits
 above before depending on any of it.
 

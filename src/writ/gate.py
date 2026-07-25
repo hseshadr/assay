@@ -10,9 +10,13 @@ How the effect is governed:
 
 * ``EffectSubject`` is Writ's signable subject — the effect-face analog of the score
   face's ``ReceiptPayload``.
-* ``gate`` evaluates a typed ``Policy``. On **deny** it seals a signed denial receipt
-  and never runs the effect; on **allow** the effector runs the effect, then seals a
-  signed effect receipt. Both outcomes are verifiable through the shared envelope.
+* ``gate`` evaluates a typed ``Policy``. On **deny** it seals a signed ``not_run``
+  receipt and never runs the effect. On **allow** it seals an ``attempted`` receipt and
+  emits it BEFORE running the effect, then runs the effect and seals the ``succeeded`` /
+  ``failed`` outcome — so a failed or partial privileged effect always leaves a signed
+  attestation of the attempt, never a silent gap. Every sealed receipt flows to the
+  optional ``emit`` sink; wire it to the ledger for durable, atomic attestation. All are
+  verifiable through the shared envelope.
 * ``KeyholderEffector`` is the sole holder of the effect credential (the signing key)
   *and* of the privileged effect. ``governed_gate`` binds policy + effector into the
   single closure the agent receives; the effector is captured, never passed, so the
@@ -45,6 +49,11 @@ from avow import SignedReceipt, sign_payload
 
 type Decision = Literal["allow", "deny"]
 
+# What became of the effect. ``not_run`` = denied (or an allowed effect never reached);
+# ``attempted`` = sealed the instant before the effect ran; ``succeeded`` / ``failed`` =
+# sealed after it returned or threw. Signed into the subject, so the outcome is attested.
+type Outcome = Literal["not_run", "attempted", "succeeded", "failed"]
+
 
 class EffectRequest(BaseModel):
     """What an agent asks the gate to perform. The credential to perform it is NOT
@@ -72,6 +81,7 @@ class EffectSubject(BaseModel):
     target: str
     args_digest: str
     decision: Decision
+    outcome: Outcome
 
 
 # The effect face's concrete envelope: ``SignedReceipt`` parametrized with the effect
@@ -80,6 +90,15 @@ EffectReceipt = SignedReceipt[EffectSubject]
 
 # The privileged side-effect the gate guards. It runs ONLY on an allow decision.
 type Effect = Callable[[EffectRequest], None]
+
+# Where each sealed receipt is recorded as the gate produces it. The default drops them
+# (return-only); wire it to durable storage (e.g. ``avow.ledger.append``) so the
+# ``attempted`` receipt survives even when the effect later throws.
+type Sink = Callable[[EffectReceipt], None]
+
+
+def _noop(_: EffectReceipt) -> None:
+    """Default sink: keep the return-only contract for callers that don't record."""
 
 
 class Policy(Protocol):
@@ -129,30 +148,63 @@ class KeyholderEffector:
         return sign_payload(subject, self._signing_key)
 
 
-def _subject(request: EffectRequest, decision: Decision) -> EffectSubject:
+def _subject(request: EffectRequest, decision: Decision, outcome: Outcome) -> EffectSubject:
     return EffectSubject(
         action=request.action,
         target=request.target,
         args_digest=request.args_digest,
         decision=decision,
+        outcome=outcome,
     )
 
 
-def gate(request: EffectRequest, policy: Policy, effector: Effector) -> EffectReceipt:
-    """Govern one effect: evaluate the policy, run the effect ONLY on allow, and seal
-    a signed, verifiable receipt for BOTH outcomes via the shared envelope."""
-    decision: Decision = "allow" if policy.permits(request) else "deny"
-    if decision == "allow":
+def _seal(
+    effector: Effector,
+    request: EffectRequest,
+    decision: Decision,
+    outcome: Outcome,
+    emit: Sink,
+) -> EffectReceipt:
+    """Seal one outcome receipt and hand it to the sink before returning it."""
+    receipt = effector.seal(_subject(request, decision, outcome))
+    emit(receipt)
+    return receipt
+
+
+def _run_and_seal(request: EffectRequest, effector: Effector, emit: Sink) -> EffectReceipt:
+    """Run an allowed effect and seal its outcome; on a throw, seal ``failed`` then
+    re-raise so the failure is both attested and never silently swallowed."""
+    try:
         effector.run(request)
-    return effector.seal(_subject(request, decision))
+    except Exception:
+        _seal(effector, request, "allow", "failed", emit)
+        raise
+    return _seal(effector, request, "allow", "succeeded", emit)
 
 
-def governed_gate(policy: Policy, effector: Effector) -> Callable[[EffectRequest], EffectReceipt]:
+def gate(
+    request: EffectRequest, policy: Policy, effector: Effector, *, emit: Sink = _noop
+) -> EffectReceipt:
+    """Govern one effect atomically. On deny, seal a ``not_run`` receipt. On allow, seal
+    an ``attempted`` receipt and emit it BEFORE running the effect, then run and seal the
+    ``succeeded`` / ``failed`` outcome — so a failed or partial effect still leaves a
+    signed attestation. Each sealed receipt flows to ``emit`` (wire it to the ledger for
+    durable capture); all are verifiable via the shared envelope."""
+    if not policy.permits(request):
+        return _seal(effector, request, "deny", "not_run", emit)
+    _seal(effector, request, "allow", "attempted", emit)
+    return _run_and_seal(request, effector, emit)
+
+
+def governed_gate(
+    policy: Policy, effector: Effector, *, emit: Sink = _noop
+) -> Callable[[EffectRequest], EffectReceipt]:
     """Bind policy + effector into the ONLY handle the agent receives. The effector
     (holding the credential and the effect) is captured, never exposed, so the sole
-    path to the effect is back through this guard."""
+    path to the effect is back through this guard. ``emit`` is threaded to ``gate`` so
+    the bound handle records its attestations durably too."""
 
     def bound(request: EffectRequest) -> EffectReceipt:
-        return gate(request, policy, effector)
+        return gate(request, policy, effector, emit=emit)
 
     return bound

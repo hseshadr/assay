@@ -15,7 +15,9 @@ from writ.gate import (
     EffectRequest,
     EffectSubject,
     KeyholderEffector,
+    Outcome,
     Policy,
+    Sink,
     gate,
     governed_gate,
 )
@@ -29,7 +31,9 @@ __all__ = [
     "EffectSubject",
     "Effector",
     "KeyholderEffector",
+    "Outcome",
     "Policy",
+    "Sink",
     "gate",
     "governed_gate",
 ]

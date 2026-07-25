@@ -75,7 +75,7 @@ def _case_reproducible(key: SigningKey, settings: AssaySettings) -> None:
 def _case_offline_verify(key: SigningKey, settings: AssaySettings) -> None:
     receipt = score(_big_request(), signing_key=key, settings=settings)
     assert verify(receipt, expected_public_key=_pubkey(key)) is True
-    assert replay(_big_request(), receipt, settings=settings) is True
+    assert replay(_big_request(), receipt) is True
     print("[2] offline verify + replay: signature valid, score recomputes")
 
 
@@ -110,7 +110,7 @@ def _case_calibration(key: SigningKey, settings: AssaySettings) -> None:
     calibration = receipt.payload.calibration
     assert calibration is not None
     assert math.isclose(calibration.ece, 0.2)  # float aggregate: compare with tolerance
-    print(f"[5] calibration shipped: ECE={calibration.ece}, Brier={calibration.brier}")
+    print(f"[5] calibration shipped: ECE={calibration.ece:.4f}, Brier={calibration.brier:.4f}")
 
 
 def _case_composite(key: SigningKey) -> None:
