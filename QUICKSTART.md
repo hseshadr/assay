@@ -36,11 +36,16 @@ uv run assay keygen --out signing.key                 # also writes signing.key.
 echo '{"metric":"binary","metric_version":"1","y_true":[0,1,0,1],"y_score":[0.2,0.8,0.3,0.7]}' > req.json
 uv run assay score --request req.json --key signing.key --out receipt.json --ledger ledger.jsonl
 uv run assay verify --receipt receipt.json --public-key signing.key.pub   # -> OK: receipt verified
-uv run assay verify-ledger --ledger ledger.jsonl   # -> OK: ledger verified, 1 entry intact
+uv run assay verify-ledger --ledger ledger.jsonl --public-key signing.key.pub   # -> OK: ledger verified, 1 entry intact
 ```
 
-`verify-ledger` ships in the published 0.1.1 — `pip install 'avow[cli]'` from PyPI
-gives you the same command the clone above does. See [`CHANGELOG.md`](CHANGELOG.md).
+The `keygen` step in line 1 wrote `signing.key.pub`, so a cold clone already has the public
+key `verify-ledger` needs.
+
+The **keyed** `verify-ledger` shown above — the one that requires `--public-key` and checks
+each entry's Ed25519 signature — is `avow` 0.2.0 (this repo, unreleased). The published
+0.1.1 (`pip install 'avow[cli]'` from PyPI) ships an earlier `verify-ledger` that is
+hash-only and takes no `--public-key`. See [`CHANGELOG.md`](CHANGELOG.md).
 
 Pointed at a path it cannot read, `verify-ledger` fails closed with
 `avow.ledger_unreadable` rather than reporting zero entries intact.

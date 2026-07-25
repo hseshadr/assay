@@ -542,10 +542,12 @@ ruff-format, mypy `--strict`, xenon A, pytest with statement *and* branch covera
 against a floor); `uv run poe gate-ts` covers the TypeScript package (biome, `tsc`
 strict, vitest, build). `uv run poe gate-all` runs both.
 
-Published releases: `avow` 0.1.1 on PyPI, `@edgeproc/avow` 0.1.1 on npm (0.2.0 prepared
-in this repo, not yet released) — see
-[`CHANGELOG.md`](CHANGELOG.md) for what each release contains. Read the honest limits
-above before depending on any of it.
+Published releases: `avow` 0.1.1 on PyPI and `@edgeproc/avow` 0.1.1 on npm (0.2.0 prepared
+in this repo, not yet released); `@edgeproc/receipt-ui` 0.1.0 on npm (0.2.0, adding the
+injectable `labels` i18n prop, prepared in this repo, not yet released) — see
+[`CHANGELOG.md`](CHANGELOG.md) and
+[`ts/packages/receipt-ui/CHANGELOG.md`](ts/packages/receipt-ui/CHANGELOG.md) for what each
+release contains. Read the honest limits above before depending on any of it.
 
 ## License
 
