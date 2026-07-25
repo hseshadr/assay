@@ -10,6 +10,7 @@ from nacl.signing import SigningKey
 from assay.calibration import CalibrationReport, calibration_report
 from assay.composite import SubScore, composite
 from assay.errors import (
+    CanonicalizationFailed,
     InsufficientSamples,
     ReplayMismatch,
     SignatureInvalid,
@@ -21,6 +22,7 @@ from assay.receipt import (
     CalibrationDetail,
     ClassificationDetail,
     CompositeDetail,
+    DeterminismSettings,
     ReceiptPayload,
     ReliabilityPoint,
     ScoreReceipt,
@@ -87,6 +89,17 @@ def _estimate(request: ScoreRequest, settings: AssaySettings) -> Estimate:
     )
 
 
+def _determinism(settings: AssaySettings) -> DeterminismSettings:
+    """The determinism-affecting settings, recorded into the signed payload."""
+    return DeterminismSettings(
+        min_samples=settings.min_samples,
+        bootstrap_resamples=settings.bootstrap_resamples,
+        confidence_level=settings.confidence_level,
+        ece_bins=settings.ece_bins,
+        bootstrap_seed=settings.bootstrap_seed,
+    )
+
+
 def _classification_payload(request: ScoreRequest, settings: AssaySettings) -> ReceiptPayload:
     scores = binary_scores(request.y_true, request.y_score, threshold=request.threshold)
     report = calibration_report(request.y_true, request.y_score, n_bins=settings.ece_bins)
@@ -101,6 +114,7 @@ def _classification_payload(request: ScoreRequest, settings: AssaySettings) -> R
         interval_high=high,
         abstained=abstained,
         abstain_reason=InsufficientSamples.code if abstained else None,
+        determinism=_determinism(settings),
         classification=_classification_detail(scores),
         calibration=_calibration_detail(report),
     )
@@ -158,12 +172,33 @@ def verify(receipt: ScoreReceipt, *, expected_public_key: str) -> bool:
     receipt itself, whose embedded key an attacker could swap."""
     try:
         verify_receipt(receipt, expected_public_key=expected_public_key)
-    except (SignatureInvalid, ReplayMismatch):
+    except (SignatureInvalid, ReplayMismatch, CanonicalizationFailed):
         return False
     return True
 
 
-def replay(request: ScoreRequest, receipt: ScoreReceipt, *, settings: AssaySettings) -> bool:
-    """Recompute the payload from inputs and confirm it reproduces the signed hash."""
+def _settings_for_replay(determinism: DeterminismSettings | None) -> AssaySettings:
+    """Rebuild the settings a classification receipt was computed under, from what it
+    recorded. A receipt that records none is not one this can reproduce, so we fail
+    explicitly rather than silently returning a mismatch."""
+    if determinism is None:
+        raise ReplayMismatch("receipt records no determinism settings to replay")
+    return AssaySettings(
+        min_samples=determinism.min_samples,
+        bootstrap_resamples=determinism.bootstrap_resamples,
+        confidence_level=determinism.confidence_level,
+        ece_bins=determinism.ece_bins,
+        bootstrap_seed=determinism.bootstrap_seed,
+    )
+
+
+def replay(request: ScoreRequest, receipt: ScoreReceipt) -> bool:
+    """Recompute the payload from the request AND the settings recorded IN the receipt,
+    then confirm it reproduces the signed hash.
+
+    Unconditional: no ambient settings need to match, because the determinism-affecting
+    settings are signed into the receipt. A receipt computed under different settings is
+    a *different, explicitly-recorded* receipt — never a silent replay failure."""
+    settings = _settings_for_replay(receipt.payload.determinism)
     recomputed = _classification_payload(request, settings)
     return payload_digest(recomputed) == receipt.payload_hash

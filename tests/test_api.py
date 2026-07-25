@@ -4,7 +4,7 @@ import pytest
 from nacl.signing import SigningKey
 
 from assay.api import composite_score, replay, score, verify
-from assay.errors import InsufficientSamples, UnknownMetric
+from assay.errors import InsufficientSamples, ReplayMismatch, UnknownMetric
 from assay.models import CompositeRequest, ScoreRequest, SubScoreInput
 from assay.receipt import sign_payload
 from assay.settings import AssaySettings
@@ -36,7 +36,59 @@ def test_should_produce_and_verify_a_classification_receipt() -> None:
     assert receipt.payload.score == 1.0
     assert receipt.payload.abstained is False
     assert receipt.payload.calibration is not None
-    assert replay(request, receipt, settings=AssaySettings()) is True
+    assert replay(request, receipt) is True
+
+
+def _mixed_request() -> ScoreRequest:
+    # 40 samples above the floor, only 30/40 correct, so the confidence interval genuinely
+    # depends on the determinism-affecting settings (a perfectly separated set has a
+    # degenerate interval that would hide the settings dependence this test exposes).
+    y_true = tuple([0] * 20 + [1] * 20)
+    y_score = tuple([0.2] * 15 + [0.8] * 5 + [0.8] * 15 + [0.2] * 5)
+    return ScoreRequest(metric="binary", metric_version="1", y_true=y_true, y_score=y_score)
+
+
+def test_replay_is_unconditional_and_records_the_determinism_settings() -> None:
+    request = _mixed_request()
+    # Sealed under a specific determinism-affecting setting (the confidence level)
+    receipt = score(request, signing_key=_KEY, settings=AssaySettings(confidence_level=0.95))
+    # The receipt records the exact settings it was computed under — explicit and signed
+    assert receipt.payload.determinism is not None
+    assert receipt.payload.determinism.confidence_level == 0.95
+    # Replay recomputes from the request + the RECORDED settings, so it reproduces
+    # unconditionally: no ambient AssaySettings has to be threaded back in
+    assert replay(request, receipt) is True
+
+
+def test_changed_env_is_explicit_in_the_receipt_not_a_silent_replay_failure() -> None:
+    request = _mixed_request()
+    tight = score(request, signing_key=_KEY, settings=AssaySettings(confidence_level=0.95))
+    wide = score(request, signing_key=_KEY, settings=AssaySettings(confidence_level=0.80))
+    # A determinism-affecting change yields a DIFFERENT receipt whose recorded settings
+    # make the difference explicit — not a silent replay mismatch
+    assert tight.payload.determinism != wide.payload.determinism
+    assert tight.payload_hash != wide.payload_hash
+    # ...yet each still replays against ITS OWN recorded settings, unconditionally
+    assert replay(request, tight) is True
+    assert replay(request, wide) is True
+    # A change to an IRRELEVANT setting (the ledger path) does not change the receipt
+    moved = score(
+        request,
+        signing_key=_KEY,
+        settings=AssaySettings(confidence_level=0.95, ledger_path="somewhere-else.jsonl"),
+    )
+    assert moved.payload_hash == tight.payload_hash
+
+
+def test_replay_refuses_a_receipt_that_records_no_determinism_settings() -> None:
+    # Given a classification receipt with no recorded determinism settings (produced
+    # before the settings were signed in, or carrying a non-classification subject)
+    request = _mixed_request()
+    receipt = score(request, signing_key=_KEY, settings=AssaySettings())
+    stripped = sign_payload(receipt.payload.model_copy(update={"determinism": None}), _KEY)
+    # Then replay refuses it explicitly rather than silently reporting a mismatch
+    with pytest.raises(ReplayMismatch):
+        replay(request, stripped)
 
 
 def test_should_reject_a_forgery_resigned_with_an_attacker_key() -> None:

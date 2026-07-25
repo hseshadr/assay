@@ -71,6 +71,25 @@ class CompositeDetail(BaseModel):
     parts: tuple[SubScorePart, ...]
 
 
+class DeterminismSettings(BaseModel):
+    """The settings that determine a classification receipt's numbers, recorded INSIDE
+    the signed payload so replay is unconditional.
+
+    ``inputs_hash`` covers only the request, but the score, interval and ECE also depend
+    on these knobs. Signing them here means anyone can recompute from the request plus
+    THESE settings and reproduce the receipt — no ambient environment has to match — and
+    a receipt computed under different knobs is explicitly different, never a silent
+    replay failure. Composite receipts leave this ``None``: they read no settings."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    min_samples: int
+    bootstrap_resamples: int
+    confidence_level: float
+    ece_bins: int
+    bootstrap_seed: int
+
+
 class ReceiptPayload(BaseModel):
     """The deterministic, signable content of a score receipt (no wall-clock time).
 
@@ -88,6 +107,7 @@ class ReceiptPayload(BaseModel):
     interval_high: float | None = None
     abstained: bool = False
     abstain_reason: str | None = None
+    determinism: DeterminismSettings | None = None
     classification: ClassificationDetail | None = None
     calibration: CalibrationDetail | None = None
     composite: CompositeDetail | None = None
@@ -101,6 +121,7 @@ __all__ = [
     "CalibrationDetail",
     "ClassificationDetail",
     "CompositeDetail",
+    "DeterminismSettings",
     "ReceiptPayload",
     "ReliabilityPoint",
     "ScoreReceipt",

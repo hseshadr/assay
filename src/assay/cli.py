@@ -114,16 +114,23 @@ def verify(
 
 @app.command()
 def verify_ledger(
+    public_key: Annotated[
+        Path,
+        typer.Option("--public-key", help="Pinned signer public-key file (the .pub from keygen)."),
+    ],
     ledger: Annotated[Path, typer.Option("--ledger", help="Ledger JSONL path.")] = Path(
         _SETTINGS.ledger_path
     ),
 ) -> None:
-    """Re-derive every ledger entry's hash and fail closed if one was edited on disk.
+    """Re-derive every ledger entry's hash AND verify its signature, failing closed if
+    one was edited on disk.
 
-    This needs no key: identity is the content hash, so on-disk tampering is
-    detectable by anyone holding the file, signer or not."""
+    This needs the signer's PUBLIC key, never the secret signing key. An adversary can
+    recompute an entry's content hash, so tamper-evidence rests on the Ed25519 signature
+    — which only the private seed can produce — verified here against the pinned key."""
     try:
-        entries = verify_integrity(ledger, ScoreReceipt)
+        pinned = read_public_key(public_key)
+        entries = verify_integrity(ledger, ScoreReceipt, expected_public_key=pinned)
     except AvowError as exc:
         _fail(exc)
     noun = "entry" if len(entries) == 1 else "entries"

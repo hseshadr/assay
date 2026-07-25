@@ -61,6 +61,17 @@ describe("StatusPill injectable labels", () => {
     expect(iconOf()?.textContent).toBe(DEFAULTS.verified.icon);
   });
 
+  it("ignores a blank text/icon override and keeps the default verdict (never empty)", () => {
+    render(
+      <StatusPill
+        status="verified"
+        labels={{ status: { verified: { text: "  ", icon: "" } } }}
+      />,
+    );
+    expect(textOf()?.textContent).toBe(DEFAULTS.verified.text);
+    expect(iconOf()?.textContent).toBe(DEFAULTS.verified.icon);
+  });
+
   it("falls back to the default for states the override does not name", () => {
     render(
       <StatusPill

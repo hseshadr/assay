@@ -44,7 +44,13 @@ def test_should_reject_a_decision_that_is_not_allow_or_deny() -> None:
     # Given a subject built with an out-of-vocabulary decision
     # Then the Literal["allow","deny"] contract rejects it at the boundary
     with pytest.raises(ValidationError):
-        EffectSubject(action="read", target="t", args_digest="sha256:abc", decision="maybe")  # type: ignore[arg-type]
+        EffectSubject(
+            action="read",
+            target="t",
+            args_digest="sha256:abc",
+            decision="maybe",  # type: ignore[arg-type]
+            outcome="not_run",
+        )
 
 
 def test_should_allowlist_permit_listed_actions_and_deny_others() -> None:
@@ -100,11 +106,33 @@ def test_should_reject_a_writ_receipt_under_a_different_pinned_key() -> None:
 def test_should_seal_with_the_held_credential_only() -> None:
     # Given a keyholder effector sealing a subject directly
     _, effect = _recorder()
-    subject = EffectSubject(action="read", target="t", args_digest="sha256:abc", decision="allow")
+    subject = EffectSubject(
+        action="read", target="t", args_digest="sha256:abc", decision="allow", outcome="succeeded"
+    )
     receipt: EffectReceipt = _effector(effect).seal(subject)
     # Then the receipt is signed by the effector's held key (its embedded pubkey matches)
     assert receipt.public_key == _EXPECTED
     verify_signature(receipt, expected_public_key=_EXPECTED)
+
+
+def test_should_attest_the_attempt_before_running_an_effect_that_throws() -> None:
+    # Given an allowed effect that throws when run
+    sealed: list[EffectReceipt] = []
+
+    def boom(_: EffectRequest) -> None:
+        raise RuntimeError("effect blew up mid-flight")
+
+    effector = KeyholderEffector(effect=boom, signing_key=SigningKey(_SEED))
+    # When the privileged effect fails part-way
+    with pytest.raises(RuntimeError):
+        gate(_request("read"), Allowlist(frozenset({"read"})), effector, emit=sealed.append)
+    # Then an attestation recording the ATTEMPT still exists — sealed BEFORE the effect
+    # ran — plus one recording the failure, so a partial effect leaves a signed trail
+    outcomes = [r.payload.outcome for r in sealed]
+    assert "attempted" in outcomes
+    assert "failed" in outcomes
+    for receipt in sealed:
+        verify_signature(receipt, expected_public_key=_EXPECTED)
 
 
 def test_should_hand_the_agent_only_a_gate_that_hides_the_credential() -> None:

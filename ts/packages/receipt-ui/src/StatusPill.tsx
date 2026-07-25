@@ -18,6 +18,12 @@ const DEFAULT_LABELS: Record<ReceiptStatus, Label> = {
   "wrong-key": { icon: "⚠", text: "Not verified — untrusted signer" },
 };
 
+// `??` only falls back on null/undefined, so a blank ("" or whitespace) override would
+// blank out the verdict — the one thing a fail-closed status chip must never do. Treat a
+// blank override as "unset" and keep the built-in default.
+const nonBlank = (value: string | undefined): string | undefined =>
+  value !== undefined && value.trim() !== "" ? value : undefined;
+
 /** The presentational status chip: a live `role="status"` region, icon + text. */
 export function StatusPill({
   status,
@@ -28,8 +34,8 @@ export function StatusPill({
   labels?: ReceiptLabels | undefined;
 }): ReactElement {
   const override = labels?.status?.[status];
-  const icon = override?.icon ?? DEFAULT_LABELS[status].icon;
-  const text = override?.text ?? DEFAULT_LABELS[status].text;
+  const icon = nonBlank(override?.icon) ?? DEFAULT_LABELS[status].icon;
+  const text = nonBlank(override?.text) ?? DEFAULT_LABELS[status].text;
   return (
     <span className="receipt-status" data-status={status} role="status">
       <span aria-hidden="true" className="receipt-status__icon">
