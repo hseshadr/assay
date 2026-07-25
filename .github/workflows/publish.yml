@@ -26,10 +26,11 @@
 # npm `@edgeproc/avow` -> {owner, assay, publish.yml}. The workflow filename + repo +
 # owner ARE the credential.
 #
-# npm truths (see ts-publish.yml): `--provenance` writes a PUBLIC transparency-log entry,
-# so provenance stays FALSE until assay goes public. `repository.url` in ts/package.json
-# must exactly match the GitHub repo or the publish fails with ENEEDAUTH — it is present
-# and correct as of this commit.
+# npm truths (see ts-publish.yml): `--provenance` writes a PUBLIC transparency-log entry
+# linking each release to this repo + workflow; assay is public now, so provenance is ON.
+# It takes effect on the NEXT `v*` release — 0.1.1 stays as published, no forced bump for
+# provenance alone. `repository.url` in ts/package.json must exactly match the GitHub
+# repo or the publish fails with ENEEDAUTH — it is present and correct as of this commit.
 #
 # NOTE: every `uses:` below is pinned to a full commit SHA, not a moving tag — a tag can
 # be repointed at new code, a SHA cannot. The trailing comment records which release that
@@ -128,4 +129,4 @@ jobs:
       # version is specified") and setup-node cannot resolve the pnpm cache key.
       package-json-file: ts/package.json
       cache-dependency-path: ts/pnpm-lock.yaml
-      provenance: false # flip true only in the wave the repo goes public
+      provenance: true # repo is public — provenance writes a public transparency-log entry
