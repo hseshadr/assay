@@ -51,6 +51,11 @@ own presentation; `StatusPill` is the standalone verdict chip.
 
 ## Localize
 
+> **0.2.0, unreleased — from source only.** The `labels` prop lands in
+> `@edgeproc/receipt-ui` 0.2.0, which is prepared in this repo but not yet on
+> npm. The published 0.1.0 has no `labels` prop; build from source to use it
+> today. See [`CHANGELOG.md`](CHANGELOG.md).
+
 Every rendered string is injectable: pass a `labels` object (type
 `ReceiptLabels`) to `StatusPill`, `ReceiptBadge` or `ReceiptPanel`. It is a
 deep partial — omit anything to keep the built-in English default:
