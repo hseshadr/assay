@@ -3,7 +3,7 @@
 `@edgeproc/receipt-ui` is versioned separately from the repo's `v*`-tagged
 `avow` / `@edgeproc/avow` co-releases (see the root `CHANGELOG.md`).
 
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-07-25
 
 ### Added
 
