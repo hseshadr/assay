@@ -372,7 +372,13 @@ rather than `OK: ledger verified, 0 entries intact` — which would be a clean b
 health for a file that was never opened. The same applies to a directory in the file's
 place, a file whose permissions deny reading, and a line that is not a parseable receipt
 (`avow.ledger_entry_malformed`). A ledger that *exists and is empty* still passes with
-zero entries: that is a legitimate initial state, not an unanswered question.
+zero entries.
+
+> **What this check does not cover.** It verifies each entry it is shown — not the *set*
+> of entries. Deleting, truncating, reordering, replaying, or splicing in whole entries is
+> **not detected**, including a ledger emptied outright, which is why the zero-entry pass
+> above is not evidence that nothing was removed. Read
+> [Honest limits](#honest-limits) before you rely on this file as a history.
 
 ## Honest limits
 
@@ -380,6 +386,24 @@ Stated plainly, because each of these is a real boundary on what avow currently 
 
 - **A receipt proves integrity, not authenticity, unless you pin the key.** See the
   section above. This is the single easiest way to misuse the library.
+- **The ledger is not append-only in the tamper-evident sense.** It detects tampering
+  *within* an entry; it does not detect tampering *with the set of entries*.
+  `verify_integrity` walks the lines it is handed and re-derives each one's hash and
+  Ed25519 signature. That proves *"every line I was shown is genuine"*. It does not prove
+  *"these are the lines, in this order, and all of them"*, because nothing links one entry
+  to the next — no `prev_hash`, no sequence number, no root. Concretely, every one of the
+  following returns `OK: ledger verified, N entries intact` and exit code `0` today:
+  **deleting** an entry from the middle, **truncating** the file (including emptying it
+  completely), **reordering** entries, **replaying** a genuine entry a second time, and
+  **splicing in** a genuine entry from a different ledger signed by the same key. An
+  emptied ledger is byte-identical to a fresh one, so nothing in the file can tell them
+  apart. Do not read a passing audit as proof that a history is complete, ordered, or
+  unaltered — read it as proof that the entries *you still have* were not individually
+  edited. The fix is a hash chain (`prev_hash` + sequence number, with the head pinned
+  out-of-band, exactly as the pinned public key already is); it is **not** in this
+  release. The five attacks above are encoded as strict-`xfail` tests in
+  `tests/test_ledger.py`, so the suite goes red the day the chain lands and this
+  disclosure goes stale.
 - **`writ`'s enforcement is in-process (v0).** The signing key and the privileged action
   live only inside the effector, which the gate captures in a closure; the agent receives
   the closure and never the effector, so the only route to the action is through the
@@ -403,8 +427,12 @@ Stated plainly, because each of these is a real boundary on what avow currently 
   behind them.
 - **Receipts carry no timestamp.** That is deliberate: it makes them reproducible (the
   same inputs always yield the same receipt). It also means a receipt cannot tell you
-  *when* it was made. If you need that, record it outside the receipt or append to the
-  ledger.
+  *when* it was made. If you need that, record it outside the receipt, in something you
+  trust. **This bullet used to say "or append to the ledger"; we retract that.** Ledger
+  position is not evidence of sequence — entries are independently signed and unlinked,
+  so an entry can be moved, removed, or duplicated without the audit noticing (see the
+  ledger bullet above). Until the chain lands, use a real timestamping service or an
+  append-only store you already trust for ordering.
 
 ## Reference
 
@@ -448,10 +476,13 @@ measurement for `assay` and an action for `writ` with no change to the trust bou
 Because payloads carry no timestamp, identical inputs yield an identical, reproducible,
 offline-verifiable receipt.
 
-`avow.ledger` is an append-only, content-addressed JSONL log whose fail-closed audit
-re-derives each entry's hash **and** verifies its Ed25519 signature against a pinned public
-key, generic over the subject. Coded failures live in `avow.errors` (`avow.*` codes under
-`AvowError`).
+`avow.ledger` is a content-addressed JSONL log of independently signed entries, generic
+over the subject. Its audit fails closed **per entry** — re-deriving that entry's hash
+**and** verifying its Ed25519 signature against a pinned public key. Entries are not
+chained to one another, so the log is *append-only by construction* (writes are `O_APPEND`
+under a lock) but **not append-only in the tamper-evident sense**: nothing detects a
+removed, reordered, replayed, or spliced-in entry. See [Honest limits](#honest-limits).
+Coded failures live in `avow.errors` (`avow.*` codes under `AvowError`).
 
 </details>
 

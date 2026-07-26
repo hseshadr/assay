@@ -46,7 +46,7 @@ payload: ReceiptPayload (deterministic, no timestamp)  # assay.receipt
 hash: "avow.canonical (RFC 8785 JCS -> sha256)"
 sign: "avow.envelope (Ed25519 / PyNaCl)"
 receipt: "SignedReceipt[ReceiptPayload]"
-ledger: "avow.ledger (append-only JSONL, generic)"
+ledger: "avow.ledger (JSONL, per-entry signed, unchained)"
 verify: "avow.verify (offline: recompute hash + pinned-key signature)"
 
 request -> compute -> payload -> hash -> sign -> receipt
