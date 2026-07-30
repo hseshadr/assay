@@ -91,6 +91,24 @@ def test_replay_refuses_a_receipt_that_records_no_determinism_settings() -> None
         replay(request, stripped)
 
 
+def test_replay_should_reject_a_payload_edited_behind_a_stale_hash() -> None:
+    # Given a genuine receipt whose PAYLOAD was edited (score -> 0.99) while its
+    # self-reported payload_hash field was left untouched — the cheapest possible tamper,
+    # and the one a replay that compares against that field cannot see.
+    request = _classification_request()
+    receipt = score(request, signing_key=_KEY, settings=AssaySettings())
+    tampered = receipt.model_copy(
+        update={"payload": receipt.payload.model_copy(update={"score": 0.99})}
+    )
+    assert tampered.payload.score == 0.99
+    assert tampered.payload_hash == receipt.payload_hash  # stale label, edited content
+    # Then verification rejects it...
+    assert verify(tampered, expected_public_key=_EXPECTED) is False
+    # ...and so must replay: "these inputs reproduce this receipt" is a claim about the
+    # payload, never about the hash the payload carries alongside itself.
+    assert replay(request, tampered) is False
+
+
 def test_should_reject_a_forgery_resigned_with_an_attacker_key() -> None:
     # Given a genuine receipt from the honest signer, pinned out-of-band
     receipt = score(_classification_request(), signing_key=_KEY, settings=AssaySettings())

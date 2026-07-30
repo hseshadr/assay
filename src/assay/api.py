@@ -194,11 +194,17 @@ def _settings_for_replay(determinism: DeterminismSettings | None) -> AssaySettin
 
 def replay(request: ScoreRequest, receipt: ScoreReceipt) -> bool:
     """Recompute the payload from the request AND the settings recorded IN the receipt,
-    then confirm it reproduces the signed hash.
+    then confirm it reproduces the receipt's actual payload.
 
     Unconditional: no ambient settings need to match, because the determinism-affecting
     settings are signed into the receipt. A receipt computed under different settings is
-    a *different, explicitly-recorded* receipt — never a silent replay failure."""
+    a *different, explicitly-recorded* receipt — never a silent replay failure.
+
+    The comparison is against a digest re-derived from ``receipt.payload`` — the same
+    ``payload_digest`` the envelope's own hash check uses — and NOT against the
+    ``payload_hash`` field alone. A payload edited behind a stale hash field would
+    otherwise replay clean, because that check measures the label, not the content it
+    labels. The stored hash must agree too, so a self-inconsistent receipt never replays."""
     settings = _settings_for_replay(receipt.payload.determinism)
-    recomputed = _classification_payload(request, settings)
-    return payload_digest(recomputed) == receipt.payload_hash
+    recomputed = payload_digest(_classification_payload(request, settings))
+    return recomputed == payload_digest(receipt.payload) == receipt.payload_hash
