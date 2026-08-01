@@ -76,3 +76,8 @@ def correctness(
     _validate(y_true, y_score)
     y_pred = _threshold(y_score, threshold)
     return tuple(float(int(p == t)) for p, t in zip(y_pred, y_true, strict=True))
+
+
+def _probe_red() -> int:
+    unused = "ruff F841 trips here"
+    return "not an int"
