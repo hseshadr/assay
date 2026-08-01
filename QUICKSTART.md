@@ -36,19 +36,23 @@ uv run assay keygen --out signing.key                 # also writes signing.key.
 echo '{"metric":"binary","metric_version":"1","y_true":[0,1,0,1],"y_score":[0.2,0.8,0.3,0.7]}' > req.json
 uv run assay score --request req.json --key signing.key --out receipt.json --ledger ledger.jsonl
 uv run assay verify --receipt receipt.json --public-key signing.key.pub   # -> OK: receipt verified
-uv run assay verify-ledger --ledger ledger.jsonl --public-key signing.key.pub   # -> OK: ledger verified, 1 entry intact
+uv run assay verify-ledger --ledger ledger.jsonl --public-key signing.key.pub --head ledger.jsonl.head   # -> OK: ledger verified, 1 entry intact
 ```
 
-The `keygen` step in line 1 wrote `signing.key.pub`, so a cold clone already has the public
-key `verify-ledger` needs.
+`keygen` wrote `signing.key.pub` and `score` wrote `ledger.jsonl.head`, so a cold clone
+already has both pins `verify-ledger` needs: the public key (*who* signed the entries) and
+the chain head (*which* entries there are). Copy the head somewhere the ledger's writer
+cannot reach — beside the ledger it is a convenience, not a control.
 
-The **keyed** `verify-ledger` shown above — the one that requires `--public-key` and checks
-each entry's Ed25519 signature — is `avow` 0.2.0 (this repo, unreleased). The published
-0.1.1 (`pip install 'avow[cli]'` from PyPI) ships an earlier `verify-ledger` that is
-hash-only and takes no `--public-key`. See [`CHANGELOG.md`](CHANGELOG.md).
+The **chained, keyed** `verify-ledger` shown above — the one that requires `--public-key`
+and `--head` — is `avow` 0.2.0 (this repo, unreleased). The published 0.1.1
+(`pip install 'avow[cli]'` from PyPI) ships an earlier `verify-ledger` that is hash-only,
+takes neither flag, and cannot see a deleted or reordered entry. See
+[`CHANGELOG.md`](CHANGELOG.md).
 
 Pointed at a path it cannot read, `verify-ledger` fails closed with
-`avow.ledger_unreadable` rather than reporting zero entries intact.
+`avow.ledger_unreadable` rather than reporting zero entries intact. With no head to check
+against, it fails closed with `avow.ledger_head_unreadable`.
 
 Regenerate the cross-language golden vectors after any canonicalization change:
 

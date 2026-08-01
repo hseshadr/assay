@@ -21,7 +21,7 @@ from avow.keys import (
     save_public_key,
     save_signing_key,
 )
-from avow.ledger import append, verify_integrity
+from avow.ledger import append, read_head, save_head, verify_integrity
 from avow.verify import verify_receipt
 
 app = typer.Typer(help="Assay — the scoring engine that refuses to lie.")
@@ -68,13 +68,25 @@ def score(
     ledger: Annotated[Path, typer.Option("--ledger", help="Ledger JSONL path.")] = Path(
         _SETTINGS.ledger_path
     ),
+    head: Annotated[
+        Path | None,
+        typer.Option("--head", help="Where to write the new chain head (default: <ledger>.head)."),
+    ] = None,
 ) -> None:
-    """Score a classification request and write a signed receipt."""
+    """Score a classification request, write a signed receipt, and extend the ledger.
+
+    Appending returns the ledger's new chain head, which is written out so it can be
+    carried somewhere the ledger's writer cannot reach. ``verify-ledger`` needs that
+    head: a chain proves the entries are in order, only a pinned head proves none were
+    cut off the end. Left beside the ledger it is a copy, not a control."""
     parsed = ScoreRequest.model_validate_json(request.read_text(encoding="utf-8"))
     receipt = score_receipt(parsed, signing_key=load_signing_key(key), settings=_SETTINGS)
     out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    append(receipt, path=ledger)
+    new_head = append(receipt, path=ledger)
+    head_path = head if head is not None else Path(f"{ledger}.head")
+    save_head(new_head, path=head_path)
     typer.echo(f"wrote receipt: {out}")
+    typer.echo(f"wrote ledger head: {head_path} ({new_head.count} entries)")
 
 
 @app.command()
@@ -118,19 +130,30 @@ def verify_ledger(
         Path,
         typer.Option("--public-key", help="Pinned signer public-key file (the .pub from keygen)."),
     ],
+    head: Annotated[
+        Path,
+        typer.Option("--head", help="Pinned chain-head file (written by `score`)."),
+    ],
     ledger: Annotated[Path, typer.Option("--ledger", help="Ledger JSONL path.")] = Path(
         _SETTINGS.ledger_path
     ),
 ) -> None:
-    """Re-derive every ledger entry's hash AND verify its signature, failing closed if
-    one was edited on disk.
+    """Walk the ledger's hash chain to the pinned head, verifying every entry's hash and
+    signature, and fail closed on the first disagreement.
 
-    This needs the signer's PUBLIC key, never the secret signing key. An adversary can
+    Two pins, both supplied out-of-band and neither read from the ledger. The signer's
+    PUBLIC key (never the secret seed) says who may write entries: an adversary can
     recompute an entry's content hash, so tamper-evidence rests on the Ed25519 signature
-    — which only the private seed can produce — verified here against the pinned key."""
+    only the private seed can produce. The chain head says which entries there are —
+    without it, dropping the last N lines leaves a shorter ledger that still verifies."""
     try:
         pinned = read_public_key(public_key)
-        entries = verify_integrity(ledger, ScoreReceipt, expected_public_key=pinned)
+        entries = verify_integrity(
+            ledger,
+            ScoreReceipt,
+            expected_public_key=pinned,
+            expected_head=read_head(head),
+        )
     except AvowError as exc:
         _fail(exc)
     noun = "entry" if len(entries) == 1 else "entries"
