@@ -10,8 +10,9 @@ from assay.cli import app
 _RUNNER = CliRunner()
 
 
-def _verify_ledger(tmp_path: Path, ledger: Path):
-    """Invoke verify-ledger with the keygen'd public key pinned out-of-band."""
+def _verify_ledger(tmp_path: Path, ledger: Path, head: Path | None = None):
+    """Invoke verify-ledger with both pins supplied out-of-band: the keygen'd public
+    key, and the chain head `score` recorded. Neither is read from the ledger."""
     return _RUNNER.invoke(
         app,
         [
@@ -20,6 +21,8 @@ def _verify_ledger(tmp_path: Path, ledger: Path):
             str(ledger),
             "--public-key",
             str(tmp_path / "signing.key.pub"),
+            "--head",
+            str(head if head is not None else Path(f"{ledger}.head")),
         ],
     )
 
@@ -179,17 +182,85 @@ def test_should_detect_the_tamper_the_readme_walkthrough_documents(tmp_path: Pat
     assert "avow.ledger_integrity" in result.stdout
 
 
+def test_should_record_the_chain_head_beside_the_ledger_when_scoring(tmp_path: Path) -> None:
+    # Given a ledger the CLI wrote
+    ledger = tmp_path / "ledger.jsonl"
+    _score_twice_into(tmp_path, ledger)
+    # Then `score` left the operator a head to carry away, naming the entry count
+    pin = Path(f"{ledger}.head")
+    assert pin.exists()
+    assert json.loads(pin.read_text())["count"] == 2
+    # And the ledger verifies against it
+    assert _verify_ledger(tmp_path, ledger).exit_code == 0
+
+
+def test_should_fail_closed_when_the_pinned_head_is_missing(tmp_path: Path) -> None:
+    # Given an intact ledger but no pinned head — the verifier has nothing to check the
+    # ledger's END against
+    ledger = tmp_path / "ledger.jsonl"
+    _score_into(tmp_path, ledger)
+    # When it is verified against a head file that does not exist
+    result = _verify_ledger(tmp_path, ledger, head=tmp_path / "absent.head")
+    # Then it fails closed rather than falling back to the head the ledger computes for
+    # itself — which would verify every doctored ledger on earth
+    assert result.exit_code == 1
+    assert "avow.ledger_head_unreadable" in result.stdout
+    assert "OK" not in result.stdout
+
+
 def test_should_fail_closed_when_the_ledger_path_does_not_exist(tmp_path: Path) -> None:
-    # Given a pinned public key but a ledger path that was never written (a typo is
-    # indistinguishable from it)
-    _RUNNER.invoke(app, ["keygen", "--out", str(tmp_path / "signing.key")])
+    # Given both pins in hand — public key and chain head — but a ledger path that was
+    # never written (a typo is indistinguishable from it)
+    ledger = tmp_path / "ledger.jsonl"
+    _score_into(tmp_path, ledger)
     missing = tmp_path / "typo.jsonl"
-    # When the ledger is verified through the CLI
-    result = _verify_ledger(tmp_path, missing)
+    # When the mistyped ledger is verified through the CLI against the real pin
+    result = _verify_ledger(tmp_path, missing, head=Path(f"{ledger}.head"))
     # Then it exits non-zero and names the coded cause, rather than reporting
     # "0 entries intact" — a fail-open pass for a ledger it never read
     assert result.exit_code == 1
     assert "avow.ledger_unreadable" in result.stdout
+    assert "OK" not in result.stdout
+
+
+def _score_twice_into(tmp_path: Path, ledger: Path) -> None:
+    """Keygen ONCE, then score twice into the same ledger under that one key.
+
+    Re-running keygen per score would rotate the key and make every earlier entry fail
+    the signer check — a pass for the wrong reason. One key, two genuine entries."""
+    key_path = tmp_path / "signing.key"
+    _RUNNER.invoke(app, ["keygen", "--out", str(key_path)])
+    request_path = tmp_path / "req.json"
+    _write_request(request_path)
+    for index in (1, 2):
+        _RUNNER.invoke(
+            app,
+            [
+                "score",
+                "--request",
+                str(request_path),
+                "--key",
+                str(key_path),
+                "--out",
+                str(tmp_path / f"receipt{index}.json"),
+                "--ledger",
+                str(ledger),
+            ],
+        )
+
+
+def test_should_reject_a_ledger_an_entry_was_deleted_from_through_the_cli(tmp_path: Path) -> None:
+    # Given a two-entry ledger the CLI itself wrote under ONE key, with its second entry
+    # dropped — the surviving line is untouched and genuinely signed by the pinned key
+    ledger = tmp_path / "ledger.jsonl"
+    _score_twice_into(tmp_path, ledger)
+    assert len(ledger.read_text().splitlines()) == 2
+    ledger.write_text(ledger.read_text().splitlines()[0] + "\n")
+    # When the ledger is verified through the CLI
+    result = _verify_ledger(tmp_path, ledger)
+    # Then the operator is told the audit is broken, not handed a clean bill of health
+    assert result.exit_code == 1
+    assert "avow.ledger_integrity" in result.stdout
     assert "OK" not in result.stdout
 
 
