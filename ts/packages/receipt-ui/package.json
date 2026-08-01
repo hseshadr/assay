@@ -7,6 +7,20 @@
   },
   "type": "module",
   "description": "React components that render and verify an Avow SignedReceipt — a composable badge and panel with a fail-closed, three-state verdict (verified / tampered / untrusted signer).",
+  "keywords": [
+    "react",
+    "react-components",
+    "ed25519",
+    "signature-verification",
+    "signed-receipt",
+    "tamper-evident",
+    "provenance",
+    "fail-closed",
+    "avow",
+    "audit-ui",
+    "trust-badge",
+    "typescript"
+  ],
   "license": "MIT",
   "author": "Harish Seshadri",
   "repository": {
