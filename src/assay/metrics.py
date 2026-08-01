@@ -76,13 +76,3 @@ def correctness(
     _validate(y_true, y_score)
     y_pred = _threshold(y_score, threshold)
     return tuple(float(int(p == t)) for p, t in zip(y_pred, y_true, strict=True))
-
-
-def _protection_probe() -> int:
-    """Deliberately broken: unused import + bad types, to make `gate` go red.
-
-    This exists only to prove branch protection refuses a red PR. Delete on sight.
-    """
-    import os  # noqa placeholder removed on purpose so ruff flags it
-    unused_variable = "this trips ruff F841"
-    return "not an int"
