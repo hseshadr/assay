@@ -30,6 +30,27 @@ database, and get one of two answers:
 
 There is no "close enough". Change one digit anywhere in it and the check fails.
 
+The whole thing is two layers — a signature, and the log the receipt goes into. They
+catch different things, and the difference matters:
+
+```mermaid
+flowchart TD
+  data["Your data<br/>any JSON object — a score, a decision, an approval"]
+  sign["Sign it<br/>Canonicalise to one exact byte string (RFC 8785),<br/>hash it with SHA-256, sign it with Ed25519.<br/>Python and TypeScript emit identical bytes — the same<br/>12 test vectors run in both languages to prove it."]
+  receipt["The receipt: your data, its hash, the signature, the signer's key<br/>Check it against a public key you pinned in advance.<br/>You learn who wrote it, and that nobody changed it since.<br/>You do NOT learn that it is new — an old receipt<br/>still verifies, and that is correct behaviour."]
+  ledger["Append-only ledger<br/>Each line carries its position (seq) and the hash of<br/>the line before it (prev_hash). The hash of the last line<br/>is pinned out of band, somewhere the ledger's writer<br/>cannot reach — another host, a git commit, a printout."]
+  caught["Where a replayed or missing entry is caught<br/>An old entry slipped back in no longer matches<br/>its seq or prev_hash. A deleted, reordered or truncated<br/>log no longer ends at the head you pinned.<br/>Freshness is the ledger's job, never the signature's."]
+
+  data --> sign
+  sign --> receipt
+  receipt --> ledger
+  ledger --> caught
+```
+
+The first three boxes are the envelope; the last two are the ledger. The npm package
+`@edgeproc/avow` ships the envelope only — canonical bytes and sign/verify — so a browser
+gets tamper-evidence, not replay defence; the ledger is Python-side (`avow.ledger`).
+
 ## Before you install
 
 Two things that will otherwise trip you up:
