@@ -10,6 +10,7 @@ export { canonicalBytes, contentHash, type JsonValue } from "./canonical.js";
 export {
   AvowError,
   CanonicalizationFailed,
+  PayloadHashMismatch,
   ReplayMismatch,
   SignatureBytesInvalid,
   SignatureInvalid,

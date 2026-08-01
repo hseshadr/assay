@@ -12,7 +12,8 @@ from assay.composite import SubScore, composite
 from assay.errors import (
     CanonicalizationFailed,
     InsufficientSamples,
-    ReplayMismatch,
+    PayloadHashMismatch,
+    ReplayRefused,
     SignatureInvalid,
     UnknownMetric,
 )
@@ -172,7 +173,7 @@ def verify(receipt: ScoreReceipt, *, expected_public_key: str) -> bool:
     receipt itself, whose embedded key an attacker could swap."""
     try:
         verify_receipt(receipt, expected_public_key=expected_public_key)
-    except (SignatureInvalid, ReplayMismatch, CanonicalizationFailed):
+    except (SignatureInvalid, PayloadHashMismatch, CanonicalizationFailed):
         return False
     return True
 
@@ -182,7 +183,7 @@ def _settings_for_replay(determinism: DeterminismSettings | None) -> AssaySettin
     recorded. A receipt that records none is not one this can reproduce, so we fail
     explicitly rather than silently returning a mismatch."""
     if determinism is None:
-        raise ReplayMismatch("receipt records no determinism settings to replay")
+        raise ReplayRefused("receipt records no determinism settings to replay")
     return AssaySettings(
         min_samples=determinism.min_samples,
         bootstrap_resamples=determinism.bootstrap_resamples,

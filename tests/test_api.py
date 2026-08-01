@@ -4,7 +4,7 @@ import pytest
 from nacl.signing import SigningKey
 
 from assay.api import composite_score, replay, score, verify
-from assay.errors import InsufficientSamples, ReplayMismatch, UnknownMetric
+from assay.errors import InsufficientSamples, ReplayRefused, UnknownMetric
 from assay.models import CompositeRequest, ScoreRequest, SubScoreInput
 from assay.receipt import sign_payload
 from assay.settings import AssaySettings
@@ -87,7 +87,7 @@ def test_replay_refuses_a_receipt_that_records_no_determinism_settings() -> None
     receipt = score(request, signing_key=_KEY, settings=AssaySettings())
     stripped = sign_payload(receipt.payload.model_copy(update={"determinism": None}), _KEY)
     # Then replay refuses it explicitly rather than silently reporting a mismatch
-    with pytest.raises(ReplayMismatch):
+    with pytest.raises(ReplayRefused):
         replay(request, stripped)
 
 

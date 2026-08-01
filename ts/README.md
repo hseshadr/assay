@@ -52,8 +52,9 @@ async function check(receipt: SignedReceipt<{ kind: string; score: number }>) {
 `verifySignature` **fails closed**. It throws a coded error and never returns a
 boolean you might forget to check:
 
-- `ReplayMismatch` (`avow.replay_mismatch`) — the payload was altered after
-  signing (its recomputed hash no longer matches).
+- `PayloadHashMismatch` (`avow.payload_hash_mismatch`) — the payload was altered
+  after signing (its recomputed hash no longer matches). Called `ReplayMismatch`
+  through 0.2.0; renamed in 0.3.0 because it never detected replay.
 - `SignerMismatch` (`avow.signer_mismatch`) — the receipt's embedded key is not
   the pinned key: signed by someone you don't trust, a **provenance** failure.
   The signature is never even checked.
@@ -68,6 +69,25 @@ The order mirrors the Python kernel exactly: recompute the hash, then reject any
 receipt whose embedded `public_key` isn't the pinned one (that field lives
 outside the signed bytes, so a re-signed forgery can swap it in), then verify the
 Ed25519 signature under the pinned key.
+
+### What verification does not prove: freshness
+
+`verifySignature` proves **who signed it** and **that it is unmodified**. It does
+**not** prove that this is the first time the receipt has been presented, or that
+it was made recently.
+
+A replayed receipt — a genuine one, captured by anyone who saw it and handed over
+again unchanged — is byte-identical to the original and verifies forever. That is
+not a gap to close inside the envelope: a signature binds content to a *signer*,
+it cannot bind it to an *occasion*, and the determinism that lets a receipt
+re-verify offline years later is exactly what lets it be re-presented.
+
+**This package ships the envelope only — there is no ledger in the browser
+build.** So if your threat model includes "someone shows me an old receipt as if
+it were new", you must hold that state yourself: carry a nonce or request-id
+inside your own subject before signing and track the ones you have accepted, or
+record entries server-side in the Python `avow.ledger`, whose hash chain rejects a
+replayed entry against a pinned head.
 
 ## Signing (when the browser is the one making the decision)
 
@@ -111,7 +131,7 @@ No custody overclaim.
 - `signPayload(payload, seedHex): Promise<SignedReceipt>`.
 - `verifySignature(receipt, expectedPublicKey): Promise<void>` — fail-closed.
 - `generateSeedHex(): string`, `publicKeyHex(seedHex): Promise<string>`.
-- Errors: `AvowError`, `CanonicalizationFailed`, `ReplayMismatch`,
+- Errors: `AvowError`, `CanonicalizationFailed`, `PayloadHashMismatch`,
   `SignatureInvalid` and its two subclasses `SignerMismatch` /
   `SignatureBytesInvalid` — each with a stable `.code`.
 

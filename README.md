@@ -93,11 +93,15 @@ except Exception as exc:
 
 ```
 original receipt ..... VALID
-edited receipt ....... REJECTED (ReplayMismatch)
+edited receipt ....... REJECTED (PayloadHashMismatch)
 ```
 
 Nudging `0.83` to `0.99` — a change that would be invisible in a database — makes the
 receipt fail to verify. That is the whole idea.
+
+One thing this is **not**: a freshness check. Hand that same unedited receipt to the
+verifier a thousand more times and it passes a thousand more times — see
+[Honest limits](#honest-limits).
 
 ## What a receipt proves, and what it does not
 
@@ -176,9 +180,13 @@ different events and they are coded apart, because you may want to react differe
 |---|---|---|
 | `avow.signer_mismatch` | `SignerMismatch` | Signed by a key you do not trust — a **provenance** failure. The signature is never even checked. |
 | `avow.signature_invalid` | `SignatureBytesInvalid` | The signer matched, but the bytes fail the curve check — a **tamper** failure. |
+| `avow.payload_hash_mismatch` | `PayloadHashMismatch` | The payload was edited behind an untouched hash field — also a **tamper** failure. |
 
-Both subclass `SignatureInvalid`, so `except SignatureInvalid:` still catches either one
-if you do not care which. You never have to match on the message text.
+The first two subclass `SignatureInvalid`, so `except SignatureInvalid:` still catches
+either one if you do not care which. You never have to match on the message text.
+
+There is deliberately **no** replay code in that table. The envelope detects no replay,
+so nothing in it is named after one — see [Honest limits](#honest-limits).
 
 ## Three things you can sign
 
@@ -407,6 +415,25 @@ Stated plainly, because each of these is a real boundary on what avow currently 
 
 - **A receipt proves integrity, not authenticity, unless you pin the key.** See the
   section above. This is the single easiest way to misuse the library.
+- **Verifying a receipt proves nothing about *freshness*.** `verify_signature` /
+  `verify_receipt` prove **who signed it** and **that it is unmodified**. They do **not**
+  prove that this is the first time the receipt has been presented, or that it was made
+  recently. A replayed receipt — a genuine one, captured by anyone who saw it and handed
+  over again unchanged — is byte-identical to the original and verifies forever. That is
+  not a bug to be fixed inside the envelope: a signature binds content to a *signer*, it
+  cannot bind it to an *occasion*, and the very determinism that makes a receipt
+  re-verifiable offline years later is what makes it re-presentable. If your threat model
+  includes "someone shows me an old receipt as if it were new", the answer must come from
+  state the verifier keeps, not from the signature:
+  - **record entries in `avow.ledger`** — the chain rejects a replayed entry against a
+    pinned head (`avow.ledger_integrity`); that is a test in `tests/test_ledger.py` and in
+    `tests/test_verify.py`, watched go red with both its checks disabled; or
+  - **put a nonce or a request-id inside your own subject** before signing, and track the
+    ones you have already accepted.
+
+  Note the naming, because it changed in 0.3.0 for exactly this reason: the tamper error
+  is `PayloadHashMismatch` (`avow.payload_hash_mismatch`). It was called `ReplayMismatch`
+  through 0.2.0, which named a property the envelope has never had.
 - **The ledger's tamper-evidence is only as good as the custody of its head.** The
   entries are chained (each carries its position and the hash of the entry before it) and
   the audit walks that chain to a head you pin out-of-band, so deleting, truncating,
