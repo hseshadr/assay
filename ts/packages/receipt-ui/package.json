@@ -7,7 +7,7 @@
   },
   "type": "module",
   "description": "React components that render and verify an Avow SignedReceipt — a composable badge and panel with a fail-closed, three-state verdict (verified / tampered / untrusted signer).",
-    "keywords": [
+  "keywords": [
     "react",
     "react-components",
     "ed25519",
