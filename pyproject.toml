@@ -96,7 +96,7 @@ ignore = ["S101", "PLR0913"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "PLR2004", "C901", "PLR0911", "PLR0912"]
 # The domain-error catalog deliberately uses semantic names (SignatureInvalid,
-# ReplayMismatch, ...) that read as the failure condition, not Error-suffixed
+# PayloadHashMismatch, ...) that read as the failure condition, not Error-suffixed
 # names. These are the stable, coded public interface consumed across the API,
 # CLI and tests, so N818 (Error suffix) is scoped-off for this one module only.
 "src/assay/errors.py" = ["N818"]

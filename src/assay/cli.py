@@ -115,7 +115,10 @@ def verify(
     The expected public key is read from ``--public-key`` (out-of-band), never from
     the receipt's own field, so a re-signed forgery cannot authenticate itself. A
     failure reports its coded cause (``avow.signature_invalid`` vs
-    ``avow.replay_mismatch``), which a bare pass/fail boolean would discard."""
+    ``avow.payload_hash_mismatch``), which a bare pass/fail boolean would discard.
+
+    Proves who signed the receipt and that it is unmodified — NOT that it is fresh or
+    unseen. Use ``verify-ledger`` for that; a replayed receipt verifies here."""
     parsed = ScoreReceipt.model_validate_json(receipt.read_text(encoding="utf-8"))
     try:
         verify_receipt(parsed, expected_public_key=read_public_key(public_key))
