@@ -182,6 +182,43 @@ def test_should_detect_the_tamper_the_readme_walkthrough_documents(tmp_path: Pat
     assert "avow.ledger_integrity" in result.stdout
 
 
+def _score_readme_request(tmp_path: Path) -> Path:
+    """Drive keygen + score on the README's four-sample request; return the receipt path."""
+    key_path = tmp_path / "signing.key"
+    _RUNNER.invoke(app, ["keygen", "--out", str(key_path)])
+    request_path = tmp_path / "req.json"
+    request_path.write_text(_README_REQUEST)
+    receipt_path = tmp_path / "receipt.json"
+    args = ["--request", str(request_path), "--key", str(key_path), "--out", str(receipt_path)]
+    _RUNNER.invoke(app, ["score", *args, "--ledger", str(tmp_path / "ledger.jsonl")])
+    return receipt_path
+
+
+def _verify_receipt(tmp_path: Path, receipt: Path):
+    """Invoke `verify` with the public key pinned out-of-band, as the README shows."""
+    pub = str(tmp_path / "signing.key.pub")
+    return _RUNNER.invoke(app, ["verify", "--receipt", str(receipt), "--public-key", pub])
+
+
+def test_should_verify_then_reject_the_receipt_the_front_door_transcript_shows(
+    tmp_path: Path,
+) -> None:
+    # Given the receipt the README's first-screenful transcript produces
+    receipt_path = _score_readme_request(tmp_path)
+    # Then the unedited receipt verifies — the transcript's `exit 0`
+    assert _verify_receipt(tmp_path, receipt_path).exit_code == 0
+    # When the ONE field the transcript's `diff` shows is flipped. The README tells the
+    # reader to sed this exact string, so it must be on disk spelled exactly this way.
+    original = receipt_path.read_text()
+    assert '"abstained": true' in original
+    tampered = tmp_path / "tampered.json"
+    tampered.write_text(original.replace('"abstained": true', '"abstained": false'))
+    # Then verification fails closed with the coded cause the transcript prints
+    result = _verify_receipt(tmp_path, tampered)
+    assert result.exit_code == 1
+    assert "avow.payload_hash_mismatch" in result.stdout
+
+
 def test_should_record_the_chain_head_beside_the_ledger_when_scoring(tmp_path: Path) -> None:
     # Given a ledger the CLI wrote
     ledger = tmp_path / "ledger.jsonl"

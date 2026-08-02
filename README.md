@@ -1,8 +1,79 @@
 # avow
 
-**Proof of what your software decided — a receipt that is tamper-evident: edit it and it stops verifying.**
+**Sign a record of what your software decided, then verify it offline — on someone else's
+machine, years later, with no access to your database.** Edit one character of the record
+and verification fails.
+
+## Proof
+
+A real session. `avow` 0.2.0 from PyPI on Python 3.13.14; output copied verbatim, including
+the failure.
+
+```console
+$ assay keygen --out signing.key
+wrote signing key: signing.key
+wrote public key: signing.key.pub
+
+$ echo '{"metric":"binary","metric_version":"1","y_true":[0,1,0,1],"y_score":[0.2,0.8,0.3,0.7]}' > req.json
+
+$ assay score --request req.json --key signing.key --out receipt.json --ledger ledger.jsonl
+wrote receipt: receipt.json
+wrote ledger head: ledger.jsonl.head (1 entries)
+
+$ tail -4 receipt.json
+  "payload_hash": "sha256:a2ada15199d7586958d9754a4adeba4d13a4e73122f9604f65a536fb4a4bad7e",
+  "public_key": "cfcc49b01cc3019ce451a1bde8a146fbe423682faa2a2c7d0d0f0a01da008292",
+  "signature": "3cb2ae7edb1831ef47246cb0f07854a6a63aa9ba5457659455532dfc972758b4aaa1f73912b041a8606cb6b7d413bbc77defd6b2141a2aa50325d139f9143804"
+}
+
+$ assay verify --receipt receipt.json --public-key signing.key.pub; echo "exit $?"
+OK: receipt verified
+exit 0
+
+$ sed 's/"abstained": true/"abstained": false/' receipt.json > tampered.json
+
+$ diff receipt.json tampered.json
+10c10
+<     "abstained": true,
+---
+>     "abstained": false,
+
+$ assay verify --receipt tampered.json --public-key signing.key.pub; echo "exit $?"
+FAIL: avow.replay_mismatch: payload hash does not match payload content
+exit 1
+```
+
+Four samples is below the sample-size floor, so the receipt honestly recorded
+`"abstained": true` and no score. The `diff` is the entire edit: one word, turning an
+abstention into a confident answer — the sort of quiet correction that leaves no trace in
+an ordinary database. The signature bytes were never touched. It still fails, because the
+payload no longer hashes to the value the signature covers.
+
+> The code above reads `avow.replay_mismatch`, which is what 0.2.0 prints. It is a
+> misnomer: this is a **tamper** failure, and the envelope detects no replay at all. It is
+> renamed `avow.payload_hash_mismatch` on `main` and ships in 0.3.0, with `ReplayMismatch`
+> kept as a deprecated alias. See [Honest limits](#honest-limits).
+
+## Run it
+
+```bash
+# The PyPI distribution is `avow`. The command it installs is `assay`. There is no `avow`
+# command, and this project does not publish a distribution called `assay` —
+# `pip install assay` gets an unrelated package by another author.
+python3.13 -m venv .venv && . .venv/bin/activate    # Python 3.13+ is required
+pip install 'avow[cli]'
+
+assay keygen --out signing.key
+echo '{"metric":"binary","metric_version":"1","y_true":[0,1,0,1],"y_score":[0.2,0.8,0.3,0.7]}' > req.json
+assay score --request req.json --key signing.key --out receipt.json --ledger ledger.jsonl
+assay verify --receipt receipt.json --public-key signing.key.pub            # exit 0
+sed 's/"abstained": true/"abstained": false/' receipt.json > tampered.json
+assay verify --receipt tampered.json --public-key signing.key.pub           # exit 1
+```
 
 ---
+
+## Why this exists
 
 Your card gets declined at a checkout.
 
@@ -14,24 +85,14 @@ the bank's own auditor, not a regulator — can tell whether that number is what
 software actually produced at the moment it blocked your card, or whether somebody
 adjusted it afterwards, once you complained.
 
-That is the gap `avow` closes.
+That is the gap `avow` closes. When your software makes a decision, avow has it write a
+**receipt**: a small record of exactly what was decided, sealed with cryptography at the
+moment of the decision. Think of a store receipt — except this one cannot be reprinted or
+altered. Hand it to anyone; they check it on their own laptop, offline, with no access to
+your database, and get **valid** (this is exactly what the software decided, byte for byte)
+or **invalid** (someone changed it). There is no "close enough".
 
-## What it does
-
-When your software makes a decision, avow has it write a **receipt**: a small record of
-exactly what was decided, sealed with cryptography at the moment of the decision.
-
-Think of a store receipt — except this one cannot be reprinted or altered. You can hand
-it to anyone. They can check it on their own laptop, offline, with no access to your
-database, and get one of two answers:
-
-- **valid** — this is exactly what the software decided, byte for byte
-- **invalid** — someone changed it
-
-There is no "close enough". Change one digit anywhere in it and the check fails.
-
-The whole thing is two layers — a signature, and the log the receipt goes into. They
-catch different things, and the difference matters:
+## Two layers, and why the difference matters
 
 ```mermaid
 flowchart TD
@@ -51,24 +112,26 @@ The first three boxes are the envelope; the last two are the ledger. The npm pac
 `@edgeproc/avow` ships the envelope only — canonical bytes and sign/verify — so a browser
 gets tamper-evidence, not replay defence; the ledger is Python-side (`avow.ledger`).
 
-## Before you install
+## The names, spelled out
 
-Two things that will otherwise trip you up:
+Three names get confused, and two of them belong to other people's packages:
 
-- **Python 3.13 or newer is required.** On 3.12 or older `pip install avow` fails while
-  resolving, with a message that does not mention the Python version. Check with
-  `python --version` first.
-- **The package is `avow`; the command is `assay`.** You `pip install avow` and
-  `import avow`, but the command line the CLI extra installs is called `assay`. There is
-  no `avow` command. (`avow` is the envelope everything is built on; `assay` is the
-  scoring face that ships the CLI.)
+| You type | What you get |
+|---|---|
+| `pip install avow` | **this project** — the envelope, importable as `avow` |
+| `pip install 'avow[cli]'` | this project plus the `assay` command used above |
+| `npm i @edgeproc/avow` | **this project** — the TypeScript envelope |
+| `pip install assay` | *someone else's* — Brandon Rhodes' "Future testing framework" |
+| `npm i assay` | *someone else's* — Nathan Zadoks' assertion helper |
 
-## See it catch a tampered record
+So: the distribution is `avow`, the command is `assay`, and `import avow` / `import assay`
+both come out of the single `avow` install. There is no `avow` command.
 
-```bash
-python --version   # must be 3.13+
-pip install avow
-```
+One more thing that will otherwise trip you up: **Python 3.13 or newer is required.** On
+3.12 or older `pip install avow` fails while resolving, with a message that does not
+mention the Python version. Check with `python --version` first.
+
+## The same thing from Python
 
 ```python
 from pydantic import BaseModel, ConfigDict
@@ -114,8 +177,12 @@ except Exception as exc:
 
 ```
 original receipt ..... VALID
-edited receipt ....... REJECTED (PayloadHashMismatch)
+edited receipt ....... REJECTED (ReplayMismatch)
 ```
+
+That is the output on the published 0.2.0. On `main` the same run prints
+`PayloadHashMismatch` — the rename described above; the class is the same object either
+way, and `except ReplayMismatch:` keeps working after it.
 
 Nudging `0.83` to `0.99` — a change that would be invisible in a database — makes the
 receipt fail to verify. That is the whole idea.
@@ -201,13 +268,14 @@ different events and they are coded apart, because you may want to react differe
 |---|---|---|
 | `avow.signer_mismatch` | `SignerMismatch` | Signed by a key you do not trust — a **provenance** failure. The signature is never even checked. |
 | `avow.signature_invalid` | `SignatureBytesInvalid` | The signer matched, but the bytes fail the curve check — a **tamper** failure. |
-| `avow.payload_hash_mismatch` | `PayloadHashMismatch` | The payload was edited behind an untouched hash field — also a **tamper** failure. |
+| `avow.payload_hash_mismatch` | `PayloadHashMismatch` | The payload was edited behind an untouched hash field — also a **tamper** failure. `avow.replay_mismatch` / `ReplayMismatch` through 0.2.0. |
 
 The first two subclass `SignatureInvalid`, so `except SignatureInvalid:` still catches
 either one if you do not care which. You never have to match on the message text.
 
-There is deliberately **no** replay code in that table. The envelope detects no replay,
-so nothing in it is named after one — see [Honest limits](#honest-limits).
+There is deliberately **no** replay code in that table from 0.3.0 onwards. The envelope
+detects no replay, so nothing in it is named after one — see
+[Honest limits](#honest-limits).
 
 ## Three things you can sign
 
@@ -331,39 +399,11 @@ actually performed: ['read customer-4471']
 
 The denied delete produced a signed receipt but never touched the system.
 
-## Command line
+## Auditing the ledger — `verify-ledger`
 
-For signing and checking receipts without writing code. The distribution is `avow`; the
-command it installs is **`assay`** (there is no `avow` command). Python 3.13+ required.
-
-```bash
-pip install 'avow[cli]'                        # installs the `assay` command
-
-assay --help                                   # note: `assay`, not `avow`
-assay keygen --out signing.key                 # also writes signing.key.pub
-echo '{"metric":"binary","metric_version":"1","y_true":[0,1,0,1],"y_score":[0.2,0.8,0.3,0.7]}' > req.json
-assay score --request req.json --key signing.key --out receipt.json --ledger ledger.jsonl
-assay verify --receipt receipt.json --public-key signing.key.pub
-```
-
-```
-wrote signing key: signing.key
-wrote public key: signing.key.pub
-wrote receipt: receipt.json
-wrote ledger head: ledger.jsonl.head (1 entries)
-OK: receipt verified
-```
-
-### Auditing the ledger — `verify-ledger`
-
-> The chained `verify-ledger` lands in `avow` 0.2.0 (this repo). The published 0.1.x
-> shipped an earlier hash-only audit that could not see a deleted or reordered entry —
-> upgrade for real tamper-evidence. Install with `pip install 'avow[cli]'` (Python 3.13+;
-> use a fresh venv) and run `assay verify-ledger --help`.
-
-`score` also appended that receipt to `ledger.jsonl` and wrote the ledger's new **chain
-head** to `ledger.jsonl.head`. Auditing takes two things, and neither is read from the
-ledger itself:
+The `score` command in the proof above also appended that receipt to `ledger.jsonl` and
+wrote the ledger's new **chain head** to `ledger.jsonl.head`. Auditing takes two things,
+and neither is read from the ledger itself:
 
 - the signer's **public** key (never the secret seed) — *who* may write entries. A
   content hash alone is not enough: an adversary who edits an entry can recompute its
@@ -381,14 +421,8 @@ assay verify-ledger --ledger ledger.jsonl --public-key signing.key.pub --head le
 OK: ledger verified, 1 entry intact
 ```
 
-Four samples is below the abstention floor, so that receipt honestly records
-`"abstained":true` and no score. Now edit the stored entry to claim a confident answer
-it never gave — change `"abstained":true` to `"abstained":false`, the sort of quiet
-correction that leaves no trace in an ordinary log — and ask again:
-
-```bash
-assay verify-ledger --ledger ledger.jsonl --public-key signing.key.pub --head ledger.jsonl.head
-```
+Now edit the stored entry the same way as before — `"abstained":true` to
+`"abstained":false` — and ask again:
 
 ```
 FAIL: avow.ledger_integrity: tampered ledger entry: sha256:a2ada15199d7586958d9754a4adeba4d13a4e73122f9604f65a536fb4a4bad7e
@@ -416,9 +450,12 @@ Editing a line is the easy case. Now score a second request, then **delete** the
 wrote — every remaining line is genuine, correctly signed, and correctly chained:
 
 ```
-FAIL: avow.ledger_integrity: ledger ends at 1 entries / sha256:72b555a34e…, but the
-pinned head is 2 entries / sha256:c43e8018f8…
+FAIL: avow.ledger_integrity: ledger ends at 1 entries / sha256:bdbe0cc76d21c65c5010629e1cfbacfa5a8d957995748cadbcf347d98128ef14, but the pinned head is 2 entries / sha256:d648caa536e0e096657a462cc343b0606c7a93fb3613f00ac02ad6bd9f9ceef0
 ```
+
+Those two hashes cover signatures, so yours will differ — they are whatever *your* key
+produced. The `tampered ledger entry` hash above is a payload hash and involves no key, so
+that one reproduces exactly.
 
 That is the check no per-entry signature can do. Deleting, truncating (including emptying
 the file), reordering, replaying and splicing in an entry from another ledger all land
@@ -452,9 +489,12 @@ Stated plainly, because each of these is a real boundary on what avow currently 
   - **put a nonce or a request-id inside your own subject** before signing, and track the
     ones you have already accepted.
 
-  Note the naming, because it changed in 0.3.0 for exactly this reason: the tamper error
-  is `PayloadHashMismatch` (`avow.payload_hash_mismatch`). It was called `ReplayMismatch`
-  through 0.2.0, which named a property the envelope has never had.
+  Note the naming, because it changes in 0.3.0 for exactly this reason: the tamper error
+  becomes `PayloadHashMismatch` (`avow.payload_hash_mismatch`). It is called
+  `ReplayMismatch` (`avow.replay_mismatch`) through 0.2.0 — the version on PyPI today —
+  which named a property the envelope has never had. `ReplayMismatch` stays as a
+  deprecated alias, so `except ReplayMismatch:` keeps working; code that branches on the
+  literal string `"avow.replay_mismatch"` must be updated.
 - **The ledger's tamper-evidence is only as good as the custody of its head.** The
   entries are chained (each carries its position and the hash of the entry before it) and
   the audit walks that chain to a head you pin out-of-band, so deleting, truncating,
@@ -474,8 +514,8 @@ Stated plainly, because each of these is a real boundary on what avow currently 
   guard. But the credential is still in the same process, so same-process reflection
   (walking `__closure__`, for instance) could reach it. This is a capability-holding
   *approximation*, not true enforcement. Real un-bypassability — a separate-process
-  broker or a WASM guest, where the caller's address space cannot reach the credential —
-  is the v1 hardening. We claim no more than that.
+  broker or a sandboxed guest, where the caller's address space cannot reach the
+  credential — is the v1 hardening. We claim no more than that.
 - **The v0 policy decider is a plain Python predicate** (`Allowlist`). OPA/Rego is the v1
   decider.
 - **`writ` signs the `args_digest` its caller hands it; it does not recompute it.** The
@@ -599,11 +639,12 @@ gitignored). The public key also travels inside each receipt for convenience, bu
 embedded copy is **not** the trust anchor — a verifier pins the out-of-band key and passes
 it to `verify`.
 
-`testdata/vectors/` holds golden vectors generated by `tests/gen_vectors.py` (canonical
-bytes and hashes, plus receipts signed with a fixed non-secret test seed). The Python
-suite replays them in `tests/test_vectors.py`; the TypeScript `@edgeproc/avow` replays the
-*same files* byte for byte, so any RFC 8785 number-serialization divergence fails in CI
-rather than in production.
+`testdata/vectors/` holds 12 golden vectors generated by `tests/gen_vectors.py`: 9
+canonicalization cases (input, canonical bytes, hash) in `canonical.json` and 3 receipts
+signed with a fixed non-secret test seed in `receipts.json`. The Python suite replays them
+in `tests/test_vectors.py`; the TypeScript `@edgeproc/avow` replays the *same files* byte
+for byte, so any RFC 8785 number-serialization divergence fails in CI rather than in
+production.
 
 `@edgeproc/receipt-ui` (in `ts/packages/receipt-ui`) is the browser rendering layer: small,
 fail-closed React components that verify a receipt against a pinned key and show the
@@ -637,13 +678,16 @@ v0, deterministic — no LLM anywhere in the path.
 
 Two gates, mirroring CI's two jobs. `uv run poe gate` covers **Python only** (ruff,
 ruff-format, mypy `--strict`, xenon A, pytest with statement *and* branch coverage
-against a floor); `uv run poe gate-ts` covers the TypeScript package (biome, `tsc`
+against a 90% floor); `uv run poe gate-ts` covers the TypeScript package (biome, `tsc`
 strict, vitest, build). `uv run poe gate-all` runs both.
 
-Published releases: `avow` 0.1.1 on PyPI and `@edgeproc/avow` 0.1.1 on npm (0.2.0 prepared
-in this repo, not yet released); `@edgeproc/receipt-ui` 0.1.0 on npm (0.2.0, adding the
-injectable `labels` i18n prop, prepared in this repo, not yet released) — see
-[`CHANGELOG.md`](CHANGELOG.md) and
+Measured at the time of writing: **220 tests** — 149 Python at **100% statement and branch
+coverage** (647 statements, 48 branches, none missed), 40 in `@edgeproc/avow`, 31 in
+`@edgeproc/receipt-ui`.
+
+Published releases: `avow` 0.2.0 on PyPI; `@edgeproc/avow` 0.2.0 and
+`@edgeproc/receipt-ui` 0.2.0 on npm. The `PayloadHashMismatch` rename described above is
+on `main` and unreleased — it ships in 0.3.0. See [`CHANGELOG.md`](CHANGELOG.md) and
 [`ts/packages/receipt-ui/CHANGELOG.md`](ts/packages/receipt-ui/CHANGELOG.md) for what each
 release contains. Read the honest limits above before depending on any of it.
 
