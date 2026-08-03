@@ -254,6 +254,21 @@ def test_should_refuse_a_negative_relevance_gain() -> None:
         ndcg_at_k({"a": -1.0, "b": 1.0}, ("a", "b"), 2)
 
 
+def test_should_refuse_a_fractional_relevance_gain() -> None:
+    # Given a judgment graded 2.5 — a relevance LEVEL of two and a half
+    # When a metric is taken
+    # Then it refuses. trec_eval qrels are integer-graded by definition, and rounding to
+    # reach one would decide, silently and unaccountably, whether a 0.5 gain counts as
+    # relevant at all. Refusing beats inventing a semantics the reference does not have.
+    with pytest.raises(InvalidRankingRequest) as caught:
+        ndcg_at_k({"a": 2.5, "b": 1.0}, ("a", "b"), 2)
+    assert caught.value.code == "assay.invalid_ranking_request"
+    with pytest.raises(InvalidRankingRequest):
+        average_precision({"a": 0.5}, ("a", "b"))
+    # And whole gains handed over as floats stay accepted — that is the public type
+    assert ndcg_at_k({"a": 2.0, "b": 1.0}, ("a", "b"), 2) == pytest.approx(1.0)
+
+
 def test_should_refuse_a_document_judged_twice_in_one_query() -> None:
     # Given a query whose judgments name the same document twice
     query = RankedQuery(
