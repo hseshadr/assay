@@ -17,7 +17,10 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        # The comment names the EXACT version, never a floating `# v9`: Dependabot
+        # rewrites the SHA and its comment together, and a floating major becomes a lie
+        # the moment upstream re-points the tag.
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "latest"
       - name: Pin Python
@@ -63,6 +66,31 @@ jobs:
       # across every workspace package (avow + receipt-ui), not just the root.
       - name: Run the TS gate
         run: pnpm -r --include-workspace-root gate
+
+  # Mirrors `uv run poe mutants`. A separate job, not a step inside `gate`, because it
+  # answers a different question: `gate` asks "do the tests pass", this asks "can they
+  # fail". It breaks each named guard in turn and requires the suite to go red, so a
+  # test that quietly stops guarding its claim fails HERE rather than being discovered
+  # in an audit months later.
+  mutation-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "latest"
+      - name: Pin Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras
+
+      # The harness edits tracked files in place and restores them in a `finally`; it
+      # refuses to start if any file it touches is already dirty.
+      - name: Break every guard and require the suite to notice
+        run: uv run poe mutants
 
   # Full-history secret scan.
   gitleaks:

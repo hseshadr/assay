@@ -537,6 +537,51 @@ Stated plainly, because each of these is a real boundary on what avow currently 
   says an entry was written on Tuesday. For wall-clock time, use a real timestamping
   service.
 
+## Check the guards yourself
+
+A passing test suite is not evidence that a guard guards. A test that asserts whatever
+the code happens to return passes whether the property holds or not, and the only way to
+tell those two apart is to **break the property on purpose and watch the test fail**.
+
+One command does that for every claim on this page:
+
+```bash
+uv run poe mutants
+```
+
+It works through 18 mutations, one at a time. For each it names the claim, runs the guard
+tests **unmutated** (which must pass), edits the source so the claim becomes false, reads
+the mutated file back off disk to confirm the edit landed, runs the same tests again
+(which must now fail), and restores the file. Takes about a minute; run it on a clean
+tree, because it edits tracked files in place.
+
+```
+mutation                                      before  after   verdict
+ranking-order-reaches-trec-eval                    0      1   RED — the guard fired
+ranking-recall-is-not-precision                    0      1   RED — the guard fired
+envelope-pins-the-signer                           0      1   RED — the guard fired
+ledger-requires-the-pinned-head                    0      1   RED — the guard fired
+documented-sample-floor-is-30                      0      1   RED — the guard fired
+...
+18/18 guards fired when their claim was broken.
+whole suite after restore: exit 0 (green)
+```
+
+**The verdict is the pytest exit code, and nothing else.** A harness that greps output
+for "failed" reports green when the runner crashes, because a crash prints no failures
+either. `0` means every test passed, `1` means a test failed, and anything else —
+`4` usage error, `5` nothing collected — gets its own name and fails the run. A guard
+that survives its break, or one that was not green to begin with, is a failure too.
+
+What it covers: that the ranking metrics really are `trec_eval`'s arithmetic reached
+through `ir_measures` (break the wiring — the ranked order, the cut-off `k`, the graded
+gains — and the suite goes red); that every refusal actually refuses; that the envelope
+re-derives the payload hash and pins the signer; that the ledger's chain, count and
+signatures are three separate checks; and that the literals this README states out loud
+(the floor of 30 samples, the 95% interval, the 12 golden vectors) are the ones that
+ship. `scripts/mutation_harness.py` lists all 18 with the claim each one breaks, and CI
+runs it on every pull request.
+
 ## Reference
 
 <details>
@@ -661,6 +706,7 @@ uv sync --all-extras
 uv run poe gate                          # Python: ruff, ruff-format, mypy --strict, xenon A, pytest
 uv run poe gate-ts                       # TypeScript: biome, tsc --noEmit, vitest, build (needs pnpm)
 uv run poe gate-all                      # both, mirroring CI's two jobs
+uv run poe mutants                       # break each guard in turn; the suite must go red
 uv run python demo/run_demo.py           # measurement face: 6 honesty acceptance cases
 uv run python demo/unification_demo.py   # one envelope + one verifier, both faces
 ```
@@ -676,18 +722,18 @@ edges, and the native-vs-browser story.
 
 v0, deterministic — no LLM anywhere in the path.
 
-Two gates, mirroring CI's two jobs. `uv run poe gate` covers **Python only** (ruff,
+Three gates, mirroring CI's three jobs. `uv run poe gate` covers **Python only** (ruff,
 ruff-format, mypy `--strict`, xenon A, pytest with statement *and* branch coverage
 against a 90% floor); `uv run poe gate-ts` covers the TypeScript package (biome, `tsc`
-strict, vitest, build). `uv run poe gate-all` runs both.
+strict, vitest, build); `uv run poe mutants` breaks each guard in turn and requires the
+suite to notice. `uv run poe gate-all` runs the first two.
 
-Measured at the time of writing: **220 tests** — 149 Python at **100% statement and branch
-coverage** (647 statements, 48 branches, none missed), 40 in `@edgeproc/avow`, 31 in
-`@edgeproc/receipt-ui`.
+Measured at the time of writing: **258 tests** — 187 Python at **100% statement and branch
+coverage** (803 statements, 68 branches, none missed), 40 in `@edgeproc/avow`, 31 in
+`@edgeproc/receipt-ui` — plus **18 mutations, 18 of which the suite catches**.
 
-Published releases: `avow` 0.2.0 on PyPI; `@edgeproc/avow` 0.2.0 and
-`@edgeproc/receipt-ui` 0.2.0 on npm. The `PayloadHashMismatch` rename described above is
-on `main` and unreleased — it ships in 0.3.0. See [`CHANGELOG.md`](CHANGELOG.md) and
+Published releases: `avow` 0.3.0 on PyPI; `@edgeproc/avow` 0.3.0 and
+`@edgeproc/receipt-ui` 0.2.0 on npm. See [`CHANGELOG.md`](CHANGELOG.md) and
 [`ts/packages/receipt-ui/CHANGELOG.md`](ts/packages/receipt-ui/CHANGELOG.md) for what each
 release contains. Read the honest limits above before depending on any of it.
 
