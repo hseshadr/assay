@@ -17,5 +17,8 @@ class AssaySettings(BaseSettings):
     confidence_level: float = 0.95
     ece_bins: int = 15
     bootstrap_seed: int = 12345
+    # Default cut-off for the ranked-retrieval metrics (precision@k, recall@k, nDCG@k).
+    # 10 is the conventional "first page" depth; a caller may pass its own k per report.
+    ranking_k: int = 10
     signing_key_path: str = "signing.key"
     ledger_path: str = "assay-ledger.jsonl"

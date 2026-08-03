@@ -71,6 +71,25 @@ class CompositeDetail(BaseModel):
     parts: tuple[SubScorePart, ...]
 
 
+class RankingDetail(BaseModel):
+    """Ranked-retrieval evidence carried in a receipt.
+
+    ``k`` is recorded alongside the numbers because "precision 0.6" means nothing without
+    it. The per-query rows stay out of the receipt deliberately: they carry document ids
+    from the caller's catalog, and a receipt is meant to be shareable."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    k: int
+    n_queries: int
+    mean_precision_at_k: float
+    mean_recall_at_k: float
+    mean_f1_at_k: float
+    mean_ndcg_at_k: float
+    mrr: float
+    mean_average_precision: float
+
+
 class DeterminismSettings(BaseModel):
     """The settings that determine a classification receipt's numbers, recorded INSIDE
     the signed payload so replay is unconditional.
@@ -111,6 +130,7 @@ class ReceiptPayload(BaseModel):
     classification: ClassificationDetail | None = None
     calibration: CalibrationDetail | None = None
     composite: CompositeDetail | None = None
+    ranking: RankingDetail | None = None
 
 
 # The score face's concrete envelope. ``ScoreReceipt`` stays the public name callers
@@ -122,6 +142,7 @@ __all__ = [
     "ClassificationDetail",
     "CompositeDetail",
     "DeterminismSettings",
+    "RankingDetail",
     "ReceiptPayload",
     "ReliabilityPoint",
     "ScoreReceipt",

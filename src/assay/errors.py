@@ -27,7 +27,9 @@ from avow.errors import (
 __all__ = [
     "AssayError",
     "CanonicalizationFailed",
+    "EmptyRelevantSet",
     "InsufficientSamples",
+    "InvalidRankingRequest",
     "InvalidScoreRequest",
     "LedgerIntegrityError",
     "PayloadHashMismatch",
@@ -55,6 +57,27 @@ class UnknownMetric(AssayError):
     """Requested metric name is not registered."""
 
     code: ClassVar[str] = "assay.unknown_metric"
+
+
+class InvalidRankingRequest(AssayError):
+    """A ranked-retrieval input cannot be scored as given.
+
+    Covers ``k <= 0``, an empty ranked list, the same document twice in one ranked list
+    or judged twice in one query, a negative relevance gain, and an empty query set.
+    Each of these makes some metric's answer undefined rather than merely small, so the
+    face refuses instead of returning a number whose meaning nobody could state."""
+
+    code: ClassVar[str] = "assay.invalid_ranking_request"
+
+
+class EmptyRelevantSet(AssayError):
+    """No document is judged relevant, so recall and nDCG have no denominator.
+
+    Returning 0.0 here would read as "the ranker found nothing" and blame the ranker for
+    missing *judgments*. Those are different failures with different fixes, so they get
+    different answers: a real 0.0 when the ranker misses, a refusal when nobody judged."""
+
+    code: ClassVar[str] = "assay.empty_relevant_set"
 
 
 class InsufficientSamples(AssayError):
