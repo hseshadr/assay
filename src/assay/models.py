@@ -40,3 +40,45 @@ class CompositeRequest(BaseModel):
     metric: str = "weighted_composite"
     metric_version: str
     subscores: tuple[SubScoreInput, ...]
+
+
+class RelevanceJudgment(BaseModel):
+    """How relevant one document is to one query.
+
+    ``gain`` 0 means judged and not relevant; any positive gain means relevant, and a
+    larger gain means more relevant. Binary judgments are the special case where every
+    listed document has gain 1.0."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    doc_id: str
+    gain: float = 1.0
+
+
+class RankedQuery(BaseModel):
+    """One query's evidence: what the system returned, in order, and what was judged.
+
+    ``ranked`` is a *position* list — first element is the top hit — not scores. The two
+    are deliberately separate: a ranking is judged against the whole judgment set,
+    including relevant documents the system never returned."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    query: str
+    judgments: tuple[RelevanceJudgment, ...]
+    ranked: tuple[str, ...]
+
+
+class RankingRequest(BaseModel):
+    """A ranked-retrieval scoring request over a whole query set.
+
+    ``k`` left as ``None`` means "use ``AssaySettings.ranking_k``"; whichever value ends
+    up applying is recorded in the receipt, so a reported precision@k always says which
+    k it was."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    metric: str = "ranking"
+    metric_version: str
+    queries: tuple[RankedQuery, ...]
+    k: int | None = None

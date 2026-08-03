@@ -18,12 +18,14 @@ from assay.errors import (
     UnknownMetric,
 )
 from assay.metrics import ClassificationScores, binary_scores, correctness
-from assay.models import CompositeRequest, ScoreRequest, SubScoreInput
+from assay.models import CompositeRequest, RankingRequest, ScoreRequest, SubScoreInput
+from assay.ranking import RankingReport, ranking_report
 from assay.receipt import (
     CalibrationDetail,
     ClassificationDetail,
     CompositeDetail,
     DeterminismSettings,
+    RankingDetail,
     ReceiptPayload,
     ReliabilityPoint,
     ScoreReceipt,
@@ -42,6 +44,7 @@ from avow.verify import verify_receipt
 # accepted, so a receipt's `metric` field is verified, never merely asserted.
 _CLASSIFICATION_METRICS = frozenset({"binary"})
 _COMPOSITE_METRICS = frozenset({"weighted_composite"})
+_RANKING_METRICS = frozenset({"ranking"})
 
 
 def _require_metric(name: str, allowed: frozenset[str]) -> None:
@@ -163,6 +166,50 @@ def composite_score(request: CompositeRequest, *, signing_key: SigningKey) -> Sc
     """Score a weighted multi-scale composite into a signed receipt."""
     _require_metric(request.metric, _COMPOSITE_METRICS)
     return sign_payload(_composite_payload(request), signing_key)
+
+
+def _ranking_detail(report: RankingReport) -> RankingDetail:
+    return RankingDetail(
+        k=report.k,
+        n_queries=report.n_queries,
+        mean_precision_at_k=report.mean_precision_at_k,
+        mean_recall_at_k=report.mean_recall_at_k,
+        mean_f1_at_k=report.mean_f1_at_k,
+        mean_ndcg_at_k=report.mean_ndcg_at_k,
+        mrr=report.mrr,
+        mean_average_precision=report.mean_average_precision,
+    )
+
+
+def _ranking_payload(request: RankingRequest, settings: AssaySettings) -> ReceiptPayload:
+    report = ranking_report(request.queries, settings=settings, k=request.k)
+    point, low, high, abstained = _headline(report.ndcg_interval)
+    return ReceiptPayload(
+        assay_version=__version__,
+        metric=request.metric,
+        metric_version=request.metric_version,
+        inputs_hash=content_hash(request.model_dump(mode="json")),
+        score=point,
+        interval_low=low,
+        interval_high=high,
+        abstained=abstained,
+        abstain_reason=InsufficientSamples.code if abstained else None,
+        determinism=_determinism(settings),
+        ranking=_ranking_detail(report),
+    )
+
+
+def ranking_score(
+    request: RankingRequest, *, signing_key: SigningKey, settings: AssaySettings
+) -> ScoreReceipt:
+    """Score a ranked-retrieval query set into a signed, verifiable receipt.
+
+    The headline ``score`` is mean nDCG@k with its bootstrap interval — or an abstention
+    when the query set is smaller than the sample floor. The per-query means are always
+    carried in ``payload.ranking``, so a report that cannot support an interval still
+    says what it measured."""
+    _require_metric(request.metric, _RANKING_METRICS)
+    return sign_payload(_ranking_payload(request, settings), signing_key)
 
 
 def verify(receipt: ScoreReceipt, *, expected_public_key: str) -> bool:
