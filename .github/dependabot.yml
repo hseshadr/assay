@@ -1,0 +1,24 @@
+version: 2
+
+# Why this file exists: every `uses:` in this repo is SHA-pinned, and a SHA pin does not
+# move on its own. Without Dependabot watching them, the pins silently rot — assay sat on
+# astral-sh/setup-uv v8.3.2 while the rest of the portfolio moved to v9.0.0, purely
+# because nothing was opening the bump PR.
+#
+# The version comment beside each pin must name the EXACT version (`# v9.0.0`), never a
+# floating major (`# v9`). Dependabot rewrites the SHA and the comment together, and a
+# floating-major comment turns into a lie the moment upstream re-points the tag.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - github-actions
