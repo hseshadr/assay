@@ -263,7 +263,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         guard=(
             "tests/test_agreement.py::test_should_correct_tau_for_ties_the_three_band_scale_forces",
         ),
-        edit=_replace_once('variant="b"', 'variant="c"'),
+        edit=_replace_once(
+            'kendalltau(ordinals_a, ordinals_b, variant="b")',
+            'kendalltau(ordinals_a, ordinals_b, variant="c")',
+        ),
     ),
     Mutation(
         name="agreement-refuses-a-band-off-the-declared-scale",
