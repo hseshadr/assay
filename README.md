@@ -549,7 +549,7 @@ One command does that for every claim on this page:
 uv run poe mutants
 ```
 
-It works through 18 mutations, one at a time. For each it names the claim, runs the guard
+It works through 28 mutations, one at a time. For each it names the claim, runs the guard
 tests **unmutated** (which must pass), edits the source so the claim becomes false, reads
 the mutated file back off disk to confirm the edit landed, runs the same tests again
 (which must now fail), and restores the file. Takes about a minute; run it on a clean
@@ -559,11 +559,13 @@ tree, because it edits tracked files in place.
 mutation                                      before  after   verdict
 ranking-order-reaches-trec-eval                    0      1   RED — the guard fired
 ranking-recall-is-not-precision                    0      1   RED — the guard fired
+agreement-declared-band-order-reaches-kappa        0      1   RED — the guard fired
+metrics-confusion-cells-are-read-in-the-right-order       0      1   RED — the guard fired
 envelope-pins-the-signer                           0      1   RED — the guard fired
 ledger-requires-the-pinned-head                    0      1   RED — the guard fired
 documented-sample-floor-is-30                      0      1   RED — the guard fired
 ...
-18/18 guards fired when their claim was broken.
+28/28 guards fired when their claim was broken.
 whole suite after restore: exit 0 (green)
 ```
 
@@ -575,11 +577,14 @@ that survives its break, or one that was not green to begin with, is a failure t
 
 What it covers: that the ranking metrics really are `trec_eval`'s arithmetic reached
 through `ir_measures` (break the wiring — the ranked order, the cut-off `k`, the graded
-gains — and the suite goes red); that every refusal actually refuses; that the envelope
+gains — and the suite goes red); that the agreement statistics use the band order the
+*caller* declared rather than an alphabetical guess, and charge a near miss less than a
+total miss; that the confusion cells are read in the right order, so a miss is never
+reported as a false alarm; that every refusal actually refuses; that the envelope
 re-derives the payload hash and pins the signer; that the ledger's chain, count and
 signatures are three separate checks; and that the literals this README states out loud
 (the floor of 30 samples, the 95% interval, the 12 golden vectors) are the ones that
-ship. `scripts/mutation_harness.py` lists all 18 with the claim each one breaks, and CI
+ship. `scripts/mutation_harness.py` lists all 28 with the claim each one breaks, and CI
 runs it on every pull request.
 
 ## Reference
@@ -728,9 +733,9 @@ against a 90% floor); `uv run poe gate-ts` covers the TypeScript package (biome,
 strict, vitest, build); `uv run poe mutants` breaks each guard in turn and requires the
 suite to notice. `uv run poe gate-all` runs the first two.
 
-Measured at the time of writing: **258 tests** — 187 Python at **100% statement and branch
-coverage** (803 statements, 68 branches, none missed), 40 in `@edgeproc/avow`, 31 in
-`@edgeproc/receipt-ui` — plus **18 mutations, 18 of which the suite catches**.
+Measured at the time of writing: **298 tests** — 227 Python at **100% statement and branch
+coverage** (961 statements, 86 branches, none missed), 40 in `@edgeproc/avow`, 31 in
+`@edgeproc/receipt-ui` — plus **28 mutations, 28 of which the suite catches**.
 
 Published releases: `avow` 0.3.0 on PyPI; `@edgeproc/avow` 0.3.0 and
 `@edgeproc/receipt-ui` 0.2.0 on npm. See [`CHANGELOG.md`](CHANGELOG.md) and
