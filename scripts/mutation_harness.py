@@ -54,6 +54,7 @@ _ENVELOPE = "src/avow/envelope.py"
 _LEDGER = "src/avow/ledger.py"
 _SETTINGS = "src/assay/settings.py"
 _VECTORS = "testdata/vectors/canonical.json"
+_PNPM_WORKSPACE = "ts/pnpm-workspace.yaml"
 
 
 class MutationNotAppliedError(RuntimeError):
@@ -323,6 +324,21 @@ MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_documented_constants.py::test_the_golden_vector_counts_the_readme_promises",
         ),
         edit=_drop_last_vector,
+    ),
+    # ----------------------------------------------------------------------------------
+    # Not a claim about assay's maths — a claim about what assay will install. The
+    # quarantine below is the guard that turned PR #21 red by refusing a transitive
+    # dependency published hours earlier; lowering it is the one-line edit that would
+    # retire it, so the suite has to notice that edit.
+    # ----------------------------------------------------------------------------------
+    Mutation(
+        name="npm-release-quarantine-is-24h",
+        claim="a package published minutes ago cannot enter the TypeScript lockfile",
+        target=_PNPM_WORKSPACE,
+        guard=(
+            "tests/test_supply_chain_policy.py::test_new_npm_releases_are_quarantined_for_a_day",
+        ),
+        edit=_replace_once("minimumReleaseAge: 1440", "minimumReleaseAge: 0"),
     ),
 )
 
