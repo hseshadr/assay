@@ -69,6 +69,34 @@ class RankedQuery(BaseModel):
     ranked: tuple[str, ...]
 
 
+class ItemRating(BaseModel):
+    """One item, and the band each of two raters put it in.
+
+    Item-keyed rather than two loose parallel lists: the id is what makes "the same item
+    graded twice" detectable, and a silent duplicate lets one disputed item vote twice."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    item: str
+    rater_a: str
+    rater_b: str
+
+
+class AgreementRequest(BaseModel):
+    """An inter-rater agreement request over one set of doubly-graded items.
+
+    ``scale`` is ORDERED, weakest band first, and is signed into the receipt. The same
+    ratings measured against a different band order are a different measurement, so the
+    order a number was computed under has to travel with the number."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    metric: str = "agreement"
+    metric_version: str
+    scale: tuple[str, ...]
+    ratings: tuple[ItemRating, ...]
+
+
 class RankingRequest(BaseModel):
     """A ranked-retrieval scoring request over a whole query set.
 

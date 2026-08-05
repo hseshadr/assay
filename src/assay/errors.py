@@ -29,6 +29,7 @@ __all__ = [
     "CanonicalizationFailed",
     "EmptyRelevantSet",
     "InsufficientSamples",
+    "InvalidAgreementRequest",
     "InvalidRankingRequest",
     "InvalidScoreRequest",
     "LedgerIntegrityError",
@@ -78,6 +79,18 @@ class EmptyRelevantSet(AssayError):
     different answers: a real 0.0 when the ranker misses, a refusal when nobody judged."""
 
     code: ClassVar[str] = "assay.empty_relevant_set"
+
+
+class InvalidAgreementRequest(AssayError):
+    """An inter-rater input cannot be scored as given.
+
+    Covers two raters who graded different numbers of items, an empty item set, a band
+    that is not on the declared scale, a scale with fewer than two levels or a repeated
+    one, and the same item graded twice. Each of these either makes the answer undefined
+    or — worse — has scikit-learn quietly discard the offending rows and return a
+    healthy-looking number computed over fewer items than the caller handed in."""
+
+    code: ClassVar[str] = "assay.invalid_agreement_request"
 
 
 class InsufficientSamples(AssayError):

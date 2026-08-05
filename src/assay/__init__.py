@@ -10,8 +10,16 @@ from assay.errors import ScoringExtraMissing
 from avow import __version__
 
 try:
-    from assay.api import composite_score, ranking_score, replay, score, verify
+    from assay.api import agreement_score, composite_score, ranking_score, replay, score, verify
 except ModuleNotFoundError as exc:  # pragma: no cover - only without the [assay] extra
     raise ScoringExtraMissing("install avow[assay] to use the scoring face") from exc
 
-__all__ = ["__version__", "composite_score", "ranking_score", "replay", "score", "verify"]
+__all__ = [
+    "__version__",
+    "agreement_score",
+    "composite_score",
+    "ranking_score",
+    "replay",
+    "score",
+    "verify",
+]
