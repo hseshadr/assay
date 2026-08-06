@@ -587,10 +587,12 @@ reported as a false alarm; that every refusal actually refuses; that the envelop
 re-derives the payload hash and pins the signer; that the ledger's chain, count and
 signatures are three separate checks; and that the literals this README states out loud
 (the floor of 30 samples, the 95% interval, the golden-vector counts) are the ones that
-ship. `scripts/mutation_harness.py` lists all 35 with the claim each one breaks, and CI
-runs it on every pull request.
+ship. `scripts/mutation_harness.py` lists all 36 with the claim each one breaks, and CI
+runs it on every pull request. That count is itself pinned by a test, because it had
+already drifted once: this README said 18 while the harness carried 19, and nothing was
+counting.
 
-**It breaks TypeScript too.** 16 of those 35 mutations edit `ts/src` and run under
+**It breaks TypeScript too.** 16 of those 36 mutations edit `ts/src` and run under
 vitest, because `@edgeproc/avow` now ships the same metrics as the Python face — and a
 claim only Python can break is a claim only Python defends. Two of them exist purely to
 prove the *cross-language* pin bites: they push the TypeScript answer away from Python's
@@ -760,9 +762,10 @@ against a 90% floor); `uv run poe gate-ts` covers the TypeScript package (biome,
 strict, vitest, build); `uv run poe mutants` breaks each guard in turn and requires the
 suite to notice. `uv run poe gate-all` runs the first two.
 
-Measured at the time of writing: **298 tests** — 227 Python at **100% statement and branch
-coverage** (961 statements, 86 branches, none missed), 40 in `@edgeproc/avow`, 31 in
-`@edgeproc/receipt-ui` — plus **28 mutations, 28 of which the suite catches**.
+Measured at the time of writing: **368 tests** — 227 Python at **100% statement and branch
+coverage** (803 statements, 68 branches, none missed), 110 in `@edgeproc/avow` at 100%
+(121 statements, 52 branches), 31 in `@edgeproc/receipt-ui` at 100% — plus **36 mutations,
+36 of which the suite catches**, 16 of them breaking TypeScript under vitest.
 
 Published releases: `avow` 0.3.0 on PyPI; `@edgeproc/avow` 0.3.0 and
 `@edgeproc/receipt-ui` 0.2.0 on npm. See [`CHANGELOG.md`](CHANGELOG.md) and
