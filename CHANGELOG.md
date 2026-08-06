@@ -82,6 +82,22 @@
   rather than captured once. It is deliberately not a step inside `gate`: `gate` asks
   whether the tests pass, `mutants` asks whether they can fail.
 
+### Fixed
+- **The mutation harness was scoring a guard `SURVIVED` on stale bytecode.** Found while
+  adding the TypeScript guards, by running `poe mutants` repeatedly at an unchanged
+  commit: `ranking-k-reaches-trec-eval` failed on two of three runs. CPython decides a
+  `.pyc` is current from the source's mtime **and size**, and three of the existing
+  mutations are one character for one character — `P @ k` -> `P @ 1`, `R @ k` -> `P @ k`,
+  `AP)` -> `RR)`. The size never changes, so a write landing inside the same mtime tick
+  as the cached `.pyc` left the next interpreter loading unmutated bytecode: the guard
+  ran against code that was never broken, passed, and was reported as blind. The restore
+  path had the nastier version of the same bug — the `.pyc` written during a mutated run
+  could shadow the restored source, so the *next* mutation's baseline ran mutated code.
+  Both writes now drop the cached `.pyc`. 36/36 across four consecutive runs after the
+  fix, against 1/3 clean before it.
+  This is the harness's own instance of the defect it exists to catch: it reported a
+  verdict it had not actually measured.
+
 ### Changed
 - The `mutation-gate` CI job now installs pnpm and Node 22 alongside uv, because the
   harness it runs breaks guards in both languages. Nothing was weakened: the job gained
