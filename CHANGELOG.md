@@ -145,6 +145,18 @@
   whether the tests pass, `mutants` asks whether they can fail.
 
 ### Fixed
+- **A document id of `__proto__` scored 1.0 in Python and 0 in the browser.** Found by
+  probing the new face rather than by a test, which is the honest way to say it.
+  `binaryJudgments` accumulated into a plain object, and `plain["__proto__"] = 1` does
+  not create a property — it invokes `Object.prototype`'s `__proto__` setter, which
+  ignores a non-object value. The document silently vanished from the judgments. Python
+  has no such rule and keeps the key, so the same input produced precision@1 of **1.0
+  server-side and 0.0 browser-side**: no refusal in either language, no rounding
+  difference, just two confident and different answers — exactly the defect the shared
+  vectors exist to prevent, in the very PR that introduced them. The accumulator now has
+  a null prototype, and the `document_id_named_proto` shared vector pins it in both
+  languages, with a mutation (`ts-ranking-keeps-a-document-called-proto`) that puts the
+  plain object back and watches the guard go red.
 - **The mutation harness was scoring a guard `SURVIVED` on stale bytecode.** Found while
   adding the TypeScript guards, by running `poe mutants` repeatedly at an unchanged
   commit: `ranking-k-reaches-trec-eval` failed on two of three runs. CPython decides a

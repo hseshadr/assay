@@ -587,12 +587,12 @@ reported as a false alarm; that every refusal actually refuses; that the envelop
 re-derives the payload hash and pins the signer; that the ledger's chain, count and
 signatures are three separate checks; and that the literals this README states out loud
 (the floor of 30 samples, the 95% interval, the golden-vector counts) are the ones that
-ship. `scripts/mutation_harness.py` lists all 36 with the claim each one breaks, and CI
+ship. `scripts/mutation_harness.py` lists all 37 with the claim each one breaks, and CI
 runs it on every pull request. That count is itself pinned by a test, because it had
 already drifted once: this README said 18 while the harness carried 19, and nothing was
 counting.
 
-**It breaks TypeScript too.** 16 of those 36 mutations edit `ts/src` and run under
+**It breaks TypeScript too.** 17 of those 37 mutations edit `ts/src` and run under
 vitest, because `@edgeproc/avow` now ships the same metrics as the Python face — and a
 claim only Python can break is a claim only Python defends. Two of them exist purely to
 prove the *cross-language* pin bites: they push the TypeScript answer away from Python's
@@ -712,7 +712,7 @@ in `tests/test_vectors.py`; the TypeScript `@edgeproc/avow` replays the *same fi
 for byte, so any RFC 8785 number-serialization divergence fails in CI rather than in
 production.
 
-It also holds **22 metric cases** in `metrics.json` — 6 ranking and 7 ranking refusals, 5
+It also holds **23 metric cases** in `metrics.json` — 7 ranking and 7 ranking refusals, 5
 classification and 4 classification refusals — replayed by `tests/test_metric_vectors.py`
 and by `ts/src/metricVectors.test.ts`. That file is *not* generated, and the difference
 matters. `canonical.json` holds bytes nobody could author by hand, so a generator is the

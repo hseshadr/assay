@@ -715,8 +715,19 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
     ),
     Mutation(
-        name="documented-metric-vector-count-is-22",
-        claim="the README's 6 ranking + 7 ranking-refusal + 5 classification + 4 "
+        name="ts-ranking-keeps-a-document-called-proto",
+        claim="a document id of '__proto__' survives into the judgments, as it does in Python",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=("src/ranking.test.ts::keeps a document literally called __proto__",),
+        edit=_replace_once(
+            "  const judgments: Record<string, number> = Object.create(null);",
+            "  const judgments: Record<string, number> = {};",
+        ),
+    ),
+    Mutation(
+        name="documented-metric-vector-count-is-23",
+        claim="the README's 7 ranking + 7 ranking-refusal + 5 classification + 4 "
         "classification-refusal shared metric cases are all still shipped",
         target=_METRIC_VECTORS,
         guard=(

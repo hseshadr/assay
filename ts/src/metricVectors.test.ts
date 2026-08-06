@@ -121,7 +121,7 @@ function expectCode(call: () => unknown, code: string, label: string): void {
 
 describe("ranking vectors replay Python's trec_eval answers", () => {
   it("carries the whole ranking case set", () => {
-    expect(vectors.ranking.length).toBeGreaterThanOrEqual(6);
+    expect(vectors.ranking.length).toBeGreaterThanOrEqual(7);
   });
 
   for (const v of vectors.ranking) {

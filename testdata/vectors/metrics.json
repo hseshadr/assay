@@ -83,6 +83,19 @@
       }
     },
     {
+      "name": "document_id_named_proto",
+      "hand": "A document literally called '__proto__'. Relevant set is {__proto__, d2}, size 2. Top-2 of (__proto__, zz, d2) holds only __proto__, so P@2=1/2 and R@2=1/2, F1=2*(1/2)*(1/2)/1. First hit is at rank 1, so RR=1/1. This case exists because it once diverged: JavaScript's `plain['__proto__'] = 1` invokes Object.prototype's setter instead of creating a key, so the document vanished from the judgments and precision@1 was 1.0 in Python and 0 in the browser. Python has no such rule, and no refusal fired in either language -- both just answered, differently.",
+      "relevant": { "__proto__": 1, "d2": 1 },
+      "ranked": ["__proto__", "zz", "d2"],
+      "k": 2,
+      "expected": {
+        "precision_at_k": 0.5,
+        "recall_at_k": 0.5,
+        "f1_at_k": 0.5,
+        "reciprocal_rank": 1.0
+      }
+    },
+    {
       "name": "recall_denominator_is_the_relevant_set",
       "hand": "10 relevant documents, the ranker returned 2 and both are relevant. P@2=2/2=1.0 (perfect) while R@2=2/10=0.2. The two must not collapse into one number: dividing recall by k would report 1.0 here and hide 8 misses.",
       "relevant": {

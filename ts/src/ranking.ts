@@ -46,9 +46,20 @@ import { EmptyRelevantSet, InvalidRankingRequest } from "./scoringErrors.js";
  */
 export type Judgments = Readonly<Record<string, number>>;
 
-/** A relevant *set* as judgments: every listed document gets gain 1. */
+/**
+ * A relevant *set* as judgments: every listed document gets gain 1.
+ *
+ * The accumulator has a **null prototype**, and that is load-bearing rather than
+ * defensive habit. `plain["__proto__"] = 1` does not create a property — it invokes
+ * `Object.prototype`'s `__proto__` setter, which ignores a non-object value — so a
+ * document literally called `__proto__` silently vanished from the judgments. Python
+ * has no such rule, and `binary_judgments(["__proto__"])` keeps it. That made
+ * precision@1 over a `__proto__` document **1.0 in Python and 0 in the browser**: not
+ * a refusal, not a rounding difference, just two languages confidently printing
+ * different numbers. Pinned by the `document_id_named_proto` shared vector.
+ */
 export function binaryJudgments(docIds: Iterable<string>): Judgments {
-  const judgments: Record<string, number> = {};
+  const judgments: Record<string, number> = Object.create(null);
   for (const docId of docIds) {
     judgments[docId] = 1;
   }
