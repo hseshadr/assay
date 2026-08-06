@@ -171,7 +171,7 @@ One-line definitions, since none of these terms carry themselves:
 | `binaryRates`  | accuracy, precision, recall, F1, FPR and FNR from those cells   |
 
 **These are the same numbers Python prints.** `testdata/vectors/metrics.json` holds
-22 hand-computed cases that *both* test suites replay — 6 ranking and 7 ranking
+23 hand-computed cases that *both* test suites replay — 7 ranking and 7 ranking
 refusals, 5 classification and 4 classification refusals. Python reaches its answers
 through `trec_eval` and scikit-learn; this package counts them out against the
 definitions. If the two ever disagree, CI goes red in both languages.

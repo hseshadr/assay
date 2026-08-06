@@ -247,4 +247,18 @@ describe("binaryJudgments", () => {
     // Then each carries gain 1, which is the graded form of "relevant"
     expect(binaryJudgments(["a", "b"])).toEqual({ a: 1, b: 1 });
   });
+
+  it("keeps a document literally called __proto__", () => {
+    // Given a document id that collides with JavaScript's prototype accessor
+    const judgments = binaryJudgments(["__proto__", "ok"]);
+    // When the judgments are inspected
+    // Then it is a real own key with gain 1. On a plain object it would not be:
+    // `plain["__proto__"] = 1` invokes Object.prototype's setter, which ignores a
+    // non-object value, and the document silently disappears. Python keeps it, so
+    // this scored precision@1 as 1.0 in Python and 0 in the browser — no refusal in
+    // either language, just two different answers.
+    expect(Object.keys(judgments)).toEqual(["__proto__", "ok"]);
+    expect(Object.hasOwn(judgments, "__proto__")).toBe(true);
+    expect(precisionAtK(judgments, ["__proto__"], 1)).toBe(1); // hand: {__proto__}/1
+  });
 });
