@@ -22,12 +22,23 @@ Each mutation runs its named guard tests twice and then restores the file:
 The mutation is read back off disk before the second run, so an edit that silently
 failed to apply can never be reported as a guard that held.
 
+**It breaks TypeScript too.** Half the guards below live in ``ts/src``, because half
+the claims do: ``@edgeproc/avow`` ships the same metrics as the Python face and is
+pinned to it by shared golden vectors. A guard that only Python can break is a guard
+that only defends Python. Vitest's verdict is read from the JSON reporter's
+pass/fail counts rather than its exit code, and that is not a stylistic choice —
+``vitest run -t 'no-such-test'`` **exits 0**, reporting every test in the file as
+"total" while running none of them. An exit-code reading of that is a green baseline
+for a guard that does not exist. ``numPassedTests`` is the only field that says
+something ran. If the reporter writes no file at all — which is what a misspelled
+reporter name does — that is a harness error, never a verdict.
+
 Run it::
 
     uv run poe mutants
 
 It edits tracked files in place, so it refuses to start unless every file it will touch
-is clean in git.
+is clean in git. The TypeScript half needs ``ts/node_modules`` installed.
 """
 
 from __future__ import annotations
@@ -35,16 +46,23 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
+_TS = _ROOT / "ts"
 
-# pytest's documented exit codes. The verdict is read from these and from nothing else.
+# pytest's documented exit codes. The verdict is read from these and from nothing else,
+# and the vitest runner below maps its own JSON counts onto the same three numbers so
+# one report can hold both languages.
 _ALL_PASSED = 0
 _TESTS_FAILED = 1
 _NOTHING_COLLECTED = 5
+
+_PYTEST = "pytest"
+_VITEST = "vitest"
 
 # A one-item file has nothing to drop, so the vector-count mutation could not apply.
 _MIN_VECTORS_TO_DROP_ONE = 2
@@ -54,22 +72,34 @@ _ENVELOPE = "src/avow/envelope.py"
 _LEDGER = "src/avow/ledger.py"
 _SETTINGS = "src/assay/settings.py"
 _VECTORS = "testdata/vectors/canonical.json"
+_METRIC_VECTORS = "testdata/vectors/metrics.json"
 _PNPM_WORKSPACE = "ts/pnpm-workspace.yaml"
+_TS_RANKING = "ts/src/ranking.ts"
+_TS_METRICS = "ts/src/metrics.ts"
 
 
 class MutationNotAppliedError(RuntimeError):
     """The edit did not reach the file, so its result would prove nothing."""
 
 
+class HarnessError(RuntimeError):
+    """The runner itself failed, so neither run is evidence of anything."""
+
+
 @dataclass(frozen=True)
 class Mutation:
-    """One break, the claim it breaks, and the tests that must notice."""
+    """One break, the claim it breaks, and the tests that must notice.
+
+    ``guard`` entries are pytest node ids by default. When ``runner`` is ``vitest``
+    they are ``<file>::<test name>`` instead — the same shape, resolved against
+    vitest's file filter and ``--testNamePattern``."""
 
     name: str
     claim: str
     target: str
     guard: tuple[str, ...]
     edit: Callable[[str], str]
+    runner: str = field(default=_PYTEST)
 
 
 def _replace_once(old: str, new: str) -> Callable[[str], str]:
@@ -96,6 +126,22 @@ def _drop_last_vector(text: str) -> str:
     if len(vectors) < _MIN_VECTORS_TO_DROP_ONE:
         raise MutationNotAppliedError("fewer than two vectors; nothing to drop")
     return json.dumps(vectors[:-1], indent=2) + "\n"
+
+
+def _drop_last_metric_vector(text: str) -> str:
+    """Delete one shared metric case, so the count the README promises stops being true."""
+    vectors = json.loads(text)
+    if len(vectors["ranking"]) < _MIN_VECTORS_TO_DROP_ONE:
+        raise MutationNotAppliedError("fewer than two ranking cases; nothing to drop")
+    vectors["ranking"] = vectors["ranking"][:-1]
+    return json.dumps(vectors, indent=2) + "\n"
+
+
+def _delete_throw(statement: str) -> Callable[[str], str]:
+    """Remove a refusal, leaving its ``if`` block empty but syntactically valid.
+
+    The TypeScript counterpart of replacing a Python ``raise`` with ``pass``."""
+    return _replace_once(statement, "      // mutated: this refusal was deleted")
 
 
 MUTATIONS: tuple[Mutation, ...] = (
@@ -340,6 +386,213 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
         edit=_replace_once("minimumReleaseAge: 1440", "minimumReleaseAge: 0"),
     ),
+    # ----------------------------------------------------------------------------------
+    # `@edgeproc/avow`'s metrics face. These run under VITEST, not pytest. The claims
+    # are the same claims the Python block above makes, because the two faces are
+    # pinned to one another — so the guards have to be able to fail in both languages.
+    # The verdict comes from vitest's JSON pass/fail counts; see the module docstring
+    # for why its exit code cannot be trusted for this.
+    # ----------------------------------------------------------------------------------
+    Mutation(
+        name="ts-ranking-precision-divides-by-k",
+        claim="precision@k divides by k, so unfilled positions are charged for",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=("src/ranking.test.ts::charges for the empty positions when k exceeds the list",),
+        edit=_replace_once(
+            "  return hitsInTopK(relevant, ranked, k) / k;",
+            "  return hitsInTopK(relevant, ranked, k) / ranked.length;",
+        ),
+    ),
+    Mutation(
+        name="ts-ranking-recall-is-not-precision",
+        claim="recall@k divides by the relevant set, never by k",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=("src/ranking.test.ts::divides by the relevant set, never by k",),
+        edit=_replace_once(
+            "  return hitsInTopK(relevant, ranked, k) / relevantCount(relevant);",
+            "  return hitsInTopK(relevant, ranked, k) / k;",
+        ),
+    ),
+    Mutation(
+        name="ts-ranking-scores-only-the-top-k-slice",
+        claim="the ranked ORDER is what is scored, not merely the retrieved set",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=(
+            "src/ranking.test.ts::counts hits over k",
+            "src/ranking.test.ts::scores only the top-k slice, so order changes the answer",
+        ),
+        edit=_replace_once(
+            "  return ranked.slice(0, k).filter((doc) => isRelevant(relevant, doc)).length;",
+            "  return ranked.filter((doc) => isRelevant(relevant, doc)).length;",
+        ),
+    ),
+    Mutation(
+        name="ts-ranking-f1-is-the-harmonic-mean",
+        claim="F1@k is the harmonic mean of precision and recall, not their average",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=("src/ranking.test.ts::takes the harmonic mean, not the average",),
+        edit=_replace_once(
+            "  return (2 * precision * recall) / (precision + recall);",
+            "  return (precision + recall) / 2;",
+        ),
+    ),
+    Mutation(
+        name="ts-ranking-rr-is-the-first-hit",
+        claim="reciprocal rank uses the FIRST relevant hit, not any later one",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=("src/ranking.test.ts::uses the first hit and not the last when there are several",),
+        edit=_replace_once(
+            "  const position = ranked.findIndex((doc) => isRelevant(relevant, doc));",
+            "  const position = ranked.findLastIndex((doc) => isRelevant(relevant, doc));",
+        ),
+    ),
+    Mutation(
+        name="ts-ranking-a-zero-gain-is-not-relevant",
+        claim="a judged gain of 0 is judged NOT relevant, it is not merely a low grade",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=("src/ranking.test.ts::treats a judged gain of zero as NOT relevant",),
+        edit=_replace_once(
+            "  return Object.hasOwn(relevant, doc) && (relevant[doc] as number) > 0;",
+            "  return Object.hasOwn(relevant, doc) && (relevant[doc] as number) >= 0;",
+        ),
+    ),
+    Mutation(
+        name="ts-ranking-refuses-an-empty-relevant-set",
+        claim="a query with nothing judged relevant is refused, not scored 0.0",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=("src/ranking.test.ts::refuses when no document is judged relevant",),
+        edit=_delete_throw(
+            '    throw new EmptyRelevantSet("no document is judged relevant for this query");'
+        ),
+    ),
+    Mutation(
+        name="ts-ranking-refuses-a-fractional-gain",
+        claim="a relevance grade of 2.5 is refused, never silently rounded",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=("src/ranking.test.ts::refuses a fractional relevance gain rather than rounding it",),
+        edit=_delete_throw(
+            "      throw new InvalidRankingRequest(\n"
+            "        `relevance gain for '${doc}' is not whole: ${gain}`,\n"
+            "      );"
+        ),
+    ),
+    Mutation(
+        name="ts-ranking-refuses-a-duplicate-document",
+        claim="a ranked list holding one document twice is refused, not de-duplicated",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=("src/ranking.test.ts::refuses a ranked list holding the same document twice",),
+        edit=_delete_throw(
+            "    throw new InvalidRankingRequest(\n"
+            '      "ranked list holds the same document id twice",\n'
+            "    );"
+        ),
+    ),
+    Mutation(
+        name="ts-metrics-threshold-is-inclusive",
+        claim="a score exactly equal to the threshold is a POSITIVE prediction",
+        target=_TS_METRICS,
+        runner=_VITEST,
+        guard=("src/metrics.test.ts::treats a score exactly equal to the threshold as positive",),
+        edit=_replace_once(
+            "    const predictedPositive = (yScore[index] as number) >= threshold;",
+            "    const predictedPositive = (yScore[index] as number) > threshold;",
+        ),
+    ),
+    Mutation(
+        name="ts-metrics-fpr-is-not-fnr",
+        claim="the false-alarm rate and the miss rate are different numbers",
+        target=_TS_METRICS,
+        runner=_VITEST,
+        guard=(
+            "src/metrics.test.ts::keeps the false-positive rate distinct from the "
+            "false-negative rate",
+        ),
+        edit=_replace_once(
+            "    falsePositiveRate: ratio(falsePositives, falsePositives + trueNegatives),",
+            "    falsePositiveRate: ratio(falseNegatives, falseNegatives + truePositives),",
+        ),
+    ),
+    Mutation(
+        name="ts-metrics-zero-division-is-zero-not-nan",
+        claim="an undefined rate reports 0, matching sklearn's zero_division, never NaN",
+        target=_TS_METRICS,
+        runner=_VITEST,
+        guard=("src/metrics.test.ts::reports zero, not NaN, when nothing was predicted positive",),
+        edit=_replace_once(
+            "  return denominator === 0 ? 0 : numerator / denominator;",
+            "  return numerator / denominator;",
+        ),
+    ),
+    Mutation(
+        name="ts-metrics-refuses-a-single-class",
+        claim="a one-class input is refused here exactly as it is refused in Python",
+        target=_TS_METRICS,
+        runner=_VITEST,
+        guard=("src/metrics.test.ts::refuses a single-class label set",),
+        edit=_delete_throw(
+            '    throw new InvalidScoreRequest("need both classes present for AUC metrics");'
+        ),
+    ),
+    Mutation(
+        name="ts-metrics-default-threshold-is-half",
+        claim="the documented default decision threshold of 0.5 is the shipped one",
+        target=_TS_METRICS,
+        runner=_VITEST,
+        guard=("src/metrics.test.ts::uses the documented default threshold of 0.5",),
+        edit=_replace_once(
+            "export const DEFAULT_THRESHOLD = 0.5;", "export const DEFAULT_THRESHOLD = 0.9;"
+        ),
+    ),
+    # ----------------------------------------------------------------------------------
+    # The cross-language pin itself. The two mutations below are guarded ONLY by the
+    # shared-vector suite, so they answer the question that makes the vectors worth
+    # having: if TypeScript's answer drifts away from Python's, does the shared file
+    # actually notice? A vector suite nobody has watched fail is decoration.
+    # ----------------------------------------------------------------------------------
+    Mutation(
+        name="ts-cells-match-pythons-sklearn",
+        claim="a transposed confusion cell is caught by the vectors Python also replays",
+        target=_TS_METRICS,
+        runner=_VITEST,
+        guard=(
+            "src/metricVectors.test.ts::vector one_error_of_each_kind: "
+            "the four confusion cells match",
+        ),
+        edit=_replace_once("      falseNegatives += 1;", "      falsePositives += 1;"),
+    ),
+    Mutation(
+        name="ts-ranking-matches-pythons-trec-eval",
+        claim="a recall denominator that drifts from trec_eval's is caught by the vectors",
+        target=_TS_RANKING,
+        runner=_VITEST,
+        guard=(
+            "src/metricVectors.test.ts::vector graded_gains_and_a_zero_gain_judgment: "
+            "every ranking metric matches",
+        ),
+        edit=_replace_once(
+            "  return Object.values(relevant).filter((gain) => gain > 0).length;",
+            "  return Object.values(relevant).length;",
+        ),
+    ),
+    Mutation(
+        name="documented-metric-vector-count-is-22",
+        claim="the README's 6 ranking + 7 ranking-refusal + 5 classification + 4 "
+        "classification-refusal shared metric cases are all still shipped",
+        target=_METRIC_VECTORS,
+        guard=(
+            "tests/test_documented_constants.py::test_the_metric_vector_counts_the_readme_promises",
+        ),
+        edit=_drop_last_metric_vector,
+    ),
 )
 
 
@@ -382,6 +635,80 @@ def _pytest(node_ids: Sequence[str]) -> int:
     return completed.returncode
 
 
+def _split_guards(guard: Sequence[str]) -> tuple[list[str], str]:
+    """``file::test name`` pairs -> (unique files, one alternation pattern).
+
+    The names are regex-escaped because ``--testNamePattern`` is a JavaScript RegExp:
+    an unescaped ``(`` in a test title would silently change which tests match."""
+    files, names = [], []
+    for entry in guard:
+        path, _, name = entry.partition("::")
+        if path not in files:
+            files.append(path)
+        names.append(_escape_for_js_regex(name))
+    return files, "|".join(names)
+
+
+def _escape_for_js_regex(name: str) -> str:
+    return "".join(f"\\{ch}" if ch in "()[]{}.*+?^$|/\\" else ch for ch in name)
+
+
+def _vitest_counts(report: Path) -> tuple[int, int]:
+    """Read (passed, failed) out of the JSON reporter's output.
+
+    A missing or unparseable file means the runner never produced a report — a
+    misspelled reporter name does exactly that, and it is the failure mode that once
+    let a sibling harness score twelve crashed runs as green. It raises here."""
+    if not report.exists():
+        raise HarnessError(f"vitest wrote no JSON report to {report}; no verdict is possible")
+    data = json.loads(report.read_text(encoding="utf-8"))
+    return int(data["numPassedTests"]), int(data["numFailedTests"])
+
+
+def _vitest_verdict(passed: int, failed: int) -> int:
+    """Map vitest's counts onto pytest's exit codes, so one report holds both.
+
+    ``vitest run -t <no match>`` exits 0 with every test in the file counted as
+    "total" and none of them run, so the exit code cannot distinguish a passing guard
+    from an absent one. Zero passes and zero failures means nothing ran."""
+    if failed > 0:
+        return _TESTS_FAILED
+    if passed == 0:
+        return _NOTHING_COLLECTED
+    return _ALL_PASSED
+
+
+def _vitest_command(files: Sequence[str], pattern: str, report: Path) -> list[str]:
+    """``pnpm`` is resolved from PATH on purpose — it is the pinned package manager for
+    ``ts/``, and hardcoding a machine-specific absolute path would break every runner."""
+    return [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        *files,
+        "--testNamePattern",
+        pattern,
+        "--reporter=json",
+        f"--outputFile={report}",
+    ]
+
+
+def _vitest(guard: Sequence[str]) -> int:
+    """Run the named vitest guards and return a pytest-shaped exit code."""
+    files, pattern = _split_guards(guard)
+    with tempfile.TemporaryDirectory() as tmp:
+        report = Path(tmp) / "vitest.json"
+        subprocess.run(  # noqa: S603
+            _vitest_command(files, pattern, report), cwd=_TS, check=False
+        )
+        return _vitest_verdict(*_vitest_counts(report))
+
+
+def _run_guard(mutation: Mutation) -> int:
+    return _vitest(mutation.guard) if mutation.runner == _VITEST else _pytest(mutation.guard)
+
+
 def _apply(path: Path, mutation: Mutation, original: str) -> None:
     """Mutate the file, then read it back off disk to prove the mutation landed."""
     mutated = mutation.edit(original)
@@ -402,10 +729,10 @@ def _check(mutation: Mutation) -> Result:
     path = _ROOT / mutation.target
     original = path.read_text(encoding="utf-8")
     print(f"\n>>> {mutation.name}\n    claim:  {mutation.claim}\n    break:  {mutation.target}")
-    before = _pytest(mutation.guard)
+    before = _run_guard(mutation)
     try:
         _apply(path, mutation, original)
-        after = _pytest(mutation.guard)
+        after = _run_guard(mutation)
     finally:
         _restore(path, original)
     return Result(mutation=mutation, before=before, after=after)
