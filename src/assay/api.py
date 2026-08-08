@@ -1,4 +1,4 @@
-"""The Assay facade: score, composite_score, verify, replay.
+"""The Assay facade: score, composite_score, ranking_score, agreement_score, verify, replay.
 
 This is the only module most callers touch. It wires the reused primitives into a
 signed, reproducible receipt and offers offline verification and replay."""
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from nacl.signing import SigningKey
 
+from assay.agreement import AgreementReport, agreement_report
 from assay.calibration import CalibrationReport, calibration_report
 from assay.composite import SubScore, composite
 from assay.errors import (
@@ -17,13 +18,21 @@ from assay.errors import (
     SignatureInvalid,
     UnknownMetric,
 )
-from assay.metrics import ClassificationScores, binary_scores, correctness
-from assay.models import CompositeRequest, RankingRequest, ScoreRequest, SubScoreInput
+from assay.metrics import ClassificationScores, ConfusionCounts, binary_scores, correctness
+from assay.models import (
+    AgreementRequest,
+    CompositeRequest,
+    RankingRequest,
+    ScoreRequest,
+    SubScoreInput,
+)
 from assay.ranking import RankingReport, ranking_report
 from assay.receipt import (
+    AgreementDetail,
     CalibrationDetail,
     ClassificationDetail,
     CompositeDetail,
+    ConfusionDetail,
     DeterminismSettings,
     RankingDetail,
     ReceiptPayload,
@@ -45,6 +54,7 @@ from avow.verify import verify_receipt
 _CLASSIFICATION_METRICS = frozenset({"binary"})
 _COMPOSITE_METRICS = frozenset({"weighted_composite"})
 _RANKING_METRICS = frozenset({"ranking"})
+_AGREEMENT_METRICS = frozenset({"agreement"})
 
 
 def _require_metric(name: str, allowed: frozenset[str]) -> None:
@@ -52,13 +62,24 @@ def _require_metric(name: str, allowed: frozenset[str]) -> None:
         raise UnknownMetric(f"unknown metric {name!r}")
 
 
+def _confusion_detail(counts: ConfusionCounts) -> ConfusionDetail:
+    return ConfusionDetail(
+        true_positives=counts.true_positives,
+        false_positives=counts.false_positives,
+        true_negatives=counts.true_negatives,
+        false_negatives=counts.false_negatives,
+    )
+
+
 def _classification_detail(scores: ClassificationScores) -> ClassificationDetail:
     return ClassificationDetail(
         precision=scores.precision,
         recall=scores.recall,
         f1=scores.f1,
+        false_negative_rate=scores.false_negative_rate,
         pr_auc=scores.pr_auc,
         roc_auc=scores.roc_auc,
+        confusion=_confusion_detail(scores.counts),
     )
 
 
@@ -210,6 +231,51 @@ def ranking_score(
     says what it measured."""
     _require_metric(request.metric, _RANKING_METRICS)
     return sign_payload(_ranking_payload(request, settings), signing_key)
+
+
+def _agreement_detail(report: AgreementReport) -> AgreementDetail:
+    return AgreementDetail(
+        scale=report.scale,
+        n_items=report.n_items,
+        n_exact_matches=report.n_exact_matches,
+        percent_agreement=report.percent_agreement,
+        weighted_agreement=report.weighted_agreement,
+        quadratic_kappa=report.quadratic_kappa,
+        kendall_tau_b=report.kendall_tau_b,
+    )
+
+
+def _agreement_payload(request: AgreementRequest, settings: AssaySettings) -> ReceiptPayload:
+    report = agreement_report(request.ratings, scale=request.scale, settings=settings)
+    point, low, high, abstained = _headline(report.weighted_agreement_interval)
+    return ReceiptPayload(
+        assay_version=__version__,
+        metric=request.metric,
+        metric_version=request.metric_version,
+        inputs_hash=content_hash(request.model_dump(mode="json")),
+        score=point,
+        interval_low=low,
+        interval_high=high,
+        abstained=abstained,
+        abstain_reason=InsufficientSamples.code if abstained else None,
+        determinism=_determinism(settings),
+        agreement=_agreement_detail(report),
+    )
+
+
+def agreement_score(
+    request: AgreementRequest, *, signing_key: SigningKey, settings: AssaySettings
+) -> ScoreReceipt:
+    """Score inter-rater agreement into a signed, verifiable receipt.
+
+    The headline ``score`` is the mean per-item weighted agreement with its bootstrap
+    interval — or an abstention when there are fewer items than the sample floor. Kappa
+    is deliberately NOT the headline: it is not the mean of any per-item quantity, so no
+    bootstrap of a mean can put an interval on it. It is carried in ``payload.agreement``
+    alongside tau-b and the declared band order, which is signed in with them because the
+    same ratings against a reordered scale are a different measurement."""
+    _require_metric(request.metric, _AGREEMENT_METRICS)
+    return sign_payload(_agreement_payload(request, settings), signing_key)
 
 
 def verify(receipt: ScoreReceipt, *, expected_public_key: str) -> bool:

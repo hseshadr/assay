@@ -50,6 +50,8 @@ _NOTHING_COLLECTED = 5
 _MIN_VECTORS_TO_DROP_ONE = 2
 
 _RANKING = "src/assay/ranking.py"
+_AGREEMENT = "src/assay/agreement.py"
+_METRICS = "src/assay/metrics.py"
 _ENVELOPE = "src/avow/envelope.py"
 _LEDGER = "src/avow/ledger.py"
 _SETTINGS = "src/assay/settings.py"
@@ -213,6 +215,135 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
         edit=_replace_once(
             '        raise InvalidRankingRequest("ranked list holds the same document id twice")',
+            "        pass",
+        ),
+    ),
+    # ----------------------------------------------------------------------------------
+    # The agreement face. The statistics are sklearn's and scipy's; every mutation below
+    # breaks the ORDINAL CONTRACT around them — which band order was used, whether the
+    # distance between bands counts, and whether a degenerate input is allowed to pass
+    # itself off as a number.
+    # ----------------------------------------------------------------------------------
+    Mutation(
+        name="agreement-declared-band-order-reaches-kappa",
+        claim="the CALLER's band order sets the ordinal distances, not an alphabetical guess",
+        target=_AGREEMENT,
+        guard=(
+            "tests/test_agreement.py::test_should_use_the_declared_band_order_and_not_an_alphabetical_one",
+            "tests/test_agreement.py::test_should_separate_a_near_miss_from_a_total_miss_when_percent_agreement_cannot",
+        ),
+        # Dropping `labels` is the single most plausible edit here, and sklearn does not
+        # complain: it sorts the band names instead, so weak/moderate/strong silently
+        # becomes moderate < strong < weak and the SAME ratings score +2/3 instead of -1/3.
+        edit=_replace_once(
+            "    return float(cohen_kappa_score(rater_a, rater_b, "
+            'labels=list(scale), weights="quadratic"))',
+            '    return float(cohen_kappa_score(rater_a, rater_b, weights="quadratic"))',
+        ),
+    ),
+    Mutation(
+        name="agreement-kappa-is-quadratically-weighted",
+        claim="a near miss costs less than a total miss — the scale is ordinal, not nominal",
+        target=_AGREEMENT,
+        guard=(
+            "tests/test_agreement.py::test_should_separate_a_near_miss_from_a_total_miss_when_percent_agreement_cannot",
+            "tests/test_agreement.py::test_should_report_worse_than_chance_when_percent_agreement_looks_healthy",
+        ),
+        # Unweighted kappa scores the two rater pairs in that first test IDENTICALLY
+        # (1/3 each), which is precisely the blindness the weighting exists to remove.
+        edit=_replace_once(
+            'labels=list(scale), weights="quadratic"))',
+            "labels=list(scale)))",
+        ),
+    ),
+    Mutation(
+        name="agreement-tau-b-corrects-for-ties",
+        claim="tau-b's tie correction is applied, so a 3-band scale is not scored as ranks",
+        target=_AGREEMENT,
+        guard=(
+            "tests/test_agreement.py::test_should_correct_tau_for_ties_the_three_band_scale_forces",
+        ),
+        edit=_replace_once(
+            'kendalltau(ordinals_a, ordinals_b, variant="b")',
+            'kendalltau(ordinals_a, ordinals_b, variant="c")',
+        ),
+    ),
+    Mutation(
+        name="agreement-refuses-a-band-off-the-declared-scale",
+        claim="a band the scale does not declare is refused, never silently discarded",
+        target=_AGREEMENT,
+        guard=(
+            "tests/test_agreement.py::test_should_refuse_a_band_that_is_not_on_the_declared_scale",
+        ),
+        edit=_replace_once(
+            "        raise InvalidAgreementRequest("
+            'f"bands that are not on the declared scale: {unknown}")',
+            "        pass",
+        ),
+    ),
+    Mutation(
+        name="agreement-refuses-an-item-graded-twice",
+        claim="the same item graded twice is refused, so no one item can vote twice",
+        target=_AGREEMENT,
+        guard=("tests/test_agreement.py::test_should_refuse_the_same_item_graded_twice",),
+        edit=_replace_once(
+            '        raise InvalidAgreementRequest("the same item is graded twice")',
+            "        pass",
+        ),
+    ),
+    Mutation(
+        name="agreement-kappa-is-undefined-not-perfect-when-nobody-varied",
+        claim="two raters who used one band throughout score UNDEFINED, never 1.0",
+        target=_AGREEMENT,
+        guard=(
+            "tests/test_agreement.py::test_should_report_kappa_undefined_when_both_raters_never_varied",
+            "tests/test_agreement.py::test_should_name_the_reason_when_a_statistic_is_undefined",
+        ),
+        # 1.0 is the flattering answer and the one a careless fix would reach for: they
+        # did, after all, agree on every single item.
+        edit=_replace_once(
+            "    if len(set(rater_a) | set(rater_b)) < _MIN_LEVELS:\n        return None",
+            "    if len(set(rater_a) | set(rater_b)) < _MIN_LEVELS:\n        return 1.0",
+        ),
+    ),
+    # ----------------------------------------------------------------------------------
+    # The confusion counts. A rate hides which way a system fails; these are the four
+    # numbers that say, and two of them are trivially swappable without any total moving.
+    # ----------------------------------------------------------------------------------
+    Mutation(
+        name="metrics-confusion-cells-are-read-in-the-right-order",
+        claim="a miss is not read back as a false alarm",
+        target=_METRICS,
+        guard=("tests/test_metrics.py::test_should_count_each_confusion_cell_by_hand",),
+        # sklearn ravels the matrix as tn, fp, fn, tp. Swapping the middle pair keeps
+        # every total identical and inverts what the system is failing at.
+        edit=_replace_once(
+            "    true_negatives, false_positives, false_negatives, "
+            "true_positives = confusion_matrix(",
+            "    true_negatives, false_negatives, false_positives, "
+            "true_positives = confusion_matrix(",
+        ),
+    ),
+    Mutation(
+        name="metrics-false-negative-rate-counts-misses",
+        claim="the FNR divides misses by real positives — it is not the false-ALARM rate",
+        target=_METRICS,
+        guard=(
+            "tests/test_metrics.py::test_should_report_the_miss_rate_as_the_false_negative_rate",
+            "tests/test_metrics.py::test_should_make_the_false_negative_rate_the_exact_complement_of_recall",
+        ),
+        edit=_replace_once(
+            "    return counts.false_negatives / (counts.false_negatives + counts.true_positives)",
+            "    return counts.false_positives / (counts.false_positives + counts.true_negatives)",
+        ),
+    ),
+    Mutation(
+        name="metrics-refuses-a-label-outside-zero-and-one",
+        claim="a label outside {0, 1} is refused, never dropped from the counts",
+        target=_METRICS,
+        guard=("tests/test_metrics.py::test_should_refuse_a_label_outside_zero_and_one",),
+        edit=_replace_once(
+            '        raise InvalidScoreRequest(f"labels must be 0 or 1; got {outside}")',
             "        pass",
         ),
     ),

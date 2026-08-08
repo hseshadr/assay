@@ -28,19 +28,38 @@ class ReliabilityPoint(BaseModel):
     count: int
 
 
+class ConfusionDetail(BaseModel):
+    """The four confusion cells at the scored threshold, carried in a receipt.
+
+    Named cells rather than a bare 2x2 array, because the order they come back in from
+    a confusion matrix is ``tn, fp, fn, tp`` and reading that tuple in the wrong order
+    swaps a miss for a false alarm without changing a single total."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    true_positives: int
+    false_positives: int
+    true_negatives: int
+    false_negatives: int
+
+
 class ClassificationDetail(BaseModel):
     """Point classification metrics carried in a receipt.
 
     F1, precision and recall are first-class here alongside the ranking metrics —
-    accuracy alone never speaks for a classifier."""
+    accuracy alone never speaks for a classifier. ``false_negative_rate`` is carried by
+    name even though it is ``1 - recall``: for a screening system the miss is the number
+    it is judged on, and nobody reads a 3% miss rate off a recall of 0.97."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     precision: float
     recall: float
     f1: float
+    false_negative_rate: float
     pr_auc: float
     roc_auc: float
+    confusion: ConfusionDetail
 
 
 class CalibrationDetail(BaseModel):
@@ -90,6 +109,27 @@ class RankingDetail(BaseModel):
     mean_average_precision: float
 
 
+class AgreementDetail(BaseModel):
+    """Inter-rater agreement evidence carried in a receipt.
+
+    ``scale`` rides along because the numbers are meaningless without the band order
+    they were computed under — the same ratings against a reordered scale are a
+    different measurement. ``quadratic_kappa`` and ``kendall_tau_b`` are ``None`` when
+    the ratings were too degenerate for the statistic to exist. The per-item rows stay
+    out, as the ranking rows do: they carry the caller's item ids, and a receipt is
+    meant to be shareable."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scale: tuple[str, ...]
+    n_items: int
+    n_exact_matches: int
+    percent_agreement: float
+    weighted_agreement: float
+    quadratic_kappa: float | None = None
+    kendall_tau_b: float | None = None
+
+
 class DeterminismSettings(BaseModel):
     """The settings that determine a classification receipt's numbers, recorded INSIDE
     the signed payload so replay is unconditional.
@@ -131,6 +171,7 @@ class ReceiptPayload(BaseModel):
     calibration: CalibrationDetail | None = None
     composite: CompositeDetail | None = None
     ranking: RankingDetail | None = None
+    agreement: AgreementDetail | None = None
 
 
 # The score face's concrete envelope. ``ScoreReceipt`` stays the public name callers
@@ -138,9 +179,11 @@ class ReceiptPayload(BaseModel):
 ScoreReceipt = SignedReceipt[ReceiptPayload]
 
 __all__ = [
+    "AgreementDetail",
     "CalibrationDetail",
     "ClassificationDetail",
     "CompositeDetail",
+    "ConfusionDetail",
     "DeterminismSettings",
     "RankingDetail",
     "ReceiptPayload",
