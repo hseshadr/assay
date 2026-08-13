@@ -47,11 +47,10 @@ already has both pins `verify-ledger` needs: the public key (*who* signed the en
 the chain head (*which* entries there are). Copy the head somewhere the ledger's writer
 cannot reach — beside the ledger it is a convenience, not a control.
 
-The **chained, keyed** `verify-ledger` shown above — the one that requires `--public-key`
-and `--head` — is `avow` 0.2.0 (this repo, unreleased). The published 0.1.1
-(`pip install 'avow[cli]'` from PyPI) ships an earlier `verify-ledger` that is hash-only,
-takes neither flag, and cannot see a deleted or reordered entry. See
-[`CHANGELOG.md`](CHANGELOG.md).
+The **chained, keyed** `verify-ledger` shown above ships in the current published 0.4.0.
+The prepared 0.4.1 patch supersedes 0.4.0 for CLI ledger writers by holding one bounded
+process lock across the append and convenience-head save. Until 0.4.1 is published,
+installing from PyPI still gives 0.4.0; see [`CHANGELOG.md`](CHANGELOG.md).
 
 Pointed at a path it cannot read, `verify-ledger` fails closed with
 `avow.ledger_unreadable` rather than reporting zero entries intact. With no head to check

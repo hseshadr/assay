@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import subprocess
+import sys
 from pathlib import Path
 
 from typer.testing import CliRunner
 
-from assay.cli import app
+from assay.cli import _safe_location, _safe_token, app
 
 _RUNNER = CliRunner()
+
+
+def _real_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    executable = Path(sys.executable).with_name("assay")
+    return subprocess.run(  # noqa: S603
+        [str(executable), *args], check=False, capture_output=True, text=True
+    )
 
 
 def _verify_ledger(tmp_path: Path, ledger: Path, head: Path | None = None):
@@ -55,6 +64,134 @@ def _score_process(root: Path, index: int) -> None:
     )
     if result.exit_code:
         raise RuntimeError(result.stdout) from result.exception
+
+
+def test_real_cli_redacts_a_malformed_request_value(tmp_path: Path) -> None:
+    # Given a private value appears where a classification label should be
+    sentinel = "PII-SENTINEL-ALICE"
+    request = tmp_path / "request.json"
+    request.write_text(
+        json.dumps(
+            {"metric": "binary", "metric_version": "1", "y_true": [sentinel], "y_score": [0.1]}
+        )
+    )
+    # When the real console entry point validates the malformed request
+    result = _real_cli(
+        "score",
+        "--request",
+        str(request),
+        "--key",
+        str(tmp_path / "private.key"),
+        "--out",
+        str(tmp_path / "receipt.json"),
+    )
+    # Then it emits only a stable code and schema location, never the value or traceback
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "FAIL: assay.invalid_request field=y_true.0" in combined
+    assert sentinel not in combined
+    assert "input_value" not in combined
+    assert "Traceback" not in combined
+
+
+def test_real_cli_redacts_a_domain_value_from_scoring_errors(tmp_path: Path) -> None:
+    # Given a validly shaped request carries an unregistered caller-controlled metric
+    sentinel = "PII-SENTINEL-METRIC"
+    request, key = tmp_path / "request.json", tmp_path / "private.key"
+    request.write_text(
+        json.dumps(
+            {"metric": sentinel, "metric_version": "1", "y_true": [0, 1], "y_score": [0.1, 0.9]}
+        )
+    )
+    assert _real_cli("keygen", "--out", str(key)).returncode == 0
+    # When the domain rejects it through the real console entry point
+    result = _real_cli(
+        "score", "--request", str(request), "--key", str(key), "--out", str(tmp_path / "out")
+    )
+    # Then the stable code survives but the caller's metric value does not
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "FAIL: assay.unknown_metric" in combined
+    assert sentinel not in combined
+    assert "Traceback" not in combined
+
+
+def test_safe_validation_location_never_renders_unknown_tokens() -> None:
+    # Given Pydantic locations may contain field names, positions, or model-defined keys
+    assert _safe_token(2) == "2"
+    assert _safe_token("y_true") == "y_true"
+    assert _safe_token("PII-SENTINEL-FIELD") == "field"
+
+    class NoErrors:
+        def errors(self, **kwargs: object) -> list[object]:
+            return []
+
+    assert _safe_location(NoErrors()) == "request"  # type: ignore[arg-type]
+
+
+def test_cli_maps_every_input_boundary_without_a_traceback(tmp_path: Path) -> None:
+    # Given malformed or absent inputs reach each command boundary
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{}", encoding="utf-8")
+    missing = tmp_path / "missing"
+    calls = (
+        ["keygen", "--out", str(missing / "key")],
+        ["score", "--request", str(malformed), "--key", str(missing), "--out", str(missing)],
+        ["score", "--request", str(missing), "--key", str(missing), "--out", str(missing)],
+        ["composite", "--request", str(malformed), "--key", str(missing), "--out", str(missing)],
+        ["composite", "--request", str(missing), "--key", str(missing), "--out", str(missing)],
+        ["verify", "--receipt", str(malformed), "--public-key", str(missing)],
+        ["verify", "--receipt", str(missing), "--public-key", str(missing)],
+        [
+            "verify-ledger",
+            "--ledger",
+            str(missing),
+            "--public-key",
+            str(missing),
+            "--head",
+            str(missing),
+        ],
+    )
+    # Then all fail with one safe code and no framework traceback
+    for args in calls:
+        result = _RUNNER.invoke(app, args)
+        assert result.exit_code == 1
+        assert "FAIL:" in result.stdout
+        assert "Traceback" not in result.stdout
+
+
+def test_cli_redacts_domain_values_in_both_scoring_commands(tmp_path: Path) -> None:
+    # Given both typed request shapes carry an unknown caller-controlled metric
+    sentinel = "PII-SENTINEL-DOMAIN"
+    key = tmp_path / "key"
+    assert _RUNNER.invoke(app, ["keygen", "--out", str(key)]).exit_code == 0
+    score_request, composite_request = tmp_path / "score.json", tmp_path / "composite.json"
+    score_request.write_text(
+        json.dumps(
+            {"metric": sentinel, "metric_version": "1", "y_true": [0, 1], "y_score": [0.1, 0.9]}
+        )
+    )
+    composite_request.write_text(
+        json.dumps({"metric": sentinel, "metric_version": "1", "subscores": []})
+    )
+    calls = (
+        ["score", "--request", str(score_request), "--key", str(key), "--out", str(tmp_path / "a")],
+        [
+            "composite",
+            "--request",
+            str(composite_request),
+            "--key",
+            str(key),
+            "--out",
+            str(tmp_path / "b"),
+        ],
+    )
+    # Then only the stable domain code survives either boundary
+    for args in calls:
+        result = _RUNNER.invoke(app, args)
+        assert result.exit_code == 1
+        assert "assay.unknown_metric" in result.stdout
+        assert sentinel not in result.stdout
 
 
 def test_should_keygen_score_and_verify_end_to_end(tmp_path: Path) -> None:

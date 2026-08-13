@@ -49,11 +49,13 @@ def test_operations_doc_freezes_every_release_acceptance_number() -> None:
     assert "No network, DNS, telemetry, subprocess, or background thread" in contract
     assert "not encryption" in contract
     assert "Default timeout: **5.0 seconds**" in contract
+    assert "64 MiB, 100,000 entries, or one 64 KiB encoded line" in contract
+    assert "prebuilt 5,000-entry history" in contract
     assert "**RPO 0**" in contract
     assert "p50 <= **2 ms**, p95 <= **4 ms**, p99 <= **10 ms**" in contract
     assert "p50 <= **3 ms**, p95 <= **8 ms**, p99 <= **20 ms**" in contract
     assert "p50 <= **75 ms**, p95 <= **150 ms**, p99 <= **300 ms**" in contract
-    assert "complete and verify <= **15 s**" in contract
+    assert "timed append plus verify <= **15 s**" in contract
     assert "uv run poe benchmark" in contract
     assert "pnpm --dir ts benchmark" in contract
 

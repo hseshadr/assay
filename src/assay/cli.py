@@ -4,12 +4,14 @@ facade, translate results to exit codes. No business logic lives here."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
+from pydantic import ValidationError
 
 from assay.api import composite_score
 from assay.api import score as score_receipt
+from assay.errors import AssayError, CliInputInvalid, InvalidScoreRequest
 from assay.models import CompositeRequest, ScoreRequest
 from assay.receipt import ScoreReceipt
 from assay.settings import AssaySettings
@@ -21,7 +23,7 @@ from avow.keys import (
     save_public_key,
     save_signing_key,
 )
-from avow.ledger import append_and_save_head, read_head, verify_integrity
+from avow.ledger import LedgerHead, append_and_save_head, read_head, verify_integrity
 from avow.verify import verify_receipt
 
 app = typer.Typer(help="Assay — the scoring engine that refuses to lie.")
@@ -44,13 +46,41 @@ _HeadOutput = Annotated[
 _ReceiptInput = Annotated[Path, typer.Option("--receipt", help="Receipt JSON to verify.")]
 _PublicKeyInput = Annotated[Path, typer.Option("--public-key", help="Pinned signer public key.")]
 _HeadInput = Annotated[Path, typer.Option("--head", help="Pinned chain-head file.")]
+_SAFE_FIELDS = frozenset(
+    {"metric", "metric_version", "y_true", "y_score", "threshold", "subscores"}
+)
 
 
-def _fail(exc: AvowError) -> None:
-    """Report a coded failure and exit non-zero. The stable ``code`` is what callers
-    branch on — collapsing it to a bare boolean would throw the cause away."""
-    typer.echo(f"FAIL: {exc.code}: {exc}")
+def _safe_token(token: object) -> str:
+    """Render only schema-owned field names and numeric positions."""
+    if isinstance(token, int):
+        return str(token)
+    return token if isinstance(token, str) and token in _SAFE_FIELDS else "field"
+
+
+def _safe_location(exc: ValidationError) -> str:
+    """Extract one schema location without serialising its private input value."""
+    errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    location = errors[0].get("loc", ()) if errors else ()
+    rendered = ".".join(_safe_token(token) for token in location)
+    return rendered or "request"
+
+
+def _fail_code(code: str, *, field: str | None = None) -> NoReturn:
+    """Emit a machine-stable code and optional schema location, never an exception."""
+    suffix = f" field={field}" if field is not None else ""
+    typer.echo(f"FAIL: {code}{suffix}")
     raise typer.Exit(code=1)
+
+
+def _fail(exc: AssayError | AvowError) -> NoReturn:
+    """Report a domain code without interpolating caller-controlled error messages."""
+    _fail_code(exc.code)
+
+
+def _fail_validation(exc: ValidationError, *, code: str) -> NoReturn:
+    """Report only the typed boundary and safe schema path."""
+    _fail_code(code, field=_safe_location(exc))
 
 
 @app.command()
@@ -59,12 +89,40 @@ def keygen(
     pub: _PublicOutput = None,
 ) -> None:
     """Generate a private Ed25519 seed plus its separately pinnable public key."""
-    key = generate_signing_key()
-    save_signing_key(key, path=out)
     pub_path = pub if pub is not None else Path(f"{out}.pub")
-    save_public_key(key, path=pub_path)
+    try:
+        key = generate_signing_key()
+        save_signing_key(key, path=out)
+        save_public_key(key, path=pub_path)
+    except OSError:
+        _fail(CliInputInvalid("key destinations are not writable"))
     typer.echo(f"wrote signing key: {out}")
     typer.echo(f"wrote public key: {pub_path}")
+
+
+def _write_score(
+    request: Path, key: Path, out: Path, ledger: Path, head: Path | None
+) -> tuple[LedgerHead, Path]:
+    parsed = ScoreRequest.model_validate_json(request.read_text(encoding="utf-8"))
+    receipt = score_receipt(parsed, signing_key=load_signing_key(key), settings=_SETTINGS)
+    out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
+    head_path = head if head is not None else Path(f"{ledger}.head")
+    new_head = append_and_save_head(receipt, path=ledger, head_path=head_path)
+    return new_head, head_path
+
+
+def _run_score(
+    request: Path, key: Path, out: Path, ledger: Path, head: Path | None
+) -> tuple[LedgerHead, Path]:
+    """Translate every private scoring failure to one safe public boundary."""
+    try:
+        return _write_score(request, key, out, ledger, head)
+    except ValidationError as exc:
+        _fail_validation(exc, code=InvalidScoreRequest.code)
+    except (AssayError, AvowError) as exc:
+        _fail(exc)
+    except (OSError, ValueError):
+        _fail(CliInputInvalid("score input is unreadable or malformed"))
 
 
 @app.command()
@@ -75,14 +133,16 @@ def score(
     ledger: _LedgerInput = _DEFAULT_LEDGER_PATH,
     head: _HeadOutput = None,
 ) -> None:
-    """Score, sign, then durably extend the ledger and its convenience pin."""
-    parsed = ScoreRequest.model_validate_json(request.read_text(encoding="utf-8"))
-    receipt = score_receipt(parsed, signing_key=load_signing_key(key), settings=_SETTINGS)
-    out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    head_path = head if head is not None else Path(f"{ledger}.head")
-    new_head = append_and_save_head(receipt, path=ledger, head_path=head_path)
+    """Score, sign, and durably extend the ledger and convenience pin."""
+    new_head, head_path = _run_score(request, key, out, ledger, head)
     typer.echo(f"wrote receipt: {out}")
     typer.echo(f"wrote ledger head: {head_path} ({new_head.count} entries)")
+
+
+def _write_composite(request: Path, key: Path, out: Path) -> None:
+    parsed = CompositeRequest.model_validate_json(request.read_text(encoding="utf-8"))
+    receipt = composite_score(parsed, signing_key=load_signing_key(key))
+    out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
 
 
 @app.command()
@@ -92,9 +152,14 @@ def composite(
     out: _ReceiptOutput,
 ) -> None:
     """Score a weighted multi-scale composite and write a signed receipt."""
-    parsed = CompositeRequest.model_validate_json(request.read_text(encoding="utf-8"))
-    receipt = composite_score(parsed, signing_key=load_signing_key(key))
-    out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
+    try:
+        _write_composite(request, key, out)
+    except ValidationError as exc:
+        _fail_validation(exc, code=InvalidScoreRequest.code)
+    except (AssayError, AvowError) as exc:
+        _fail(exc)
+    except (OSError, ValueError):
+        _fail(CliInputInvalid("composite input is unreadable or malformed"))
     typer.echo(f"wrote receipt: {out}")
 
 
@@ -104,11 +169,15 @@ def verify(
     public_key: _PublicKeyInput,
 ) -> None:
     """Verify offline against a pinned signer; this does not prove freshness."""
-    parsed = ScoreReceipt.model_validate_json(receipt.read_text(encoding="utf-8"))
     try:
+        parsed = ScoreReceipt.model_validate_json(receipt.read_text(encoding="utf-8"))
         verify_receipt(parsed, expected_public_key=read_public_key(public_key))
+    except ValidationError as exc:
+        _fail_validation(exc, code=CliInputInvalid.code)
     except AvowError as exc:
         _fail(exc)
+    except (OSError, ValueError):
+        _fail(CliInputInvalid("verification input is unreadable or malformed"))
     typer.echo("OK: receipt verified")
 
 
@@ -121,8 +190,10 @@ def verify_ledger(
     """Verify every ledger entry and link against caller-supplied signer and head pins."""
     try:
         entries = _ledger_entries(public_key, head, ledger)
-    except AvowError as exc:
+    except (AssayError, AvowError) as exc:
         _fail(exc)
+    except (OSError, ValueError):
+        _fail(CliInputInvalid("ledger verification input is unreadable or malformed"))
     noun = "entry" if len(entries) == 1 else "entries"
     typer.echo(f"OK: ledger verified, {len(entries)} {noun} intact")
 

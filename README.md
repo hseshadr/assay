@@ -76,7 +76,7 @@ sed 's/"abstained": true/"abstained": false/' receipt.json > tampered.json
 assay verify --receipt tampered.json --public-key signing.key.pub           # exit 1
 ```
 
-Before production use, read the [operational contract](https://github.com/hseshadr/assay/blob/v0.4.1/docs/OPERATIONS.md): it defines
+Before production use, read the [operational contract](https://github.com/hseshadr/assay/blob/main/docs/OPERATIONS.md): it defines
 the privacy/data-flow boundary, plaintext retention duties, bounded ledger failures,
 crash-recovery limits, and the numeric performance budgets enforced in CI.
 

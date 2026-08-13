@@ -16,7 +16,7 @@ exact same benchmark entry point named here; a missed budget fails the release g
 |---|---|---|---|
 | Python `avow` envelope | Caller-supplied Pydantic subject, Ed25519 seed, pinned public key | In-process canonical JSON, SHA-256, and Ed25519 only. No network, DNS, telemetry, subprocess, or background thread. | `sign_payload` and verification are stateless. Inputs and intermediates live for the call; the returned receipt is retained only by its caller. |
 | Python `assay` scoring | Labels, scores, rankings, ratings, settings | In-process validation and local scientific-library calls, then the same envelope. No runtime egress. | No cache or implicit file. The returned receipt is retained only by its caller. |
-| Python CLI | Only the request, key, receipt, ledger, and head paths explicitly passed by the operator | Reads those paths and prints status, coded errors, and output paths. It does not print payloads or private-key bytes. No runtime network call. | Writes only requested key/public-key, receipt, ledger, and head files. They remain until the operator deletes them. |
+| Python CLI | Only the request, key, receipt, ledger, and head paths explicitly passed by the operator | Reads those paths and prints success status/output paths or a stable failure code plus safe schema field path. It does not print exception messages, input values, payloads, or private-key bytes. No runtime network call. | Writes only requested key/public-key, receipt, ledger, and head files. They remain until the operator deletes them. |
 | Python ledger | Plaintext signed receipts and an operator-chosen local path | One local JSONL append under a process lock; the CLI also saves its convenience head before releasing that same lock. Verification reads both files locally. | Persists plaintext until caller deletion. There is no upload, rotation, expiry, compaction, or automatic repair. |
 | TypeScript `@edgeproc/avow` | Caller JSON, seed, pinned public key, labels/rankings | In-process Web Crypto-compatible Ed25519 and local arithmetic. No fetch, XHR, beacon, socket, telemetry, cookie, storage, worker, or DOM access. | No cache or storage. Returned values remain under caller control. The TS package ships no ledger. |
 
@@ -56,6 +56,7 @@ Windows are outside the durability contract.
 |---|---|---|
 | Lock is held by another process | Append waits without changing the file, then raises coded `avow.ledger_lock_timeout`. | Default timeout: **5.0 seconds**. Poll interval: at most **10 ms**. |
 | Lock timeout is negative or non-finite, or ledger and head paths alias | The call raises coded `avow.ledger_configuration_invalid` before creating or replacing either persistence file. | Supply one finite, non-negative timeout and two distinct paths. |
+| Ledger exceeds 64 MiB, 100,000 entries, or one 64 KiB encoded line | Read, append, and verification fail closed with `avow.ledger_limit_exceeded`; append leaves existing bytes unchanged. | Rotate to a new externally pinned ledger before any ceiling. These are hard support limits, not tuning defaults. |
 | `append` returns a head | The complete JSONL line has been flushed and `fsync` has succeeded before return. Concurrent successful appenders form one valid chain. | **RPO 0** relative to a returned head on an in-scope filesystem. The caller must export that returned pin. |
 | CLI append plus convenience-head save returns | The ledger append and atomic head save happened while holding one ledger lock. A concurrent CLI writer cannot overwrite a newer head with an older one. | The saved head equals the ledger state at lock release. **RPO 0** for both returned operations; there is no cross-file crash atomicity before return. |
 | Process or host fails before `append` returns | The append outcome is unknown; no success is claimed. A partial line or an entry beyond the previously pinned head fails closed. | Verify once against the last trusted external head. Do not silently trim or re-pin. |
@@ -81,7 +82,7 @@ any latency, memory, count, or integrity miss exits non-zero.
 | Python envelope: sign and pinned-key verify one receipt carrying a 4,096-byte evidence string | 25 / 500 | p50 <= **2 ms**, p95 <= **4 ms**, p99 <= **10 ms** | **128 MiB** |
 | TypeScript envelope: the same seed, subject, sign, and pinned-key verify | 25 / 500 | p50 <= **3 ms**, p95 <= **8 ms**, p99 <= **20 ms** | **128 MiB** |
 | Python classification: `binary_scores` over 10,000 alternating labels and deterministic scores | 5 / 100 | p50 <= **75 ms**, p95 <= **150 ms**, p99 <= **300 ms** | **512 MiB** |
-| Python ledger: 4 real processes append 50 fixed signed receipts each, followed by full pinned-head verification | 0 / 200 appends | append p50 <= **10 ms**, p95 <= **50 ms**, p99 <= **250 ms**; complete and verify <= **15 s** | **128 MiB per worker** |
+| Python ledger: a prebuilt 5,000-entry history, then 4 real processes append 50 fixed signed receipts each, followed by full 5,200-entry pinned-head verification | 0 / 200 timed appends | append p50 <= **10 ms**, p95 <= **50 ms**, p99 <= **250 ms**; timed append plus verify <= **15 s** | **128 MiB per worker** |
 
 p99 is reported and enforced because every workload has at least 100 measured
 operations. These are regression ceilings, not marketing claims or universal service
@@ -94,6 +95,7 @@ in a reviewed release that updates this contract before measurement and explains
 2. Keep the signing seed out of application logs and source control.
 3. Distribute the public key through a separate trusted channel.
 4. Export every returned ledger head outside the ledger writer's control.
-5. Verify receipts with the pinned public key and ledgers with both pins.
-6. Treat any timeout, partial write, pin mismatch, or malformed line as an incident;
+5. Rotate before 64 MiB, 100,000 entries, or a 64 KiB encoded entry.
+6. Verify receipts with the pinned public key and ledgers with both pins.
+7. Treat any timeout, partial write, pin mismatch, or malformed line as an incident;
    restore or re-pin only after an authorised investigation.
