@@ -28,18 +28,12 @@ from avow.verify import verify_receipt
 
 app = typer.Typer(help="Assay — the scoring engine that refuses to lie.")
 
-# Defaults come from settings, never from literals buried in the command signatures,
-# so `ASSAY_SIGNING_KEY_PATH` / `ASSAY_LEDGER_PATH` retune the CLI without code edits.
-_SETTINGS = AssaySettings()
-_DEFAULT_KEY_PATH = Path(_SETTINGS.signing_key_path)
-_DEFAULT_LEDGER_PATH = Path(_SETTINGS.ledger_path)
-
-_KeyOutput = Annotated[Path, typer.Option(help="Where to write the signing key.")]
+_KeyOutput = Annotated[Path | None, typer.Option(help="Where to write the signing key.")]
 _PublicOutput = Annotated[Path | None, typer.Option(help="Public-key output; default <out>.pub.")]
 _RequestInput = Annotated[Path, typer.Option("--request", help="Typed request JSON.")]
 _SigningKeyInput = Annotated[Path, typer.Option("--key", help="Signing key file.")]
 _ReceiptOutput = Annotated[Path, typer.Option("--out", help="Receipt output path.")]
-_LedgerInput = Annotated[Path, typer.Option("--ledger", help="Ledger JSONL path.")]
+_LedgerInput = Annotated[Path | None, typer.Option("--ledger", help="Ledger JSONL path.")]
 _HeadOutput = Annotated[
     Path | None, typer.Option("--head", help="Head output; default <ledger>.head.")
 ]
@@ -83,46 +77,74 @@ def _fail_validation(exc: ValidationError, *, code: str) -> NoReturn:
     _fail_code(code, field=_safe_location(exc))
 
 
+def _load_settings() -> AssaySettings:
+    """Resolve environment settings only inside a redacting command boundary."""
+    try:
+        return AssaySettings()
+    except ValidationError as exc:
+        _fail_validation(exc, code=CliInputInvalid.code)
+
+
+def _key_paths(out: Path | None, pub: Path | None) -> tuple[Path, Path]:
+    """Resolve key destinations lazily so help never evaluates the environment."""
+    private = out if out is not None else Path(_load_settings().signing_key_path)
+    public = pub if pub is not None else Path(f"{private}.pub")
+    return private, public
+
+
 @app.command()
 def keygen(
-    out: _KeyOutput = _DEFAULT_KEY_PATH,
+    out: _KeyOutput = None,
     pub: _PublicOutput = None,
 ) -> None:
     """Generate a private Ed25519 seed plus its separately pinnable public key."""
-    pub_path = pub if pub is not None else Path(f"{out}.pub")
+    out_path, pub_path = _key_paths(out, pub)
     try:
         key = generate_signing_key()
-        save_signing_key(key, path=out)
+        save_signing_key(key, path=out_path)
         save_public_key(key, path=pub_path)
     except OSError:
         _fail(CliInputInvalid("key destinations are not writable"))
-    typer.echo(f"wrote signing key: {out}")
+    typer.echo(f"wrote signing key: {out_path}")
     typer.echo(f"wrote public key: {pub_path}")
 
 
 def _write_score(
-    request: Path, key: Path, out: Path, ledger: Path, head: Path | None
-) -> tuple[LedgerHead, Path]:
+    request: Path,
+    key: Path,
+    out: Path,
+    ledger: Path,
+    head_path: Path,
+    settings: AssaySettings,
+) -> LedgerHead:
     parsed = ScoreRequest.model_validate_json(request.read_text(encoding="utf-8"))
-    receipt = score_receipt(parsed, signing_key=load_signing_key(key), settings=_SETTINGS)
+    receipt = score_receipt(parsed, signing_key=load_signing_key(key), settings=settings)
     out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    head_path = head if head is not None else Path(f"{ledger}.head")
-    new_head = append_and_save_head(receipt, path=ledger, head_path=head_path)
-    return new_head, head_path
+    return append_and_save_head(receipt, path=ledger, head_path=head_path)
+
+
+def _score_runtime(ledger: Path | None, head: Path | None) -> tuple[AssaySettings, Path, Path]:
+    """Resolve settings and derived persistence paths at command execution time."""
+    settings = _load_settings()
+    ledger_path = ledger if ledger is not None else Path(settings.ledger_path)
+    head_path = head if head is not None else Path(f"{ledger_path}.head")
+    return settings, ledger_path, head_path
 
 
 def _run_score(
-    request: Path, key: Path, out: Path, ledger: Path, head: Path | None
+    request: Path, key: Path, out: Path, ledger: Path | None, head: Path | None
 ) -> tuple[LedgerHead, Path]:
     """Translate every private scoring failure to one safe public boundary."""
+    settings, ledger_path, head_path = _score_runtime(ledger, head)
     try:
-        return _write_score(request, key, out, ledger, head)
+        new_head = _write_score(request, key, out, ledger_path, head_path, settings)
     except ValidationError as exc:
         _fail_validation(exc, code=InvalidScoreRequest.code)
     except (AssayError, AvowError) as exc:
         _fail(exc)
     except (OSError, ValueError):
         _fail(CliInputInvalid("score input is unreadable or malformed"))
+    return new_head, head_path
 
 
 @app.command()
@@ -130,7 +152,7 @@ def score(
     request: _RequestInput,
     key: _SigningKeyInput,
     out: _ReceiptOutput,
-    ledger: _LedgerInput = _DEFAULT_LEDGER_PATH,
+    ledger: _LedgerInput = None,
     head: _HeadOutput = None,
 ) -> None:
     """Score, sign, and durably extend the ledger and convenience pin."""
@@ -185,11 +207,12 @@ def verify(
 def verify_ledger(
     public_key: _PublicKeyInput,
     head: _HeadInput,
-    ledger: _LedgerInput = _DEFAULT_LEDGER_PATH,
+    ledger: _LedgerInput = None,
 ) -> None:
     """Verify every ledger entry and link against caller-supplied signer and head pins."""
+    ledger_path = ledger if ledger is not None else Path(_load_settings().ledger_path)
     try:
-        entries = _ledger_entries(public_key, head, ledger)
+        entries = _ledger_entries(public_key, head, ledger_path)
     except (AssayError, AvowError) as exc:
         _fail(exc)
     except (OSError, ValueError):

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from assay.cli import _safe_location, _safe_token, app
@@ -13,10 +15,10 @@ from assay.cli import _safe_location, _safe_token, app
 _RUNNER = CliRunner()
 
 
-def _real_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def _real_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     executable = Path(sys.executable).with_name("assay")
     return subprocess.run(  # noqa: S603
-        [str(executable), *args], check=False, capture_output=True, text=True
+        [str(executable), *args], check=False, capture_output=True, text=True, env=env
     )
 
 
@@ -92,6 +94,76 @@ def test_real_cli_redacts_a_malformed_request_value(tmp_path: Path) -> None:
     assert sentinel not in combined
     assert "input_value" not in combined
     assert "Traceback" not in combined
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MIN_SAMPLES",
+        "BOOTSTRAP_RESAMPLES",
+        "CONFIDENCE_LEVEL",
+        "ECE_BINS",
+        "BOOTSTRAP_SEED",
+        "RANKING_K",
+    ],
+)
+def test_real_cli_never_imports_an_invalid_environment_value(name: str) -> None:
+    # Given any numeric ASSAY setting carries a private malformed value
+    sentinel = f"PII-SENTINEL-ENV-{name}"
+    environment = {**os.environ, f"ASSAY_{name}": sentinel}
+    # When even the real entry point's help is requested
+    result = _real_cli("--help", env=environment)
+    # Then import performs no settings validation and nothing private reaches output
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0
+    assert sentinel not in combined
+    assert "input_value" not in combined
+    assert "Traceback" not in combined
+
+
+def test_real_cli_redacts_an_invalid_environment_value_during_scoring(tmp_path: Path) -> None:
+    # Given scoring actually needs a malformed private setting
+    sentinel = "PII-SENTINEL-ENV-SCORE"
+    environment = {**os.environ, "ASSAY_MIN_SAMPLES": sentinel}
+    request = tmp_path / "request.json"
+    request.write_text(
+        json.dumps(
+            {"metric": "binary", "metric_version": "1", "y_true": [0, 1], "y_score": [0.1, 0.9]}
+        )
+    )
+    # When the real scoring boundary resolves settings lazily
+    result = _real_cli(
+        "score",
+        "--request",
+        str(request),
+        "--key",
+        str(tmp_path / "key"),
+        "--out",
+        str(tmp_path / "out"),
+        env=environment,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "FAIL: assay.cli_input_invalid field=field" in combined
+    assert sentinel not in combined
+    assert "Traceback" not in combined
+
+
+def test_keygen_resolves_default_settings_only_inside_its_safe_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A valid environment supplies the lazy default only when keygen executes
+    destination = tmp_path / "configured.key"
+    monkeypatch.setenv("ASSAY_SIGNING_KEY_PATH", str(destination))
+    assert _RUNNER.invoke(app, ["keygen"]).exit_code == 0
+    assert destination.is_file()
+    # An invalid private value is mapped to the same stable redacted boundary
+    sentinel = "PII-SENTINEL-IN-PROCESS"
+    monkeypatch.setenv("ASSAY_MIN_SAMPLES", sentinel)
+    result = _RUNNER.invoke(app, ["keygen"])
+    assert result.exit_code == 1
+    assert "assay.cli_input_invalid field=field" in result.stdout
+    assert sentinel not in result.stdout
 
 
 def test_real_cli_redacts_a_domain_value_from_scoring_errors(tmp_path: Path) -> None:
