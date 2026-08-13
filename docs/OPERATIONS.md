@@ -55,6 +55,7 @@ Windows are outside the durability contract.
 | Event | Guaranteed outcome | Explicit bound or recovery action |
 |---|---|---|
 | Lock is held by another process | Append waits without changing the file, then raises coded `avow.ledger_lock_timeout`. | Default timeout: **5.0 seconds**. Poll interval: at most **10 ms**. |
+| Lock timeout is negative or non-finite, or ledger and head paths alias | The call raises coded `avow.ledger_configuration_invalid` before creating or replacing either persistence file. | Supply one finite, non-negative timeout and two distinct paths. |
 | `append` returns a head | The complete JSONL line has been flushed and `fsync` has succeeded before return. Concurrent successful appenders form one valid chain. | **RPO 0** relative to a returned head on an in-scope filesystem. The caller must export that returned pin. |
 | CLI append plus convenience-head save returns | The ledger append and atomic head save happened while holding one ledger lock. A concurrent CLI writer cannot overwrite a newer head with an older one. | The saved head equals the ledger state at lock release. **RPO 0** for both returned operations; there is no cross-file crash atomicity before return. |
 | Process or host fails before `append` returns | The append outcome is unknown; no success is claimed. A partial line or an entry beyond the previously pinned head fails closed. | Verify once against the last trusted external head. Do not silently trim or re-pin. |
