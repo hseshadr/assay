@@ -66,6 +66,9 @@ jobs:
       - name: Gate (uv run poe gate)
         run: uv run poe gate
 
+      - name: Enforce frozen performance budgets
+        run: uv run poe benchmark
+
       - name: Build sdist + wheel
         run: uv build --out-dir dist
 

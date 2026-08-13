@@ -28,9 +28,9 @@ def test_readme_names_the_pair_versioned_release() -> None:
     # When the README's artifact status is compared with both package manifests
     assert version_match is not None
     version = version_match.group(1)
-    # Then it names one published pair and carries no stale pre-release source split
+    # Then it names one pair-versioned release candidate without claiming it is live early
     assert version == ts_version
-    assert f"Published now: `avow` {version}" in readme
+    assert f"Release candidate: `avow` {version}" in readme
     assert f"`@edgeproc/avow` {version}" in readme
-    assert "Source `main`:" not in readme
-    assert "version on PyPI today" not in readme
+    assert "registries currently serve 0.4.0" in readme.lower()
+    assert "supersedes it for Python CLI ledger writers" in readme

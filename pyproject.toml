@@ -84,6 +84,7 @@ only-include = [
   "README.md",
   "QUICKSTART.md",
   "CHANGELOG.md",
+  "docs",
   "LICENSE",
 ]
 
@@ -112,6 +113,7 @@ max-complexity = 5
 
 [tool.ruff.lint.isort]
 known-first-party = ["assay", "avow", "writ"]
+extra-standard-library = ["fcntl"]
 
 [tool.mypy]
 python_version = "3.13"
@@ -162,6 +164,12 @@ exclude_lines = [
 ]
 fail_under = 90.0
 
+[tool.coverage.run]
+# Benchmarks enforce their own latency, RSS, count, and integrity assertions in clean
+# subprocesses; unit coverage cannot merge those isolated workers without perturbing the
+# memory numbers the contract exists to measure. The runtime kernel remains fully counted.
+omit = ["src/avow/benchmarks/*"]
+
 [tool.poe.tasks]
 # scripts/ is held to the same bar as src/ and tests/: the mutation harness is the thing
 # that proves the guards can fail, so it is not exempt from the gate that guards them.
@@ -170,6 +178,7 @@ fmt-check = "ruff format --check src/ tests/ scripts/"
 fmt = "ruff format src/ tests/ scripts/"
 complexity = "xenon --max-absolute A --max-modules A --max-average A src/avow src/assay src/writ scripts"
 test = "pytest"
+benchmark = "python -m avow.benchmarks.release"
 # `gate` mirrors the CI `gate` job exactly: lint + format-check + typecheck +
 # complexity + test. It is PYTHON ONLY — the TypeScript package has its own gate,
 # mirroring the separate CI `ts-gate` job. `gate-all` runs both, as CI does.

@@ -53,9 +53,11 @@ The published 0.3.0 code names this accurately: it is a **payload-hash mismatch*
 replay detection. The envelope detects tampering; ledger state detects replay and
 truncation. See [Honest limits](#honest-limits).
 
-**Artifact status:** Published now: `avow` 0.4.0 on PyPI and `@edgeproc/avow` 0.4.0
-on npm. The opening proof remains a verbatim 0.3.0 session; 0.4.0 keeps that contract and
-adds the features documented below.
+**Artifact status:** Release candidate: `avow` 0.4.1 and `@edgeproc/avow` 0.4.1.
+Registries currently serve 0.4.0; **0.4.1 supersedes it for Python CLI ledger writers**
+because it serializes and durably commits the ledger plus convenience head under one
+bounded lock. Upgrade when 0.4.1 is live. The opening proof remains a verbatim 0.3.0
+session; the payload-hash contract is unchanged.
 
 ## Run it
 
@@ -73,6 +75,10 @@ assay verify --receipt receipt.json --public-key signing.key.pub            # ex
 sed 's/"abstained": true/"abstained": false/' receipt.json > tampered.json
 assay verify --receipt tampered.json --public-key signing.key.pub           # exit 1
 ```
+
+Before production use, read the [operational contract](https://github.com/hseshadr/assay/blob/v0.4.1/docs/OPERATIONS.md): it defines
+the privacy/data-flow boundary, plaintext retention duties, bounded ledger failures,
+crash-recovery limits, and the numeric performance budgets enforced in CI.
 
 ---
 
@@ -186,7 +192,7 @@ original receipt ..... VALID
 edited receipt ....... REJECTED (ReplayMismatch)
 ```
 
-Published 0.3.0 and 0.4.0 both print `PayloadHashMismatch` here.
+Published 0.3.0 and 0.4.0 both print `PayloadHashMismatch` here; 0.4.1 does too.
 
 Nudging `0.83` to `0.99` — a change that would be invisible in a database — makes the
 receipt fail to verify. That is the whole idea.
@@ -512,6 +518,11 @@ Stated plainly, because each of these is a real boundary on what avow currently 
   writer cannot reach: another host, a git commit, a printout, a transparency log. And
   pin the *current* head — a head from three appends ago legitimately fails, because
   three entries you did not acknowledge is exactly the thing this is built to notice.
+  In 0.4.1 the CLI holds one bounded process lock through the durable ledger append and
+  atomic convenience-head save, so concurrent CLI writers cannot publish an older pin
+  after a newer append. The two files still are not one crash-atomic transaction: a
+  failure between commits leaves the old pin rejecting the advanced ledger, which is a
+  fail-closed incident requiring investigation, not permission to trim or silently re-pin.
 - **`writ`'s enforcement is in-process (v0).** The signing key and the privileged action
   live only inside the effector, which the gate captures in a closure; the agent receives
   the closure and never the effector, so the only route to the action is through the
@@ -757,19 +768,22 @@ edges, and the native-vs-browser story.
 
 v0, deterministic — no LLM anywhere in the path.
 
-Three gates, mirroring CI's three jobs. `uv run poe gate` covers **Python only** (ruff,
+Four release gates. `uv run poe gate` covers **Python only** (ruff,
 ruff-format, mypy `--strict`, xenon A, pytest with statement *and* branch coverage
 against a 90% floor); `uv run poe gate-ts` covers the TypeScript package (biome, `tsc`
 strict, vitest, build); `uv run poe mutants` breaks each guard in turn and requires the
-suite to notice. `uv run poe gate-all` runs the first two.
+suite to notice; and `uv run poe benchmark` plus `pnpm --dir ts benchmark` enforce the
+frozen p50/p95/p99 and RSS contract. `uv run poe gate-all` runs the first two.
 
-The Python, `@edgeproc/avow`, and `@edgeproc/receipt-ui` gates enforce **100% statement
-and branch coverage**. The mutation gate separately breaks **46 named claims** and
+The Python core, `@edgeproc/avow`, and `@edgeproc/receipt-ui` gates enforce **100%
+statement and branch coverage**; shipped benchmark tooling additionally runs its exact
+workloads as a dedicated acceptance gate. The mutation gate breaks **46 named claims** and
 requires every guard to turn red; 17 of those mutations exercise TypeScript under vitest.
 Run the commands above to regenerate the evidence from this exact checkout.
 
-Published releases: `avow` 0.4.0 on PyPI; `@edgeproc/avow` 0.4.0 and
-`@edgeproc/receipt-ui` 0.2.0 on npm. See [`CHANGELOG.md`](CHANGELOG.md) and
+Release candidate: `avow` 0.4.1 on PyPI and `@edgeproc/avow` 0.4.1 on npm; registries
+currently serve 0.4.0 for both. `@edgeproc/receipt-ui` 0.2.0 is separately versioned.
+See [`CHANGELOG.md`](CHANGELOG.md) and
 [`ts/packages/receipt-ui/CHANGELOG.md`](ts/packages/receipt-ui/CHANGELOG.md) for what each
 release contains. Read the honest limits above before depending on any of it.
 

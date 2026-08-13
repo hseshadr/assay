@@ -37,6 +37,9 @@ jobs:
       - name: Run the gate
         run: uv run poe gate
 
+      - name: Enforce frozen Python performance budgets
+        run: uv run poe benchmark
+
   # The TypeScript package `@edgeproc/avow`. Its conformance suite replays the SAME golden
   # vectors (testdata/vectors/*.json) the Python gate generates, asserting the TS
   # canonicalizer + verifier reproduce Python's bytes/hashes/signatures exactly.
@@ -70,6 +73,9 @@ jobs:
       # across every workspace package (avow + receipt-ui), not just the root.
       - name: Run the TS gate
         run: pnpm -r --include-workspace-root gate
+
+      - name: Enforce frozen TypeScript performance budgets
+        run: pnpm benchmark
 
   # Mirrors `uv run poe mutants`. A separate job, not a step inside `gate`, because it
   # answers a different question: `gate` asks "do the tests pass", this asks "can they

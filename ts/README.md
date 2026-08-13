@@ -4,6 +4,10 @@
 go inside them.** Two faces, both kept in lock-step with the Python package of the
 same name by shared golden vectors — not by hope.
 
+Runtime privacy, persistence, key-custody, and performance boundaries are frozen in the
+repo's [operational contract](https://github.com/hseshadr/assay/blob/v0.4.1/docs/OPERATIONS.md). This package performs no runtime
+egress or storage and ships no ledger; subjects and seeds remain caller-controlled.
+
 - **The envelope.** Turn a small JSON object (a "subject") into a tamper-evident
   receipt anyone can check offline with just a public key. A receipt signed by the
   Python `avow` kernel verifies here, and one signed here verifies in Python,

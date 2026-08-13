@@ -5,11 +5,13 @@ signed, reproducible receipt and offers offline verification and replay."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from nacl.signing import SigningKey
 
 from assay.agreement import AgreementReport, agreement_report
 from assay.calibration import CalibrationReport, calibration_report
-from assay.composite import SubScore, composite
+from assay.composite import CompositeScore, SubScore, composite
 from assay.errors import (
     CanonicalizationFailed,
     InsufficientSamples,
@@ -55,6 +57,8 @@ _CLASSIFICATION_METRICS = frozenset({"binary"})
 _COMPOSITE_METRICS = frozenset({"weighted_composite"})
 _RANKING_METRICS = frozenset({"ranking"})
 _AGREEMENT_METRICS = frozenset({"agreement"})
+
+type _PayloadRequest = ScoreRequest | RankingRequest | AgreementRequest
 
 
 def _require_metric(name: str, allowed: frozenset[str]) -> None:
@@ -125,24 +129,38 @@ def _determinism(settings: AssaySettings) -> DeterminismSettings:
     )
 
 
-def _classification_payload(request: ScoreRequest, settings: AssaySettings) -> ReceiptPayload:
-    scores = binary_scores(request.y_true, request.y_score, threshold=request.threshold)
-    report = calibration_report(request.y_true, request.y_score, n_bins=settings.ece_bins)
-    point, low, high, abstained = _headline(_estimate(request, settings))
+@dataclass(frozen=True)
+class _PayloadContext:
+    request: _PayloadRequest
+    headline: tuple[float | None, float | None, float | None, bool]
+    settings: AssaySettings
+
+
+def _base_payload(context: _PayloadContext) -> ReceiptPayload:
+    point, low, high, abstained = context.headline
     return ReceiptPayload(
         assay_version=__version__,
-        metric=request.metric,
-        metric_version=request.metric_version,
-        inputs_hash=content_hash(request.model_dump(mode="json")),
+        metric=context.request.metric,
+        metric_version=context.request.metric_version,
+        inputs_hash=content_hash(context.request.model_dump(mode="json")),
         score=point,
         interval_low=low,
         interval_high=high,
         abstained=abstained,
         abstain_reason=InsufficientSamples.code if abstained else None,
-        determinism=_determinism(settings),
-        classification=_classification_detail(scores),
-        calibration=_calibration_detail(report),
+        determinism=_determinism(context.settings),
     )
+
+
+def _classification_payload(request: ScoreRequest, settings: AssaySettings) -> ReceiptPayload:
+    scores = binary_scores(request.y_true, request.y_score, threshold=request.threshold)
+    report = calibration_report(request.y_true, request.y_score, n_bins=settings.ece_bins)
+    context = _PayloadContext(request, _headline(_estimate(request, settings)), settings)
+    details = {
+        "classification": _classification_detail(scores),
+        "calibration": _calibration_detail(report),
+    }
+    return _base_payload(context).model_copy(update=details)
 
 
 def score(
@@ -165,13 +183,17 @@ def _as_subscore(s: SubScoreInput) -> SubScore:
     )
 
 
+def _composite_parts(result: CompositeScore) -> tuple[SubScorePart, ...]:
+    return tuple(
+        SubScorePart(name=part.name, normalized_value=part.normalized_value, weight=part.weight)
+        for part in result.parts
+    )
+
+
 def _composite_payload(request: CompositeRequest) -> ReceiptPayload:
     result = composite([_as_subscore(s) for s in request.subscores])
-    parts = tuple(
-        SubScorePart(name=p.name, normalized_value=p.normalized_value, weight=p.weight)
-        for p in result.parts
-    )
-    return ReceiptPayload(
+    parts = _composite_parts(result)
+    base = ReceiptPayload(
         assay_version=__version__,
         metric=request.metric,
         metric_version=request.metric_version,
@@ -179,8 +201,8 @@ def _composite_payload(request: CompositeRequest) -> ReceiptPayload:
         score=result.value,
         interval_low=result.low,
         interval_high=result.high,
-        composite=CompositeDetail(parts=parts),
     )
+    return base.model_copy(update={"composite": CompositeDetail(parts=parts)})
 
 
 def composite_score(request: CompositeRequest, *, signing_key: SigningKey) -> ScoreReceipt:
@@ -204,20 +226,8 @@ def _ranking_detail(report: RankingReport) -> RankingDetail:
 
 def _ranking_payload(request: RankingRequest, settings: AssaySettings) -> ReceiptPayload:
     report = ranking_report(request.queries, settings=settings, k=request.k)
-    point, low, high, abstained = _headline(report.ndcg_interval)
-    return ReceiptPayload(
-        assay_version=__version__,
-        metric=request.metric,
-        metric_version=request.metric_version,
-        inputs_hash=content_hash(request.model_dump(mode="json")),
-        score=point,
-        interval_low=low,
-        interval_high=high,
-        abstained=abstained,
-        abstain_reason=InsufficientSamples.code if abstained else None,
-        determinism=_determinism(settings),
-        ranking=_ranking_detail(report),
-    )
+    context = _PayloadContext(request, _headline(report.ndcg_interval), settings)
+    return _base_payload(context).model_copy(update={"ranking": _ranking_detail(report)})
 
 
 def ranking_score(
@@ -247,20 +257,8 @@ def _agreement_detail(report: AgreementReport) -> AgreementDetail:
 
 def _agreement_payload(request: AgreementRequest, settings: AssaySettings) -> ReceiptPayload:
     report = agreement_report(request.ratings, scale=request.scale, settings=settings)
-    point, low, high, abstained = _headline(report.weighted_agreement_interval)
-    return ReceiptPayload(
-        assay_version=__version__,
-        metric=request.metric,
-        metric_version=request.metric_version,
-        inputs_hash=content_hash(request.model_dump(mode="json")),
-        score=point,
-        interval_low=low,
-        interval_high=high,
-        abstained=abstained,
-        abstain_reason=InsufficientSamples.code if abstained else None,
-        determinism=_determinism(settings),
-        agreement=_agreement_detail(report),
-    )
+    context = _PayloadContext(request, _headline(report.weighted_agreement_interval), settings)
+    return _base_payload(context).model_copy(update={"agreement": _agreement_detail(report)})
 
 
 def agreement_score(
@@ -307,18 +305,7 @@ def _settings_for_replay(determinism: DeterminismSettings | None) -> AssaySettin
 
 
 def replay(request: ScoreRequest, receipt: ScoreReceipt) -> bool:
-    """Recompute the payload from the request AND the settings recorded IN the receipt,
-    then confirm it reproduces the receipt's actual payload.
-
-    Unconditional: no ambient settings need to match, because the determinism-affecting
-    settings are signed into the receipt. A receipt computed under different settings is
-    a *different, explicitly-recorded* receipt — never a silent replay failure.
-
-    The comparison is against a digest re-derived from ``receipt.payload`` — the same
-    ``payload_digest`` the envelope's own hash check uses — and NOT against the
-    ``payload_hash`` field alone. A payload edited behind a stale hash field would
-    otherwise replay clean, because that check measures the label, not the content it
-    labels. The stored hash must agree too, so a self-inconsistent receipt never replays."""
+    """Recompute with signed settings and compare actual content plus stored hash."""
     settings = _settings_for_replay(receipt.payload.determinism)
     recomputed = payload_digest(_classification_payload(request, settings))
     return recomputed == payload_digest(receipt.payload) == receipt.payload_hash

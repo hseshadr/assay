@@ -46,13 +46,17 @@ payload: ReceiptPayload (deterministic, no timestamp)  # assay.receipt
 hash: "avow.canonical (RFC 8785 JCS -> sha256)"
 sign: "avow.envelope (Ed25519 / PyNaCl)"
 receipt: "SignedReceipt[ReceiptPayload]"
-ledger: "avow.ledger (JSONL, per-entry signed, unchained)"
+ledger: "avow.ledger (durable hash-chained JSONL + external head pin)"
 verify: "avow.verify (offline: recompute hash + pinned-key signature)"
 
 request -> compute -> payload -> hash -> sign -> receipt
 receipt -> ledger
 receipt -> verify
 ```
+
+The complete runtime boundary is in [`OPERATIONS.md`](OPERATIONS.md): no hidden egress
+or persistence, plaintext retention and deletion duties, bounded ledger locking,
+crash-recovery behavior, supported filesystems, and the CI-enforced latency/RSS budgets.
 
 Every arrow is one-directional. Honesty invariants:
 

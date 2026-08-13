@@ -21,7 +21,7 @@ from avow.keys import (
     save_public_key,
     save_signing_key,
 )
-from avow.ledger import append, read_head, save_head, verify_integrity
+from avow.ledger import append_and_save_head, read_head, verify_integrity
 from avow.verify import verify_receipt
 
 app = typer.Typer(help="Assay — the scoring engine that refuses to lie.")
@@ -29,6 +29,21 @@ app = typer.Typer(help="Assay — the scoring engine that refuses to lie.")
 # Defaults come from settings, never from literals buried in the command signatures,
 # so `ASSAY_SIGNING_KEY_PATH` / `ASSAY_LEDGER_PATH` retune the CLI without code edits.
 _SETTINGS = AssaySettings()
+_DEFAULT_KEY_PATH = Path(_SETTINGS.signing_key_path)
+_DEFAULT_LEDGER_PATH = Path(_SETTINGS.ledger_path)
+
+_KeyOutput = Annotated[Path, typer.Option(help="Where to write the signing key.")]
+_PublicOutput = Annotated[Path | None, typer.Option(help="Public-key output; default <out>.pub.")]
+_RequestInput = Annotated[Path, typer.Option("--request", help="Typed request JSON.")]
+_SigningKeyInput = Annotated[Path, typer.Option("--key", help="Signing key file.")]
+_ReceiptOutput = Annotated[Path, typer.Option("--out", help="Receipt output path.")]
+_LedgerInput = Annotated[Path, typer.Option("--ledger", help="Ledger JSONL path.")]
+_HeadOutput = Annotated[
+    Path | None, typer.Option("--head", help="Head output; default <ledger>.head.")
+]
+_ReceiptInput = Annotated[Path, typer.Option("--receipt", help="Receipt JSON to verify.")]
+_PublicKeyInput = Annotated[Path, typer.Option("--public-key", help="Pinned signer public key.")]
+_HeadInput = Annotated[Path, typer.Option("--head", help="Pinned chain-head file.")]
 
 
 def _fail(exc: AvowError) -> None:
@@ -40,18 +55,10 @@ def _fail(exc: AvowError) -> None:
 
 @app.command()
 def keygen(
-    out: Annotated[Path, typer.Option(help="Where to write the signing key.")] = Path(
-        _SETTINGS.signing_key_path
-    ),
-    pub: Annotated[
-        Path | None,
-        typer.Option(help="Where to write the public key (default: <out>.pub)."),
-    ] = None,
+    out: _KeyOutput = _DEFAULT_KEY_PATH,
+    pub: _PublicOutput = None,
 ) -> None:
-    """Generate a new Ed25519 signing key (private seed 0600) plus its public key.
-
-    The public key is written separately so a verifier can pin it out-of-band and
-    never has to trust the key embedded in a receipt."""
+    """Generate a private Ed25519 seed plus its separately pinnable public key."""
     key = generate_signing_key()
     save_signing_key(key, path=out)
     pub_path = pub if pub is not None else Path(f"{out}.pub")
@@ -62,38 +69,27 @@ def keygen(
 
 @app.command()
 def score(
-    request: Annotated[Path, typer.Option("--request", help="ScoreRequest JSON.")],
-    key: Annotated[Path, typer.Option("--key", help="Signing key file.")],
-    out: Annotated[Path, typer.Option("--out", help="Receipt output path.")],
-    ledger: Annotated[Path, typer.Option("--ledger", help="Ledger JSONL path.")] = Path(
-        _SETTINGS.ledger_path
-    ),
-    head: Annotated[
-        Path | None,
-        typer.Option("--head", help="Where to write the new chain head (default: <ledger>.head)."),
-    ] = None,
+    request: _RequestInput,
+    key: _SigningKeyInput,
+    out: _ReceiptOutput,
+    ledger: _LedgerInput = _DEFAULT_LEDGER_PATH,
+    head: _HeadOutput = None,
 ) -> None:
-    """Score a classification request, write a signed receipt, and extend the ledger.
-
-    Appending returns the ledger's new chain head, which is written out so it can be
-    carried somewhere the ledger's writer cannot reach. ``verify-ledger`` needs that
-    head: a chain proves the entries are in order, only a pinned head proves none were
-    cut off the end. Left beside the ledger it is a copy, not a control."""
+    """Score, sign, then durably extend the ledger and its convenience pin."""
     parsed = ScoreRequest.model_validate_json(request.read_text(encoding="utf-8"))
     receipt = score_receipt(parsed, signing_key=load_signing_key(key), settings=_SETTINGS)
     out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    new_head = append(receipt, path=ledger)
     head_path = head if head is not None else Path(f"{ledger}.head")
-    save_head(new_head, path=head_path)
+    new_head = append_and_save_head(receipt, path=ledger, head_path=head_path)
     typer.echo(f"wrote receipt: {out}")
     typer.echo(f"wrote ledger head: {head_path} ({new_head.count} entries)")
 
 
 @app.command()
 def composite(
-    request: Annotated[Path, typer.Option("--request", help="CompositeRequest JSON.")],
-    key: Annotated[Path, typer.Option("--key", help="Signing key file.")],
-    out: Annotated[Path, typer.Option("--out", help="Receipt output path.")],
+    request: _RequestInput,
+    key: _SigningKeyInput,
+    out: _ReceiptOutput,
 ) -> None:
     """Score a weighted multi-scale composite and write a signed receipt."""
     parsed = CompositeRequest.model_validate_json(request.read_text(encoding="utf-8"))
@@ -104,21 +100,10 @@ def composite(
 
 @app.command()
 def verify(
-    receipt: Annotated[Path, typer.Option("--receipt", help="Receipt JSON to verify.")],
-    public_key: Annotated[
-        Path,
-        typer.Option("--public-key", help="Pinned signer public-key file (the .pub from keygen)."),
-    ],
+    receipt: _ReceiptInput,
+    public_key: _PublicKeyInput,
 ) -> None:
-    """Verify a receipt offline against a pinned signer; exit non-zero if it fails.
-
-    The expected public key is read from ``--public-key`` (out-of-band), never from
-    the receipt's own field, so a re-signed forgery cannot authenticate itself. A
-    failure reports its coded cause (``avow.signature_invalid`` vs
-    ``avow.payload_hash_mismatch``), which a bare pass/fail boolean would discard.
-
-    Proves who signed the receipt and that it is unmodified — NOT that it is fresh or
-    unseen. Use ``verify-ledger`` for that; a replayed receipt verifies here."""
+    """Verify offline against a pinned signer; this does not prove freshness."""
     parsed = ScoreReceipt.model_validate_json(receipt.read_text(encoding="utf-8"))
     try:
         verify_receipt(parsed, expected_public_key=read_public_key(public_key))
@@ -129,35 +114,23 @@ def verify(
 
 @app.command()
 def verify_ledger(
-    public_key: Annotated[
-        Path,
-        typer.Option("--public-key", help="Pinned signer public-key file (the .pub from keygen)."),
-    ],
-    head: Annotated[
-        Path,
-        typer.Option("--head", help="Pinned chain-head file (written by `score`)."),
-    ],
-    ledger: Annotated[Path, typer.Option("--ledger", help="Ledger JSONL path.")] = Path(
-        _SETTINGS.ledger_path
-    ),
+    public_key: _PublicKeyInput,
+    head: _HeadInput,
+    ledger: _LedgerInput = _DEFAULT_LEDGER_PATH,
 ) -> None:
-    """Walk the ledger's hash chain to the pinned head, verifying every entry's hash and
-    signature, and fail closed on the first disagreement.
-
-    Two pins, both supplied out-of-band and neither read from the ledger. The signer's
-    PUBLIC key (never the secret seed) says who may write entries: an adversary can
-    recompute an entry's content hash, so tamper-evidence rests on the Ed25519 signature
-    only the private seed can produce. The chain head says which entries there are —
-    without it, dropping the last N lines leaves a shorter ledger that still verifies."""
+    """Verify every ledger entry and link against caller-supplied signer and head pins."""
     try:
-        pinned = read_public_key(public_key)
-        entries = verify_integrity(
-            ledger,
-            ScoreReceipt,
-            expected_public_key=pinned,
-            expected_head=read_head(head),
-        )
+        entries = _ledger_entries(public_key, head, ledger)
     except AvowError as exc:
         _fail(exc)
     noun = "entry" if len(entries) == 1 else "entries"
     typer.echo(f"OK: ledger verified, {len(entries)} {noun} intact")
+
+
+def _ledger_entries(public_key: Path, head: Path, ledger: Path) -> tuple[ScoreReceipt, ...]:
+    return verify_integrity(
+        ledger,
+        ScoreReceipt,
+        expected_public_key=read_public_key(public_key),
+        expected_head=read_head(head),
+    )

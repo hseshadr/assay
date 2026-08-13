@@ -43,6 +43,7 @@ number. Sorted-by-accident is not a scale. The caller declares the order, always
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
@@ -180,16 +181,9 @@ def weighted_agreement(rater_a: Sequence[str], rater_b: Sequence[str], *, scale:
 def quadratic_kappa(
     rater_a: Sequence[str], rater_b: Sequence[str], *, scale: Scale
 ) -> float | None:
-    """Quadratic-weighted Cohen's kappa — ``sklearn.metrics.cohen_kappa_score``.
+    """Sklearn quadratic kappa using the caller's declared ordinal scale.
 
-    ``labels=list(scale)`` is the whole ordinal contract: sklearn reads the distance
-    between two bands off their positions in that list. Omit it and it sorts the band
-    names, which for weak/moderate/strong is a different scale and a different answer.
-    Passing the full declared scale also keeps a band nobody used at its own position,
-    so "weak vs strong" stays a two-step miss on a three-band scale.
-
-    ``None`` when both raters used one and the same band throughout: chance agreement is
-    then total, kappa's denominator is zero, and there is no honest number to return."""
+    Returns ``None`` when chance agreement is total and the denominator is zero."""
     _validate(rater_a, rater_b, scale)
     if len(set(rater_a) | set(rater_b)) < _MIN_LEVELS:
         return None
@@ -228,26 +222,33 @@ def _interval(per_item: Sequence[float], settings: AssaySettings) -> Estimate:
     )
 
 
-def _report(
-    rater_a: Sequence[str],
-    rater_b: Sequence[str],
-    scale: Scale,
-    per_item: Sequence[float],
-    settings: AssaySettings,
-) -> AgreementReport:
-    kappa = quadratic_kappa(rater_a, rater_b, scale=scale)
-    tau = kendall_tau_b(rater_a, rater_b, scale=scale)
+@dataclass(frozen=True)
+class _ReportInputs:
+    rater_a: tuple[str, ...]
+    rater_b: tuple[str, ...]
+    scale: tuple[str, ...]
+    per_item: tuple[float, ...]
+
+
+def _statistics(data: _ReportInputs) -> tuple[float | None, float | None]:
+    kappa = quadratic_kappa(data.rater_a, data.rater_b, scale=data.scale)
+    tau = kendall_tau_b(data.rater_a, data.rater_b, scale=data.scale)
+    return kappa, tau
+
+
+def _report(data: _ReportInputs, settings: AssaySettings) -> AgreementReport:
+    kappa, tau = _statistics(data)
     return AgreementReport(
-        scale=tuple(scale),
-        n_items=len(per_item),
-        n_exact_matches=sum(a == b for a, b in zip(rater_a, rater_b, strict=True)),
-        percent_agreement=percent_agreement(rater_a, rater_b, scale=scale),
-        weighted_agreement=float(np.mean(per_item)),
+        scale=data.scale,
+        n_items=len(data.per_item),
+        n_exact_matches=sum(a == b for a, b in zip(data.rater_a, data.rater_b, strict=True)),
+        percent_agreement=percent_agreement(data.rater_a, data.rater_b, scale=data.scale),
+        weighted_agreement=float(np.mean(data.per_item)),
         quadratic_kappa=kappa,
         kappa_undefined_reason=None if kappa is not None else _KAPPA_UNDEFINED,
         kendall_tau_b=tau,
         tau_undefined_reason=None if tau is not None else _TAU_UNDEFINED,
-        weighted_agreement_interval=_interval(per_item, settings),
+        weighted_agreement_interval=_interval(data.per_item, settings),
     )
 
 
@@ -264,4 +265,5 @@ def agreement_report(
     rater_b = [row.rater_b for row in ratings]
     ordinals_a, ordinals_b = _validate(rater_a, rater_b, scale)
     per_item = _per_item_weights(ordinals_a, ordinals_b, len(scale))
-    return _report(rater_a, rater_b, scale, per_item, settings)
+    data = _ReportInputs(tuple(rater_a), tuple(rater_b), tuple(scale), tuple(per_item))
+    return _report(data, settings)

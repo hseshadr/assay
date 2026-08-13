@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -35,6 +36,25 @@ def _write_request(path: Path) -> None:
             " ", ""
         )
     )
+
+
+def _score_process(root: Path, index: int) -> None:
+    result = _RUNNER.invoke(
+        app,
+        [
+            "score",
+            "--request",
+            str(root / "req.json"),
+            "--key",
+            str(root / "signing.key"),
+            "--out",
+            str(root / f"receipt-{index}.json"),
+            "--ledger",
+            str(root / "ledger.jsonl"),
+        ],
+    )
+    if result.exit_code:
+        raise RuntimeError(result.stdout) from result.exception
 
 
 def test_should_keygen_score_and_verify_end_to_end(tmp_path: Path) -> None:
@@ -229,6 +249,26 @@ def test_should_record_the_chain_head_beside_the_ledger_when_scoring(tmp_path: P
     assert json.loads(pin.read_text())["count"] == 2
     # And the ledger verifies against it
     assert _verify_ledger(tmp_path, ledger).exit_code == 0
+
+
+def test_should_never_publish_a_stale_head_from_concurrent_cli_writers(tmp_path: Path) -> None:
+    # Given two real CLI processes share one key, ledger, and convenience-head path
+    _RUNNER.invoke(app, ["keygen", "--out", str(tmp_path / "signing.key")])
+    _write_request(tmp_path / "req.json")
+    context = multiprocessing.get_context("spawn")
+    workers = [context.Process(target=_score_process, args=(tmp_path, index)) for index in (1, 2)]
+    # When both score at the same time
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=15)
+    # Then the final pin covers both entries, and truncating either one fails closed
+    assert [worker.exitcode for worker in workers] == [0, 0]
+    ledger = tmp_path / "ledger.jsonl"
+    assert json.loads(Path(f"{ledger}.head").read_text())["count"] == 2
+    assert _verify_ledger(tmp_path, ledger).exit_code == 0
+    ledger.write_text(ledger.read_text().splitlines()[0] + "\n")
+    assert _verify_ledger(tmp_path, ledger).exit_code == 1
 
 
 def test_should_fail_closed_when_the_pinned_head_is_missing(tmp_path: Path) -> None:

@@ -3,6 +3,9 @@
 New here? Read [`README.md`](README.md) first — it explains what a receipt is and why it
 matters. This page is the shortest path from clone to a verified receipt.
 
+Before production use, read the [operational contract](docs/OPERATIONS.md) for the
+privacy, plaintext retention, key/head custody, recovery, and performance boundaries.
+
 **Requires Python 3.13+.** The distribution is named `avow`; the command it installs is
 named **`assay`**. There is no `avow` command.
 
