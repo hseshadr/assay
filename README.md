@@ -53,9 +53,9 @@ The published 0.3.0 code names this accurately: it is a **payload-hash mismatch*
 replay detection. The envelope detects tampering; ledger state detects replay and
 truncation. See [Honest limits](#honest-limits).
 
-**Artifact status:** Published now: `avow` 0.3.0 on PyPI and `@edgeproc/avow` 0.3.0
-on npm. Source `main`: 0.4.0, prepared for its next release. The opening proof uses the
-published contract; later sections label source-only 0.4.0 features explicitly.
+**Artifact status:** Published now: `avow` 0.4.0 on PyPI and `@edgeproc/avow` 0.4.0
+on npm. The opening proof remains a verbatim 0.3.0 session; 0.4.0 keeps that contract and
+adds the features documented below.
 
 ## Run it
 
@@ -186,7 +186,7 @@ original receipt ..... VALID
 edited receipt ....... REJECTED (ReplayMismatch)
 ```
 
-Published 0.3.0 and source `main` both print `PayloadHashMismatch` here.
+Published 0.3.0 and 0.4.0 both print `PayloadHashMismatch` here.
 
 Nudging `0.83` to `0.99` — a change that would be invisible in a database — makes the
 receipt fail to verify. That is the whole idea.
@@ -768,7 +768,7 @@ and branch coverage**. The mutation gate separately breaks **46 named claims** a
 requires every guard to turn red; 17 of those mutations exercise TypeScript under vitest.
 Run the commands above to regenerate the evidence from this exact checkout.
 
-Published releases: `avow` 0.3.0 on PyPI; `@edgeproc/avow` 0.3.0 and
+Published releases: `avow` 0.4.0 on PyPI; `@edgeproc/avow` 0.4.0 and
 `@edgeproc/receipt-ui` 0.2.0 on npm. See [`CHANGELOG.md`](CHANGELOG.md) and
 [`ts/packages/receipt-ui/CHANGELOG.md`](ts/packages/receipt-ui/CHANGELOG.md) for what each
 release contains. Read the honest limits above before depending on any of it.
