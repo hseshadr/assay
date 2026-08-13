@@ -78,6 +78,14 @@ def test_frozen_benchmarks_are_wired_into_local_and_ci_gates() -> None:
     assert "pnpm benchmark" in workflow
 
 
+def test_typescript_benchmark_measures_peak_not_current_rss() -> None:
+    # Given the contract budgets peak resident memory, not one end-of-run snapshot
+    source = Path("ts/benchmarks/release.mjs").read_text(encoding="utf-8")
+    # Then the shipped benchmark reads Node's high-water mark directly
+    assert "process.resourceUsage().maxRSS" in source
+    assert "process.memoryUsage().rss" not in source
+
+
 def test_shipped_python_benchmarks_meet_the_frozen_contract() -> None:
     # Given the exact workloads shipped in the wheel
     # When every workload enforces its own frozen latency, RSS, and integrity budget
