@@ -147,15 +147,5 @@ def test_classification_refusal_vector_is_refused(case: dict) -> None:
     def call() -> object:
         return binary_scores(case["y_true"], case["y_score"])
 
-    # When the Python face is asked to score it
-    if case["code"] is None:
-        # Then it refuses uncoded — scikit-learn objects to the multiclass target on
-        # Python's behalf, where TypeScript raises its own coded InvalidScoreRequest.
-        # The accept/reject boundary is identical; only the class differs. The `match`
-        # pins WHY it refused, so a future ValueError from somewhere else cannot pass
-        # this test off as the refusal it is asserting.
-        with pytest.raises(ValueError, match="multiclass"):
-            call()
-        return
-    # Then it refuses with the same coded error the TypeScript face raises
+    # When the Python face is asked to score it, it refuses with the TypeScript code.
     _raised_code(case, call)
