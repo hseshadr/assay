@@ -8,6 +8,7 @@ README = Path("README.md")
 QUICKSTART = Path("QUICKSTART.md")
 VERSION_SOURCE = Path("src/avow/_version.py")
 TS_PACKAGE = Path("ts/package.json")
+TS_README = Path("ts/README.md")
 
 
 def test_opening_proof_uses_the_current_published_error_contract() -> None:
@@ -48,8 +49,10 @@ def test_packaged_front_doors_never_freeze_prepublish_registry_state() -> None:
 
 
 def test_readme_distinguishes_line_reinsertion_from_semantic_receipt_replay() -> None:
-    readme = README.read_text(encoding="utf-8")
+    readme = "\n".join(path.read_text(encoding="utf-8") for path in (README, TS_README))
 
     assert "same signed receipt submitted twice" in readme
     assert "new, correctly sequenced entries" in readme
     assert "nonce or request ID" in readme
+    assert "replay defence is the ledger's job" not in readme
+    assert "rejects a replayed entry" not in readme
