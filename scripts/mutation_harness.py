@@ -817,12 +817,9 @@ def _vitest_verdict(passed: int, failed: int) -> int:
 
 
 def _vitest_command(files: Sequence[str], pattern: str, report: Path) -> list[str]:
-    """``pnpm`` is resolved from PATH on purpose — it is the pinned package manager for
-    ``ts/``, and hardcoding a machine-specific absolute path would break every runner."""
+    """Launch vitest from the already locked and installed TypeScript dependency tree."""
     return [
-        "pnpm",
-        "exec",
-        "vitest",
+        str(_TS / "node_modules/.bin/vitest"),
         "run",
         *files,
         "--testNamePattern",
