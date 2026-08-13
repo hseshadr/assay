@@ -12,6 +12,8 @@ from typer.testing import CliRunner
 
 import assay.cli as cli_module
 from assay.cli import _safe_location, _safe_token, app
+from assay.receipt import ScoreReceipt
+from avow.ledger import append
 
 _RUNNER = CliRunner()
 
@@ -324,6 +326,25 @@ def test_real_score_preserves_the_private_key_when_receipt_path_aliases_it(
     rejected = _real_cli(*_score_arguments(paths))
     assert rejected.returncode == 1
     assert "avow.ledger_configuration_invalid" in rejected.stdout
+    assert _snapshot(tmp_path) == before
+
+
+def test_real_score_requires_recovery_before_absorbing_an_unknown_append(
+    tmp_path: Path,
+) -> None:
+    # Given one acknowledged CLI entry plus a durable append whose pin was never saved
+    paths = _score_paths(tmp_path)
+    assert _real_cli(*_score_arguments(paths)).returncode == 0
+    receipt = ScoreReceipt.model_validate_json(paths["out"].read_text(encoding="utf-8"))
+    append(receipt, path=paths["ledger"])
+    changed = paths["request"].read_text(encoding="utf-8").replace("0.2", "0.3")
+    paths["request"].write_text(changed, encoding="utf-8")
+    before = _snapshot(tmp_path)
+    # When a later score would otherwise silently advance the stale convenience pin
+    rejected = _real_cli(*_score_arguments(paths))
+    # Then it names recovery and preserves every caller artifact byte-for-byte
+    assert rejected.returncode == 1
+    assert rejected.stdout.strip() == "FAIL: avow.ledger_recovery_required"
     assert _snapshot(tmp_path) == before
 
 

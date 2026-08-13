@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 README = Path("README.md")
+QUICKSTART = Path("QUICKSTART.md")
 VERSION_SOURCE = Path("src/avow/_version.py")
 TS_PACKAGE = Path("ts/package.json")
 
@@ -28,9 +29,19 @@ def test_readme_names_the_pair_versioned_release() -> None:
     # When the README's artifact status is compared with both package manifests
     assert version_match is not None
     version = version_match.group(1)
-    # Then it names one pair-versioned release candidate without claiming it is live early
+    # Then it names one pair-versioned artifact without freezing transient registry state
     assert version == ts_version
-    assert f"Release candidate: `avow` {version}" in readme
+    assert f"This source and its artifacts identify as `avow` {version}" in readme
     assert f"`@edgeproc/avow` {version}" in readme
-    assert "registries currently serve 0.4.0" in readme.lower()
-    assert "supersedes it for Python CLI ledger writers" in readme
+    assert "supersedes 0.4.0 for Python CLI ledger writers" in readme
+
+
+def test_packaged_front_doors_never_freeze_prepublish_registry_state() -> None:
+    packaged = "\n".join(path.read_text(encoding="utf-8") for path in (README, QUICKSTART))
+    forbidden = (
+        "Release candidate",
+        "registries currently serve 0.4.0",
+        "Until 0.4.1 is published",
+        "Upgrade when 0.4.1 is live",
+    )
+    assert all(phrase.lower() not in packaged.lower() for phrase in forbidden)

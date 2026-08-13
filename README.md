@@ -53,11 +53,13 @@ The published 0.3.0 code names this accurately: it is a **payload-hash mismatch*
 replay detection. The envelope detects tampering; ledger state detects replay and
 truncation. See [Honest limits](#honest-limits).
 
-**Artifact status:** Release candidate: `avow` 0.4.1 and `@edgeproc/avow` 0.4.1.
-Registries currently serve 0.4.0; **0.4.1 supersedes it for Python CLI ledger writers**
-because it serializes and durably commits the ledger plus convenience head under one
-bounded lock. Upgrade when 0.4.1 is live. The opening proof remains a verbatim 0.3.0
-session; the payload-hash contract is unchanged.
+**Artifact status:** This source and its artifacts identify as `avow` 0.4.1 and
+`@edgeproc/avow` 0.4.1. **0.4.1 supersedes 0.4.0 for Python CLI ledger writers** because
+it serializes and durably commits the ledger plus convenience head under one bounded
+lock. Check [PyPI](https://pypi.org/project/avow/) and
+[npm](https://www.npmjs.com/package/@edgeproc/avow) for registry availability before
+installing. The opening proof remains a verbatim 0.3.0 session; the payload-hash contract
+is unchanged.
 
 ## Run it
 
@@ -523,6 +525,9 @@ Stated plainly, because each of these is a real boundary on what avow currently 
   after a newer append. The two files still are not one crash-atomic transaction: a
   failure between commits leaves the old pin rejecting the advanced ledger, which is a
   fail-closed incident requiring investigation, not permission to trim or silently re-pin.
+  The combined CLI append checks that pin under the ledger lock before writing and raises
+  `avow.ledger_recovery_required` on any mismatch; only an empty ledger can start without
+  a convenience head.
 - **`writ`'s enforcement is in-process (v0).** The signing key and the privileged action
   live only inside the effector, which the gate captures in a closure; the agent receives
   the closure and never the effector, so the only route to the action is through the
@@ -781,8 +786,10 @@ workloads as a dedicated acceptance gate. The mutation gate breaks **46 named cl
 requires every guard to turn red; 17 of those mutations exercise TypeScript under vitest.
 Run the commands above to regenerate the evidence from this exact checkout.
 
-Release candidate: `avow` 0.4.1 on PyPI and `@edgeproc/avow` 0.4.1 on npm; registries
-currently serve 0.4.0 for both. `@edgeproc/receipt-ui` 0.2.0 is separately versioned.
+Artifact versions in this source are `avow` 0.4.1 and `@edgeproc/avow` 0.4.1. Verify
+current availability on [PyPI](https://pypi.org/project/avow/) and
+[npm](https://www.npmjs.com/package/@edgeproc/avow). `@edgeproc/receipt-ui` 0.2.0 is
+separately versioned.
 See [`CHANGELOG.md`](CHANGELOG.md) and
 [`ts/packages/receipt-ui/CHANGELOG.md`](ts/packages/receipt-ui/CHANGELOG.md) for what each
 release contains. Read the honest limits above before depending on any of it.

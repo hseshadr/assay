@@ -141,8 +141,9 @@ def _write_score(
 ) -> LedgerHead:
     parsed = ScoreRequest.model_validate_json(request.read_text(encoding="utf-8"))
     receipt = score_receipt(parsed, signing_key=load_signing_key(key), settings=settings)
+    head = append_and_save_head(receipt, path=ledger, head_path=head_path)
     out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    return append_and_save_head(receipt, path=ledger, head_path=head_path)
+    return head
 
 
 def _score_runtime(ledger: Path | None, head: Path | None) -> tuple[AssaySettings, Path, Path]:

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -119,3 +121,35 @@ def test_checkout_never_persists_push_credentials() -> None:
             if "persist-credentials: false" not in block
         )
     assert offenders == []
+
+
+def test_publish_fails_closed_unless_tag_matches_both_artifact_versions() -> None:
+    workflow = _yaml(ROOT / ".github/workflows/publish.yml")
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    assert "release-identity" in jobs
+    assert jobs["publish-pypi"]["needs"] == "release-identity"
+    assert jobs["publish-npm"]["needs"] == "release-identity"
+    identity = (ROOT / "scripts/verify_release_identity.py").read_text(encoding="utf-8")
+    assert "src/avow/_version.py" in identity
+    assert "ts/package.json" in identity
+    source = (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    assert "RELEASE_TAG: ${{ github.ref_name }}" in source
+    assert 'python scripts/verify_release_identity.py "$RELEASE_TAG"' in source
+    rejected = subprocess.run(
+        [sys.executable, "scripts/verify_release_identity.py", "v9.9.9"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode == 1
+    version = json.loads((ROOT / "ts/package.json").read_text(encoding="utf-8"))["version"]
+    accepted = subprocess.run(  # noqa: S603 - version comes from this repository's manifest
+        [sys.executable, "scripts/verify_release_identity.py", f"v{version}"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert accepted.returncode == 0
