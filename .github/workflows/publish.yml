@@ -45,10 +45,24 @@ on:
 permissions:
   contents: read
 jobs:
+  # This job has no OIDC permission. Both publishing jobs remain unreachable unless the
+  # immutable tag names the exact version declared by BOTH artifacts.
+  release-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require tag = Python version = TypeScript version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python scripts/verify_release_identity.py "$RELEASE_TAG"
+
   # Python `avow` -> PyPI. Inline for the job_workflow_ref reason above; steps mirror
   # hseshadr/ci python-publish.yml (ci-v2.0.3). Re-runs `uv run poe gate` on the tagged
   # ref before building — nothing ships unless it passes the same gate CI enforces.
   publish-pypi:
+    needs: release-identity
     runs-on: ubuntu-latest
     permissions:
       id-token: write # OIDC — PyPI verifies this against the registered trusted publisher.
@@ -65,6 +79,9 @@ jobs:
 
       - name: Gate (uv run poe gate)
         run: uv run poe gate
+
+      - name: Enforce frozen performance budgets
+        run: uv run poe benchmark
 
       - name: Build sdist + wheel
         run: uv build --out-dir dist
@@ -118,6 +135,7 @@ jobs:
   # TS `@edgeproc/avow` (ts/) -> npm. Re-runs `pnpm gate` (lint -> tsc -> vitest
   # conformance -> build); no browser step, so it runs in ts-publish as-is.
   publish-npm:
+    needs: release-identity
     permissions:
       id-token: write # OIDC — npm verifies this against the registered trusted publisher.
       contents: read

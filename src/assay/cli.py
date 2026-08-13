@@ -3,161 +3,278 @@ facade, translate results to exit codes. No business logic lives here."""
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
+from pydantic import ValidationError
+from typer._click.exceptions import UsageError
 
 from assay.api import composite_score
 from assay.api import score as score_receipt
+from assay.errors import AssayError, CliInputInvalid, InvalidScoreRequest
 from assay.models import CompositeRequest, ScoreRequest
 from assay.receipt import ScoreReceipt
 from assay.settings import AssaySettings
+from avow._atomic import atomic_write_bytes, discard_staged, install_staged, stage_bytes
 from avow.errors import AvowError
 from avow.keys import (
-    generate_signing_key,
+    _create_key_pair,
     load_signing_key,
     read_public_key,
-    save_public_key,
-    save_signing_key,
 )
-from avow.ledger import append, read_head, save_head, verify_integrity
+from avow.ledger import (
+    LedgerHead,
+    _append_and_save_head_with_install,
+    read_head,
+    require_distinct_paths,
+    verify_integrity,
+)
 from avow.verify import verify_receipt
 
 app = typer.Typer(help="Assay — the scoring engine that refuses to lie.")
 
-# Defaults come from settings, never from literals buried in the command signatures,
-# so `ASSAY_SIGNING_KEY_PATH` / `ASSAY_LEDGER_PATH` retune the CLI without code edits.
-_SETTINGS = AssaySettings()
+_KeyOutput = Annotated[Path | None, typer.Option(help="Where to write the signing key.")]
+_PublicOutput = Annotated[Path | None, typer.Option(help="Public-key output; default <out>.pub.")]
+_RequestInput = Annotated[Path, typer.Option("--request", help="Typed request JSON.")]
+_SigningKeyInput = Annotated[Path, typer.Option("--key", help="Signing key file.")]
+_ReceiptOutput = Annotated[Path, typer.Option("--out", help="Receipt output path.")]
+_LedgerInput = Annotated[Path | None, typer.Option("--ledger", help="Ledger JSONL path.")]
+_HeadOutput = Annotated[
+    Path | None, typer.Option("--head", help="Head output; default <ledger>.head.")
+]
+_ReceiptInput = Annotated[Path, typer.Option("--receipt", help="Receipt JSON to verify.")]
+_PublicKeyInput = Annotated[Path, typer.Option("--public-key", help="Pinned signer public key.")]
+_HeadInput = Annotated[Path, typer.Option("--head", help="Pinned chain-head file.")]
+_SAFE_FIELDS = frozenset(
+    {"metric", "metric_version", "y_true", "y_score", "threshold", "subscores"}
+)
 
 
-def _fail(exc: AvowError) -> None:
-    """Report a coded failure and exit non-zero. The stable ``code`` is what callers
-    branch on — collapsing it to a bare boolean would throw the cause away."""
-    typer.echo(f"FAIL: {exc.code}: {exc}")
+def _safe_token(token: object) -> str:
+    """Render only schema-owned field names and numeric positions."""
+    if isinstance(token, int):
+        return str(token)
+    return token if isinstance(token, str) and token in _SAFE_FIELDS else "field"
+
+
+def _safe_location(exc: ValidationError) -> str:
+    """Extract one schema location without serialising its private input value."""
+    errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    location = errors[0].get("loc", ()) if errors else ()
+    rendered = ".".join(_safe_token(token) for token in location)
+    return rendered or "request"
+
+
+def _fail_code(code: str, *, field: str | None = None) -> NoReturn:
+    """Emit a machine-stable code and optional schema location, never an exception."""
+    suffix = f" field={field}" if field is not None else ""
+    typer.echo(f"FAIL: {code}{suffix}")
     raise typer.Exit(code=1)
 
 
-@app.command()
-def keygen(
-    out: Annotated[Path, typer.Option(help="Where to write the signing key.")] = Path(
-        _SETTINGS.signing_key_path
-    ),
-    pub: Annotated[
-        Path | None,
-        typer.Option(help="Where to write the public key (default: <out>.pub)."),
-    ] = None,
-) -> None:
-    """Generate a new Ed25519 signing key (private seed 0600) plus its public key.
+def _fail(exc: AssayError | AvowError) -> NoReturn:
+    """Report a domain code without interpolating caller-controlled error messages."""
+    _fail_code(exc.code)
 
-    The public key is written separately so a verifier can pin it out-of-band and
-    never has to trust the key embedded in a receipt."""
-    key = generate_signing_key()
-    save_signing_key(key, path=out)
-    pub_path = pub if pub is not None else Path(f"{out}.pub")
-    save_public_key(key, path=pub_path)
-    typer.echo(f"wrote signing key: {out}")
+
+def _fail_validation(exc: ValidationError, *, code: str) -> NoReturn:
+    """Report only the typed boundary and safe schema path."""
+    _fail_code(code, field=_safe_location(exc))
+
+
+def _load_settings() -> AssaySettings:
+    """Resolve environment settings only inside a redacting command boundary."""
+    try:
+        return AssaySettings()
+    except ValidationError as exc:
+        _fail_validation(exc, code=CliInputInvalid.code)
+
+
+def _key_paths(out: Path | None, pub: Path | None) -> tuple[Path, Path]:
+    """Resolve key destinations lazily so help never evaluates the environment."""
+    private = out if out is not None else Path(_load_settings().signing_key_path)
+    public = pub if pub is not None else Path(f"{private}.pub")
+    return private, public
+
+
+def _require_distinct_cli_paths(*paths: Path) -> None:
+    """Reject any cross-role filesystem alias before a command writes."""
+    require_distinct_paths(paths)
+
+
+def _write_key_pair(out: Path, pub: Path) -> None:
+    """Create both halves without replacing an existing signing identity."""
+    _create_key_pair(private_path=out, public_path=pub)
+
+
+def _run_keygen(out: Path, pub: Path) -> None:
+    """Translate all key-persistence failures to the stable CLI boundary."""
+    try:
+        _require_distinct_cli_paths(out, pub)
+        _write_key_pair(out, pub)
+    except AvowError as exc:
+        _fail(exc)
+    except OSError:
+        _fail(CliInputInvalid("key destinations are not writable"))
+
+
+@app.command()
+def keygen(out: _KeyOutput = None, pub: _PublicOutput = None) -> None:
+    """Generate a private Ed25519 seed plus its separately pinnable public key."""
+    out_path, pub_path = _key_paths(out, pub)
+    _run_keygen(out_path, pub_path)
+    typer.echo(f"wrote signing key: {out_path}")
     typer.echo(f"wrote public key: {pub_path}")
+
+
+def _write_score(
+    request: Path,
+    key: Path,
+    out: Path,
+    ledger: Path,
+    head_path: Path,
+    settings: AssaySettings,
+) -> LedgerHead:
+    if out.is_dir():
+        raise IsADirectoryError(out)
+    parsed = ScoreRequest.model_validate_json(request.read_text(encoding="utf-8"))
+    receipt = score_receipt(parsed, signing_key=load_signing_key(key), settings=settings)
+    return _persist_score(receipt, out, ledger, head_path)
+
+
+def _persist_score(receipt: ScoreReceipt, out: Path, ledger: Path, head_path: Path) -> LedgerHead:
+    """Stage output, then install and append under the legacy ledger-file lock."""
+    staged = stage_bytes(receipt.model_dump_json(indent=2).encode(), path=out)
+    try:
+        install = partial(install_staged, staged, path=out)
+        return _append_and_save_head_with_install(
+            receipt, path=ledger, head_path=head_path, install=install
+        )
+    finally:
+        discard_staged(staged)
+
+
+def _score_runtime(ledger: Path | None, head: Path | None) -> tuple[AssaySettings, Path, Path]:
+    """Resolve settings and derived persistence paths at command execution time."""
+    settings = _load_settings()
+    ledger_path = ledger if ledger is not None else Path(settings.ledger_path)
+    head_path = head if head is not None else Path(f"{ledger_path}.head")
+    return settings, ledger_path, head_path
+
+
+def _run_score(
+    request: Path, key: Path, out: Path, ledger: Path | None, head: Path | None
+) -> tuple[LedgerHead, Path]:
+    """Translate every private scoring failure to one safe public boundary."""
+    settings, ledger_path, head_path = _score_runtime(ledger, head)
+    try:
+        _require_distinct_cli_paths(request, key, out, ledger_path, head_path)
+        new_head = _write_score(request, key, out, ledger_path, head_path, settings)
+    except ValidationError as exc:
+        _fail_validation(exc, code=InvalidScoreRequest.code)
+    except (AssayError, AvowError) as exc:
+        _fail(exc)
+    except (OSError, ValueError):
+        _fail(CliInputInvalid("score input is unreadable or malformed"))
+    return new_head, head_path
 
 
 @app.command()
 def score(
-    request: Annotated[Path, typer.Option("--request", help="ScoreRequest JSON.")],
-    key: Annotated[Path, typer.Option("--key", help="Signing key file.")],
-    out: Annotated[Path, typer.Option("--out", help="Receipt output path.")],
-    ledger: Annotated[Path, typer.Option("--ledger", help="Ledger JSONL path.")] = Path(
-        _SETTINGS.ledger_path
-    ),
-    head: Annotated[
-        Path | None,
-        typer.Option("--head", help="Where to write the new chain head (default: <ledger>.head)."),
-    ] = None,
+    request: _RequestInput,
+    key: _SigningKeyInput,
+    out: _ReceiptOutput,
+    ledger: _LedgerInput = None,
+    head: _HeadOutput = None,
 ) -> None:
-    """Score a classification request, write a signed receipt, and extend the ledger.
-
-    Appending returns the ledger's new chain head, which is written out so it can be
-    carried somewhere the ledger's writer cannot reach. ``verify-ledger`` needs that
-    head: a chain proves the entries are in order, only a pinned head proves none were
-    cut off the end. Left beside the ledger it is a copy, not a control."""
-    parsed = ScoreRequest.model_validate_json(request.read_text(encoding="utf-8"))
-    receipt = score_receipt(parsed, signing_key=load_signing_key(key), settings=_SETTINGS)
-    out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    new_head = append(receipt, path=ledger)
-    head_path = head if head is not None else Path(f"{ledger}.head")
-    save_head(new_head, path=head_path)
+    """Score, sign, and durably extend the ledger and convenience pin."""
+    new_head, head_path = _run_score(request, key, out, ledger, head)
     typer.echo(f"wrote receipt: {out}")
     typer.echo(f"wrote ledger head: {head_path} ({new_head.count} entries)")
 
 
-@app.command()
-def composite(
-    request: Annotated[Path, typer.Option("--request", help="CompositeRequest JSON.")],
-    key: Annotated[Path, typer.Option("--key", help="Signing key file.")],
-    out: Annotated[Path, typer.Option("--out", help="Receipt output path.")],
-) -> None:
-    """Score a weighted multi-scale composite and write a signed receipt."""
+def _write_composite(request: Path, key: Path, out: Path) -> None:
     parsed = CompositeRequest.model_validate_json(request.read_text(encoding="utf-8"))
     receipt = composite_score(parsed, signing_key=load_signing_key(key))
-    out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
+    atomic_write_bytes(receipt.model_dump_json(indent=2).encode(), path=out)
+
+
+def _run_composite(request: Path, key: Path, out: Path) -> None:
+    """Translate every private composite failure to one safe public boundary."""
+    try:
+        _require_distinct_cli_paths(request, key, out)
+        _write_composite(request, key, out)
+    except ValidationError as exc:
+        _fail_validation(exc, code=InvalidScoreRequest.code)
+    except (AssayError, AvowError) as exc:
+        _fail(exc)
+    except (OSError, ValueError):
+        _fail(CliInputInvalid("composite input is unreadable or malformed"))
+
+
+@app.command()
+def composite(request: _RequestInput, key: _SigningKeyInput, out: _ReceiptOutput) -> None:
+    """Score a weighted multi-scale composite and write a signed receipt."""
+    _run_composite(request, key, out)
     typer.echo(f"wrote receipt: {out}")
 
 
 @app.command()
 def verify(
-    receipt: Annotated[Path, typer.Option("--receipt", help="Receipt JSON to verify.")],
-    public_key: Annotated[
-        Path,
-        typer.Option("--public-key", help="Pinned signer public-key file (the .pub from keygen)."),
-    ],
+    receipt: _ReceiptInput,
+    public_key: _PublicKeyInput,
 ) -> None:
-    """Verify a receipt offline against a pinned signer; exit non-zero if it fails.
-
-    The expected public key is read from ``--public-key`` (out-of-band), never from
-    the receipt's own field, so a re-signed forgery cannot authenticate itself. A
-    failure reports its coded cause (``avow.signature_invalid`` vs
-    ``avow.payload_hash_mismatch``), which a bare pass/fail boolean would discard.
-
-    Proves who signed the receipt and that it is unmodified — NOT that it is fresh or
-    unseen. Use ``verify-ledger`` for that; a replayed receipt verifies here."""
-    parsed = ScoreReceipt.model_validate_json(receipt.read_text(encoding="utf-8"))
+    """Verify offline against a pinned signer; this does not prove freshness."""
     try:
+        parsed = ScoreReceipt.model_validate_json(receipt.read_text(encoding="utf-8"))
         verify_receipt(parsed, expected_public_key=read_public_key(public_key))
+    except ValidationError as exc:
+        _fail_validation(exc, code=CliInputInvalid.code)
     except AvowError as exc:
         _fail(exc)
+    except (OSError, ValueError):
+        _fail(CliInputInvalid("verification input is unreadable or malformed"))
     typer.echo("OK: receipt verified")
 
 
 @app.command()
 def verify_ledger(
-    public_key: Annotated[
-        Path,
-        typer.Option("--public-key", help="Pinned signer public-key file (the .pub from keygen)."),
-    ],
-    head: Annotated[
-        Path,
-        typer.Option("--head", help="Pinned chain-head file (written by `score`)."),
-    ],
-    ledger: Annotated[Path, typer.Option("--ledger", help="Ledger JSONL path.")] = Path(
-        _SETTINGS.ledger_path
-    ),
+    public_key: _PublicKeyInput,
+    head: _HeadInput,
+    ledger: _LedgerInput = None,
 ) -> None:
-    """Walk the ledger's hash chain to the pinned head, verifying every entry's hash and
-    signature, and fail closed on the first disagreement.
-
-    Two pins, both supplied out-of-band and neither read from the ledger. The signer's
-    PUBLIC key (never the secret seed) says who may write entries: an adversary can
-    recompute an entry's content hash, so tamper-evidence rests on the Ed25519 signature
-    only the private seed can produce. The chain head says which entries there are —
-    without it, dropping the last N lines leaves a shorter ledger that still verifies."""
+    """Verify every ledger entry and link against caller-supplied signer and head pins."""
+    ledger_path = ledger if ledger is not None else Path(_load_settings().ledger_path)
     try:
-        pinned = read_public_key(public_key)
-        entries = verify_integrity(
-            ledger,
-            ScoreReceipt,
-            expected_public_key=pinned,
-            expected_head=read_head(head),
-        )
-    except AvowError as exc:
+        entries = _ledger_entries(public_key, head, ledger_path)
+    except (AssayError, AvowError) as exc:
         _fail(exc)
+    except (OSError, ValueError):
+        _fail(CliInputInvalid("ledger verification input is unreadable or malformed"))
     noun = "entry" if len(entries) == 1 else "entries"
     typer.echo(f"OK: ledger verified, {len(entries)} {noun} intact")
+
+
+def _ledger_entries(public_key: Path, head: Path, ledger: Path) -> tuple[ScoreReceipt, ...]:
+    return verify_integrity(
+        ledger,
+        ScoreReceipt,
+        expected_public_key=read_public_key(public_key),
+        expected_head=read_head(head),
+    )
+
+
+def _exit_status(result: object) -> int:
+    """Normalise Click's command return without trusting an arbitrary value."""
+    return result if isinstance(result, int) else 0
+
+
+def main() -> int:
+    """Run the real entry point with a redacted pre-dispatch parser boundary."""
+    try:
+        return _exit_status(app(standalone_mode=False))
+    except UsageError:
+        typer.echo(f"FAIL: {CliInputInvalid.code}")
+        return 1

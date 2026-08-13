@@ -1,13 +1,30 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
+import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
-from assay.cli import app
+import assay.cli as cli_module
+import avow._atomic as atomic_module
+from assay.cli import _safe_location, _safe_token, app
+from assay.receipt import ScoreReceipt
+from avow.keys import load_signing_key
+from avow.ledger import append
 
 _RUNNER = CliRunner()
+
+
+def _real_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    executable = Path(sys.executable).with_name("assay")
+    return subprocess.run(  # noqa: S603
+        [str(executable), *args], check=False, capture_output=True, text=True, env=env
+    )
 
 
 def _verify_ledger(tmp_path: Path, ledger: Path, head: Path | None = None):
@@ -35,6 +52,641 @@ def _write_request(path: Path) -> None:
             " ", ""
         )
     )
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    """Capture every regular artifact so rejected commands prove zero mutation."""
+    return {
+        str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()
+    }
+
+
+def _score_arguments(paths: dict[str, Path]) -> list[str]:
+    return [
+        "score",
+        "--request",
+        str(paths["request"]),
+        "--key",
+        str(paths["key"]),
+        "--out",
+        str(paths["out"]),
+        "--ledger",
+        str(paths["ledger"]),
+        "--head",
+        str(paths["head"]),
+    ]
+
+
+def _score_paths(root: Path) -> dict[str, Path]:
+    paths = {
+        role: root / name
+        for role, name in {
+            "request": "request.json",
+            "key": "signing.key",
+            "out": "receipt.json",
+            "ledger": "ledger.jsonl",
+            "head": "ledger.head",
+        }.items()
+    }
+    _write_request(paths["request"])
+    assert _RUNNER.invoke(app, ["keygen", "--out", str(paths["key"])]).exit_code == 0
+    return paths
+
+
+def _score_process(root: Path, index: int) -> None:
+    result = _RUNNER.invoke(
+        app,
+        [
+            "score",
+            "--request",
+            str(root / "req.json"),
+            "--key",
+            str(root / "signing.key"),
+            "--out",
+            str(root / f"receipt-{index}.json"),
+            "--ledger",
+            str(root / "ledger.jsonl"),
+        ],
+    )
+    if result.exit_code:
+        raise RuntimeError(result.stdout) from result.exception
+
+
+def _shared_score_process(root: Path, index: int) -> None:
+    result = _real_cli(
+        "score",
+        "--request",
+        str(root / f"request-{index}.json"),
+        "--key",
+        str(root / "signing.key"),
+        "--out",
+        str(root / "shared-receipt.json"),
+        "--ledger",
+        str(root / "ledger.jsonl"),
+    )
+    if result.returncode:
+        raise RuntimeError(result.stdout + result.stderr)
+
+
+def test_real_cli_redacts_a_malformed_request_value(tmp_path: Path) -> None:
+    # Given a private value appears where a classification label should be
+    sentinel = "PII-SENTINEL-ALICE"
+    request = tmp_path / "request.json"
+    request.write_text(
+        json.dumps(
+            {"metric": "binary", "metric_version": "1", "y_true": [sentinel], "y_score": [0.1]}
+        )
+    )
+    # When the real console entry point validates the malformed request
+    result = _real_cli(
+        "score",
+        "--request",
+        str(request),
+        "--key",
+        str(tmp_path / "private.key"),
+        "--out",
+        str(tmp_path / "receipt.json"),
+    )
+    # Then it emits only a stable code and schema location, never the value or traceback
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "FAIL: assay.invalid_request field=y_true.0" in combined
+    assert sentinel not in combined
+    assert "input_value" not in combined
+    assert "Traceback" not in combined
+
+
+def test_real_cli_redacts_a_private_token_rejected_before_command_dispatch() -> None:
+    # Given an arbitrary private token reaches Typer's unknown-command parser
+    sentinel = "PII-SENTINEL-UNKNOWN-COMMAND"
+    # When the installed console entry point rejects it before any command runs
+    result = _real_cli(sentinel)
+    combined = result.stdout + result.stderr
+    # Then only the stable boundary code is emitted, never Click's echoed token/usage
+    assert result.returncode == 1
+    assert combined.strip() == "FAIL: assay.cli_input_invalid"
+    assert sentinel not in combined
+    assert "Usage:" not in combined
+
+
+def test_main_redacts_parser_errors_and_normalises_command_results(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sentinel = "PII-SENTINEL-IN-PROCESS-PARSER"
+    monkeypatch.setattr(sys, "argv", ["assay", sentinel])
+    assert cli_module.main() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: assay.cli_input_invalid"
+    monkeypatch.setattr(cli_module, "app", lambda *, standalone_mode: 7)
+    assert cli_module.main() == 7
+    monkeypatch.setattr(cli_module, "app", lambda *, standalone_mode: None)
+    assert cli_module.main() == 0
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MIN_SAMPLES",
+        "BOOTSTRAP_RESAMPLES",
+        "CONFIDENCE_LEVEL",
+        "ECE_BINS",
+        "BOOTSTRAP_SEED",
+        "RANKING_K",
+    ],
+)
+def test_real_cli_never_imports_an_invalid_environment_value(name: str) -> None:
+    # Given any numeric ASSAY setting carries a private malformed value
+    sentinel = f"PII-SENTINEL-ENV-{name}"
+    environment = {**os.environ, f"ASSAY_{name}": sentinel}
+    # When even the real entry point's help is requested
+    result = _real_cli("--help", env=environment)
+    # Then import performs no settings validation and nothing private reaches output
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0
+    assert sentinel not in combined
+    assert "input_value" not in combined
+    assert "Traceback" not in combined
+
+
+def test_real_cli_redacts_an_invalid_environment_value_during_scoring(tmp_path: Path) -> None:
+    # Given scoring actually needs a malformed private setting
+    sentinel = "PII-SENTINEL-ENV-SCORE"
+    environment = {**os.environ, "ASSAY_MIN_SAMPLES": sentinel}
+    request = tmp_path / "request.json"
+    request.write_text(
+        json.dumps(
+            {"metric": "binary", "metric_version": "1", "y_true": [0, 1], "y_score": [0.1, 0.9]}
+        )
+    )
+    # When the real scoring boundary resolves settings lazily
+    result = _real_cli(
+        "score",
+        "--request",
+        str(request),
+        "--key",
+        str(tmp_path / "key"),
+        "--out",
+        str(tmp_path / "out"),
+        env=environment,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "FAIL: assay.cli_input_invalid field=field" in combined
+    assert sentinel not in combined
+    assert "Traceback" not in combined
+
+
+def test_keygen_resolves_default_settings_only_inside_its_safe_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A valid environment supplies the lazy default only when keygen executes
+    destination = tmp_path / "configured.key"
+    monkeypatch.setenv("ASSAY_SIGNING_KEY_PATH", str(destination))
+    assert _RUNNER.invoke(app, ["keygen"]).exit_code == 0
+    assert destination.is_file()
+    # An invalid private value is mapped to the same stable redacted boundary
+    sentinel = "PII-SENTINEL-IN-PROCESS"
+    monkeypatch.setenv("ASSAY_MIN_SAMPLES", sentinel)
+    result = _RUNNER.invoke(app, ["keygen"])
+    assert result.exit_code == 1
+    assert "assay.cli_input_invalid field=field" in result.stdout
+    assert sentinel not in result.stdout
+
+
+_SCORE_ROLE_PAIRS = [
+    (left, right)
+    for index, left in enumerate(("request", "key", "out", "ledger", "head"))
+    for right in ("request", "key", "out", "ledger", "head")[index + 1 :]
+]
+
+
+@pytest.mark.parametrize(("left", "right"), _SCORE_ROLE_PAIRS)
+def test_score_refuses_every_cross_role_path_before_any_write(
+    tmp_path: Path, left: str, right: str
+) -> None:
+    # Given any two of the five read/write roles name one filesystem path
+    paths = _score_paths(tmp_path)
+    paths[right] = paths[left]
+    before = _snapshot(tmp_path)
+    # When score validates the complete role map before parsing or persistence
+    result = _RUNNER.invoke(app, _score_arguments(paths))
+    # Then it fails coded and preserves every existing byte while creating nothing
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("out_name", "ledger_name"),
+    [("receipt.json", "RECEIPT.JSON"), ("café.json", "cafe\u0301.json")],
+)
+def test_score_refuses_absent_role_names_aliased_by_the_destination_volume(
+    tmp_path: Path, out_name: str, ledger_name: str
+) -> None:
+    # Given this actual volume collapses two initially absent role spellings
+    probe = tmp_path / out_name
+    probe.touch()
+    aliases = (tmp_path / ledger_name).exists()
+    probe.unlink()
+    if not aliases:
+        pytest.skip("test volume keeps these names distinct")
+    paths = _score_paths(tmp_path)
+    paths["out"], paths["ledger"] = tmp_path / out_name, tmp_path / ledger_name
+    before = _snapshot(tmp_path)
+    result = _RUNNER.invoke(app, _score_arguments(paths))
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("alias_kind", ["hardlink", "symlink", "dangling-symlink"])
+def test_score_refuses_linked_output_roles_without_damaging_the_key_or_ledger(
+    tmp_path: Path, alias_kind: str
+) -> None:
+    paths = _score_paths(tmp_path)
+    if alias_kind == "hardlink":
+        os.link(paths["key"], paths["out"])
+    elif alias_kind == "symlink":
+        paths["out"].symlink_to(paths["key"])
+    else:
+        paths["out"].symlink_to(paths["ledger"])
+    before = _snapshot(tmp_path)
+    result = _RUNNER.invoke(app, _score_arguments(paths))
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+    if alias_kind == "dangling-symlink":
+        assert paths["out"].is_symlink()
+
+
+def test_real_score_preserves_a_populated_ledger_when_receipt_path_aliases_it(
+    tmp_path: Path,
+) -> None:
+    # Given a real CLI score created one durable ledger entry and matching head
+    paths = _score_paths(tmp_path)
+    first = _real_cli(*_score_arguments(paths))
+    assert first.returncode == 0
+    before = _snapshot(tmp_path)
+    # When a second real command mistakenly names that ledger as its receipt output
+    paths["out"] = paths["ledger"]
+    rejected = _real_cli(*_score_arguments(paths))
+    # Then validation happens before receipt serialization and every byte survives
+    assert rejected.returncode == 1
+    assert "avow.ledger_configuration_invalid" in rejected.stdout
+    assert _snapshot(tmp_path) == before
+
+
+def test_real_score_preserves_the_private_key_when_receipt_path_aliases_it(
+    tmp_path: Path,
+) -> None:
+    paths = _score_paths(tmp_path)
+    before = _snapshot(tmp_path)
+    paths["out"] = paths["key"]
+    rejected = _real_cli(*_score_arguments(paths))
+    assert rejected.returncode == 1
+    assert "avow.ledger_configuration_invalid" in rejected.stdout
+    assert _snapshot(tmp_path) == before
+
+
+def test_real_score_requires_recovery_before_absorbing_an_unknown_append(
+    tmp_path: Path,
+) -> None:
+    # Given one acknowledged CLI entry plus a durable append whose pin was never saved
+    paths = _score_paths(tmp_path)
+    assert _real_cli(*_score_arguments(paths)).returncode == 0
+    receipt = ScoreReceipt.model_validate_json(paths["out"].read_text(encoding="utf-8"))
+    append(receipt, path=paths["ledger"])
+    changed = paths["request"].read_text(encoding="utf-8").replace("0.2", "0.3")
+    paths["request"].write_text(changed, encoding="utf-8")
+    before = _snapshot(tmp_path)
+    # When a later score would otherwise silently advance the stale convenience pin
+    rejected = _real_cli(*_score_arguments(paths))
+    # Then it names recovery and preserves every caller artifact byte-for-byte
+    assert rejected.returncode == 1
+    assert rejected.stdout.strip() == "FAIL: avow.ledger_recovery_required"
+    assert _snapshot(tmp_path) == before
+
+
+def test_real_score_output_failure_never_commits_or_duplicates_a_ledger_entry(
+    tmp_path: Path,
+) -> None:
+    # Given a valid request but a directory where the receipt file must be installed
+    paths = _score_paths(tmp_path)
+    paths["out"].mkdir()
+    failed = _real_cli(*_score_arguments(paths))
+    # Then failure leaves no ledger or pin at all
+    assert failed.returncode == 1
+    assert not paths["ledger"].exists()
+    assert not paths["head"].exists()
+    # And an ordinary retry to a writable output records the receipt exactly once
+    paths["out"] = tmp_path / "retry-receipt.json"
+    assert _real_cli(*_score_arguments(paths)).returncode == 0
+    assert len(paths["ledger"].read_text(encoding="utf-8").splitlines()) == 1
+    assert json.loads(paths["head"].read_text(encoding="utf-8"))["count"] == 1
+
+
+def test_in_process_score_rejects_a_directory_output_before_ledger_creation(
+    tmp_path: Path,
+) -> None:
+    paths = _score_paths(tmp_path)
+    paths["out"].mkdir()
+    failed = _RUNNER.invoke(app, _score_arguments(paths))
+    assert failed.exit_code == 1
+    assert not paths["ledger"].exists()
+    assert not paths["head"].exists()
+
+
+def test_real_concurrent_scores_leave_shared_output_at_the_latest_ledger_entry(
+    tmp_path: Path,
+) -> None:
+    # Given two distinguishable requests share one output, ledger, head, and signing key
+    key = tmp_path / "signing.key"
+    assert _real_cli("keygen", "--out", str(key)).returncode == 0
+    for index, scores in enumerate(([0.1, 0.9] * 20, [0.3, 0.7] * 20)):
+        request = tmp_path / f"request-{index}.json"
+        request.write_text(
+            json.dumps(
+                {
+                    "metric": "binary",
+                    "metric_version": "1",
+                    "y_true": [0, 1] * 20,
+                    "y_score": scores,
+                }
+            )
+        )
+    context = multiprocessing.get_context("spawn")
+    workers = [
+        context.Process(target=_shared_score_process, args=(tmp_path, index)) for index in (0, 1)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=15)
+    assert [worker.exitcode for worker in workers] == [0, 0]
+    entries = [
+        json.loads(line)["receipt"] for line in (tmp_path / "ledger.jsonl").read_text().splitlines()
+    ]
+    published = json.loads((tmp_path / "shared-receipt.json").read_text())
+    assert published == entries[-1]
+
+
+def test_real_keygen_failure_preserves_an_existing_signing_identity(tmp_path: Path) -> None:
+    # Given one complete keypair and an invalid directory at the public-key destination
+    private, public = tmp_path / "signing.key", tmp_path / "signing.key.pub"
+    assert _real_cli("keygen", "--out", str(private)).returncode == 0
+    private_before = private.read_bytes()
+    public.unlink()
+    public.mkdir()
+    # When a second keygen cannot install the public companion
+    rejected = _real_cli("keygen", "--out", str(private))
+    # Then the failed rotation never changes the existing private signing identity
+    assert rejected.returncode == 1
+    assert private.read_bytes() == private_before
+    assert public.is_dir()
+
+
+def test_real_concurrent_keygen_never_publishes_a_mismatched_pair(tmp_path: Path) -> None:
+    private, public = tmp_path / "signing.key", tmp_path / "signing.key.pub"
+    command = [str(Path(sys.executable).with_name("assay")), "keygen", "--out", str(private)]
+    workers = [
+        subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)  # noqa: S603
+        for _ in range(2)
+    ]
+    results = [worker.communicate(timeout=15) for worker in workers]
+    assert sorted(worker.returncode for worker in workers) == [0, 1]
+    assert public.read_text(encoding="utf-8") == bytes(load_signing_key(private).verify_key).hex()
+    assert all("Traceback" not in stdout + stderr for (stdout, stderr) in results)
+
+
+def test_score_resolves_aliasing_parent_directories_before_writing(tmp_path: Path) -> None:
+    actual, alias = tmp_path / "actual", tmp_path / "alias"
+    actual.mkdir()
+    alias.symlink_to(actual, target_is_directory=True)
+    paths = _score_paths(tmp_path)
+    paths["out"], paths["ledger"] = actual / "artifact", alias / "artifact"
+    before = _snapshot(tmp_path)
+    result = _RUNNER.invoke(app, _score_arguments(paths))
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+
+
+def test_keygen_refuses_aliasing_private_and_public_destinations(tmp_path: Path) -> None:
+    # Given two existing names are hard links to one sentinel file
+    private, public = tmp_path / "private.key", tmp_path / "public.key"
+    private.write_bytes(b"do-not-replace")
+    os.link(private, public)
+    before = _snapshot(tmp_path)
+    # When keygen validates both write roles before generating or saving either key
+    result = _RUNNER.invoke(app, ["keygen", "--out", str(private), "--pub", str(public)])
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("left", "right"), [("request", "key"), ("request", "out"), ("key", "out")]
+)
+def test_composite_refuses_every_cross_role_path_before_writing(
+    tmp_path: Path, left: str, right: str
+) -> None:
+    request, key, out = tmp_path / "composite.json", tmp_path / "key", tmp_path / "out"
+    request.write_text(
+        json.dumps(
+            {
+                "metric": "composite",
+                "metric_version": "1",
+                "subscores": [
+                    {"name": "a", "score": 0.2, "weight": 1},
+                    {"name": "b", "score": 0.4, "weight": 1},
+                    {"name": "c", "score": 0.6, "weight": 1},
+                ],
+            }
+        )
+    )
+    assert _RUNNER.invoke(app, ["keygen", "--out", str(key)]).exit_code == 0
+    paths = {"request": request, "key": key, "out": out}
+    paths[right] = paths[left]
+    before = _snapshot(tmp_path)
+    result = _RUNNER.invoke(
+        app,
+        [
+            "composite",
+            "--request",
+            str(paths["request"]),
+            "--key",
+            str(paths["key"]),
+            "--out",
+            str(paths["out"]),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+
+
+def test_composite_replace_failure_preserves_an_existing_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, key, out = tmp_path / "composite.json", tmp_path / "key", tmp_path / "out"
+    request.write_text(
+        json.dumps(
+            {
+                "metric": "composite",
+                "metric_version": "1",
+                "subscores": [
+                    {"name": "a", "score": 0.2, "weight": 1},
+                    {"name": "b", "score": 0.4, "weight": 1},
+                    {"name": "c", "score": 0.6, "weight": 1},
+                ],
+            }
+        )
+    )
+    assert _RUNNER.invoke(app, ["keygen", "--out", str(key)]).exit_code == 0
+    out.write_bytes(b"previous-complete-receipt")
+    monkeypatch.setattr(atomic_module.os, "replace", lambda *_: _raise_replace())
+    result = _RUNNER.invoke(
+        app,
+        ["composite", "--request", str(request), "--key", str(key), "--out", str(out)],
+    )
+    assert result.exit_code == 1
+    assert out.read_bytes() == b"previous-complete-receipt"
+    assert not tuple(tmp_path.glob(".out.*"))
+
+
+def _raise_replace() -> None:
+    raise OSError("replace failed")
+
+
+def test_real_cli_redacts_a_domain_value_from_scoring_errors(tmp_path: Path) -> None:
+    # Given a validly shaped request carries an unregistered caller-controlled metric
+    sentinel = "PII-SENTINEL-METRIC"
+    request, key = tmp_path / "request.json", tmp_path / "private.key"
+    request.write_text(
+        json.dumps(
+            {"metric": sentinel, "metric_version": "1", "y_true": [0, 1], "y_score": [0.1, 0.9]}
+        )
+    )
+    assert _real_cli("keygen", "--out", str(key)).returncode == 0
+    # When the domain rejects it through the real console entry point
+    result = _real_cli(
+        "score", "--request", str(request), "--key", str(key), "--out", str(tmp_path / "out")
+    )
+    # Then the stable code survives but the caller's metric value does not
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "FAIL: assay.unknown_metric" in combined
+    assert sentinel not in combined
+    assert "Traceback" not in combined
+
+
+def test_safe_validation_location_never_renders_unknown_tokens() -> None:
+    # Given Pydantic locations may contain field names, positions, or model-defined keys
+    assert _safe_token(2) == "2"
+    assert _safe_token("y_true") == "y_true"
+    assert _safe_token("PII-SENTINEL-FIELD") == "field"
+
+    class NoErrors:
+        def errors(self, **kwargs: object) -> list[object]:
+            return []
+
+    assert _safe_location(NoErrors()) == "request"  # type: ignore[arg-type]
+
+
+def test_cli_maps_every_input_boundary_without_a_traceback(tmp_path: Path) -> None:
+    # Given malformed or absent inputs reach each command boundary
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{}", encoding="utf-8")
+    missing = tmp_path / "missing"
+    calls = (
+        ["keygen", "--out", str(tmp_path), "--pub", str(tmp_path / "public.key")],
+        _score_arguments(
+            {
+                "request": malformed,
+                "key": missing / "score-validation-key",
+                "out": tmp_path / "score-validation-out",
+                "ledger": tmp_path / "score-validation-ledger",
+                "head": tmp_path / "score-validation-head",
+            }
+        ),
+        _score_arguments(
+            {
+                "request": tmp_path / "absent-score-request",
+                "key": tmp_path / "absent-score-key",
+                "out": tmp_path / "score-out",
+                "ledger": tmp_path / "score-ledger",
+                "head": tmp_path / "score-head",
+            }
+        ),
+        [
+            "composite",
+            "--request",
+            str(malformed),
+            "--key",
+            str(missing / "composite-validation-key"),
+            "--out",
+            str(tmp_path / "composite-validation-out"),
+        ],
+        [
+            "composite",
+            "--request",
+            str(tmp_path / "absent-composite-request"),
+            "--key",
+            str(tmp_path / "absent-composite-key"),
+            "--out",
+            str(tmp_path / "composite-out"),
+        ],
+        ["verify", "--receipt", str(malformed), "--public-key", str(missing)],
+        ["verify", "--receipt", str(missing), "--public-key", str(missing)],
+        [
+            "verify-ledger",
+            "--ledger",
+            str(missing),
+            "--public-key",
+            str(missing),
+            "--head",
+            str(missing),
+        ],
+    )
+    # Then all fail with one safe code and no framework traceback
+    for args in calls:
+        result = _RUNNER.invoke(app, args)
+        assert result.exit_code == 1
+        assert "FAIL:" in result.stdout
+        assert "Traceback" not in result.stdout
+
+
+def test_cli_redacts_domain_values_in_both_scoring_commands(tmp_path: Path) -> None:
+    # Given both typed request shapes carry an unknown caller-controlled metric
+    sentinel = "PII-SENTINEL-DOMAIN"
+    key = tmp_path / "key"
+    assert _RUNNER.invoke(app, ["keygen", "--out", str(key)]).exit_code == 0
+    score_request, composite_request = tmp_path / "score.json", tmp_path / "composite.json"
+    score_request.write_text(
+        json.dumps(
+            {"metric": sentinel, "metric_version": "1", "y_true": [0, 1], "y_score": [0.1, 0.9]}
+        )
+    )
+    composite_request.write_text(
+        json.dumps({"metric": sentinel, "metric_version": "1", "subscores": []})
+    )
+    calls = (
+        ["score", "--request", str(score_request), "--key", str(key), "--out", str(tmp_path / "a")],
+        [
+            "composite",
+            "--request",
+            str(composite_request),
+            "--key",
+            str(key),
+            "--out",
+            str(tmp_path / "b"),
+        ],
+    )
+    # Then only the stable domain code survives either boundary
+    for args in calls:
+        result = _RUNNER.invoke(app, args)
+        assert result.exit_code == 1
+        assert "assay.unknown_metric" in result.stdout
+        assert sentinel not in result.stdout
 
 
 def test_should_keygen_score_and_verify_end_to_end(tmp_path: Path) -> None:
@@ -229,6 +881,26 @@ def test_should_record_the_chain_head_beside_the_ledger_when_scoring(tmp_path: P
     assert json.loads(pin.read_text())["count"] == 2
     # And the ledger verifies against it
     assert _verify_ledger(tmp_path, ledger).exit_code == 0
+
+
+def test_should_never_publish_a_stale_head_from_concurrent_cli_writers(tmp_path: Path) -> None:
+    # Given two real CLI processes share one key, ledger, and convenience-head path
+    _RUNNER.invoke(app, ["keygen", "--out", str(tmp_path / "signing.key")])
+    _write_request(tmp_path / "req.json")
+    context = multiprocessing.get_context("spawn")
+    workers = [context.Process(target=_score_process, args=(tmp_path, index)) for index in (1, 2)]
+    # When both score at the same time
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=15)
+    # Then the final pin covers both entries, and truncating either one fails closed
+    assert [worker.exitcode for worker in workers] == [0, 0]
+    ledger = tmp_path / "ledger.jsonl"
+    assert json.loads(Path(f"{ledger}.head").read_text())["count"] == 2
+    assert _verify_ledger(tmp_path, ledger).exit_code == 0
+    ledger.write_text(ledger.read_text().splitlines()[0] + "\n")
+    assert _verify_ledger(tmp_path, ledger).exit_code == 1
 
 
 def test_should_fail_closed_when_the_pinned_head_is_missing(tmp_path: Path) -> None:

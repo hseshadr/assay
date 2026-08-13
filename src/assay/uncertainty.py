@@ -39,24 +39,43 @@ class Abstention:
 type Estimate = Interval | Abstention
 
 
-def _percentile_interval(
-    data: np.ndarray, *, n_resamples: int, confidence_level: float, seed: int
-) -> Interval:
+@dataclass(frozen=True)
+class _BootstrapSettings:
+    """Inputs to the internal interval calculation."""
+
+    min_samples: int
+    n_resamples: int
+    confidence_level: float
+    seed: int
+
+
+def _bootstrap_mean(data: np.ndarray, settings: _BootstrapSettings) -> tuple[float, float]:
     result = bootstrap(
         (data,),
         np.mean,
-        n_resamples=n_resamples,
-        confidence_level=confidence_level,
+        n_resamples=settings.n_resamples,
+        confidence_level=settings.confidence_level,
         method="percentile",
-        rng=seed,
+        rng=settings.seed,
     )
-    ci = result.confidence_interval
+    return float(result.confidence_interval.low), float(result.confidence_interval.high)
+
+
+def _percentile_interval(data: np.ndarray, settings: _BootstrapSettings) -> Interval:
+    low, high = _bootstrap_mean(data, settings)
     return Interval(
         kind="interval",
         point=float(np.mean(data)),
-        low=float(ci.low),
-        high=float(ci.high),
+        low=low,
+        high=high,
     )
+
+
+def _estimate(samples: Sequence[float], settings: _BootstrapSettings) -> Estimate:
+    count = len(samples)
+    if count < settings.min_samples:
+        return Abstention("abstention", "sample count below floor", count, settings.min_samples)
+    return _percentile_interval(np.asarray(samples, dtype=float), settings)
 
 
 def mean_interval(
@@ -68,15 +87,5 @@ def mean_interval(
     seed: int,
 ) -> Estimate:
     """Bootstrap CI of the mean, or abstain below ``min_samples``."""
-    n = len(samples)
-    if n < min_samples:
-        return Abstention(
-            kind="abstention",
-            reason="sample count below floor",
-            n_samples=n,
-            min_samples=min_samples,
-        )
-    data = np.asarray(samples, dtype=float)
-    return _percentile_interval(
-        data, n_resamples=n_resamples, confidence_level=confidence_level, seed=seed
-    )
+    settings = _BootstrapSettings(min_samples, n_resamples, confidence_level, seed)
+    return _estimate(samples, settings)

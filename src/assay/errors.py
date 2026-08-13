@@ -27,6 +27,7 @@ from avow.errors import (
 __all__ = [
     "AssayError",
     "CanonicalizationFailed",
+    "CliInputInvalid",
     "EmptyRelevantSet",
     "InsufficientSamples",
     "InvalidAgreementRequest",
@@ -46,6 +47,12 @@ class AssayError(Exception):
     """Base class for every Assay scoring-face domain error."""
 
     code: ClassVar[str] = "assay.error"
+
+
+class CliInputInvalid(AssayError):
+    """A CLI input file is unreadable, malformed, or unsafe to consume."""
+
+    code: ClassVar[str] = "assay.cli_input_invalid"
 
 
 class InvalidScoreRequest(AssayError):

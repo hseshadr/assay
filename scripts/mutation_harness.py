@@ -105,11 +105,7 @@ class Mutation:
 
 
 def _replace_once(old: str, new: str) -> Callable[[str], str]:
-    """Replace an anchor that must occur exactly once.
-
-    An anchor that has moved or been reworded is a hard stop, not a skipped mutation:
-    silently matching zero times is exactly how a harness reports twelve green runs it
-    never actually performed."""
+    """Replace exactly one anchor; drift is a hard failure, never a skipped mutant."""
 
     def edit(text: str) -> str:
         found = text.count(old)
@@ -821,12 +817,9 @@ def _vitest_verdict(passed: int, failed: int) -> int:
 
 
 def _vitest_command(files: Sequence[str], pattern: str, report: Path) -> list[str]:
-    """``pnpm`` is resolved from PATH on purpose — it is the pinned package manager for
-    ``ts/``, and hardcoding a machine-specific absolute path would break every runner."""
+    """Launch vitest from the already locked and installed TypeScript dependency tree."""
     return [
-        "pnpm",
-        "exec",
-        "vitest",
+        str(_TS / "node_modules/.bin/vitest"),
         "run",
         *files,
         "--testNamePattern",
@@ -852,21 +845,7 @@ def _run_guard(mutation: Mutation) -> int:
 
 
 def _invalidate_bytecode(path: Path) -> None:
-    """Delete the cached ``.pyc`` beside a source file this harness just rewrote.
-
-    CPython decides a ``.pyc`` is current from the source's **mtime and size**, and
-    several mutations here are deliberately one character for one character — ``P @ k``
-    -> ``P @ 1``, ``R @ k`` -> ``P @ k``, ``AP)`` -> ``RR)``. The size never changes, so
-    when the write lands inside the same mtime tick as the existing ``.pyc`` the next
-    interpreter loads the STALE bytecode: the guard runs against code that was never
-    mutated, passes, and is scored ``SURVIVED``.
-
-    The restore path needs it just as badly, and for a nastier reason. The ``.pyc``
-    written while the file was mutated can shadow the restored source, so the NEXT
-    mutation's baseline would run mutated bytecode and the whole report drifts.
-
-    This was not theoretical: ``ranking-k-reaches-trec-eval`` was scored ``SURVIVED`` on
-    two of three consecutive runs at an unchanged commit before this call existed."""
+    """Remove stale bytecode after both mutation and restore writes."""
     if path.suffix != ".py":
         return
     for pyc in (path.parent / "__pycache__").glob(f"{path.stem}.*.pyc"):

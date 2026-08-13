@@ -5,8 +5,10 @@ import re
 from pathlib import Path
 
 README = Path("README.md")
+QUICKSTART = Path("QUICKSTART.md")
 VERSION_SOURCE = Path("src/avow/_version.py")
 TS_PACKAGE = Path("ts/package.json")
+TS_README = Path("ts/README.md")
 
 
 def test_opening_proof_uses_the_current_published_error_contract() -> None:
@@ -28,9 +30,29 @@ def test_readme_names_the_pair_versioned_release() -> None:
     # When the README's artifact status is compared with both package manifests
     assert version_match is not None
     version = version_match.group(1)
-    # Then it names one published pair and carries no stale pre-release source split
+    # Then it names one pair-versioned artifact without freezing transient registry state
     assert version == ts_version
-    assert f"Published now: `avow` {version}" in readme
+    assert f"This source and its artifacts identify as `avow` {version}" in readme
     assert f"`@edgeproc/avow` {version}" in readme
-    assert "Source `main`:" not in readme
-    assert "version on PyPI today" not in readme
+    assert "supersedes 0.4.0 for Python CLI ledger writers" in readme
+
+
+def test_packaged_front_doors_never_freeze_prepublish_registry_state() -> None:
+    packaged = "\n".join(path.read_text(encoding="utf-8") for path in (README, QUICKSTART))
+    forbidden = (
+        "Release candidate",
+        "registries currently serve 0.4.0",
+        "Until 0.4.1 is published",
+        "Upgrade when 0.4.1 is live",
+    )
+    assert all(phrase.lower() not in packaged.lower() for phrase in forbidden)
+
+
+def test_readme_distinguishes_line_reinsertion_from_semantic_receipt_replay() -> None:
+    readme = "\n".join(path.read_text(encoding="utf-8") for path in (README, TS_README))
+
+    assert "same signed receipt submitted twice" in readme
+    assert "new, correctly sequenced entries" in readme
+    assert "nonce or request ID" in readme
+    assert "replay defence is the ledger's job" not in readme
+    assert "rejects a replayed entry" not in readme

@@ -4,6 +4,10 @@
 go inside them.** Two faces, both kept in lock-step with the Python package of the
 same name by shared golden vectors — not by hope.
 
+Runtime privacy, persistence, key-custody, and performance boundaries are frozen in the
+repo's [operational contract](https://github.com/hseshadr/assay/blob/main/docs/OPERATIONS.md). This package performs no runtime
+egress or storage and ships no ledger; subjects and seeds remain caller-controlled.
+
 - **The envelope.** Turn a small JSON object (a "subject") into a tamper-evident
   receipt anyone can check offline with just a public key. A receipt signed by the
   Python `avow` kernel verifies here, and one signed here verifies in Python,
@@ -91,12 +95,12 @@ it cannot bind it to an *occasion*, and the determinism that lets a receipt
 re-verify offline years later is exactly what lets it be re-presented.
 
 **There is no ledger in the browser build** — this package ships the envelope and
-the metrics, and replay defence is the ledger's job. So if your threat model
-includes "someone shows me an old receipt as if
-it were new", you must hold that state yourself: carry a nonce or request-id
-inside your own subject before signing and track the ones you have accepted, or
-record entries server-side in the Python `avow.ledger`, whose hash chain rejects a
-replayed entry against a pinned head.
+the metrics. If your threat model includes "someone shows me an old receipt as if
+it were new", you must hold that state yourself: carry a nonce or request ID inside
+your own subject before signing and track the ones you have accepted. Python's
+`avow.ledger` detects an already encoded line copied into another chain position,
+but the same signed receipt submitted twice through `append` becomes two new,
+correctly sequenced entries; it is not semantic replay prevention.
 
 ## Signing (when the browser is the one making the decision)
 

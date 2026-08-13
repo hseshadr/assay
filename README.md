@@ -50,12 +50,16 @@ an ordinary database. The signature bytes were never touched. It still fails, be
 payload no longer hashes to the value the signature covers.
 
 The published 0.3.0 code names this accurately: it is a **payload-hash mismatch**, not
-replay detection. The envelope detects tampering; ledger state detects replay and
-truncation. See [Honest limits](#honest-limits).
+replay detection. The envelope detects tampering; ledger state detects encoded-line
+reinsertion and truncation, not repeated API submissions. See [Honest limits](#honest-limits).
 
-**Artifact status:** Published now: `avow` 0.4.0 on PyPI and `@edgeproc/avow` 0.4.0
-on npm. The opening proof remains a verbatim 0.3.0 session; 0.4.0 keeps that contract and
-adds the features documented below.
+**Artifact status:** This source and its artifacts identify as `avow` 0.4.1 and
+`@edgeproc/avow` 0.4.1. **0.4.1 supersedes 0.4.0 for Python CLI ledger writers** because
+it serializes and durably commits the ledger plus convenience head under one bounded
+lock. Check [PyPI](https://pypi.org/project/avow/) and
+[npm](https://www.npmjs.com/package/@edgeproc/avow) for registry availability before
+installing. The opening proof remains a verbatim 0.3.0 session; the payload-hash contract
+is unchanged.
 
 ## Run it
 
@@ -73,6 +77,10 @@ assay verify --receipt receipt.json --public-key signing.key.pub            # ex
 sed 's/"abstained": true/"abstained": false/' receipt.json > tampered.json
 assay verify --receipt tampered.json --public-key signing.key.pub           # exit 1
 ```
+
+Before production use, read the [operational contract](https://github.com/hseshadr/assay/blob/main/docs/OPERATIONS.md): it defines
+the privacy/data-flow boundary, plaintext retention duties, bounded ledger failures,
+crash-recovery limits, and the numeric performance budgets enforced in CI.
 
 ---
 
@@ -103,7 +111,7 @@ flowchart TD
   sign["Sign it<br/>Canonicalise to one exact byte string (RFC 8785),<br/>hash it with SHA-256, sign it with Ed25519.<br/>Python and TypeScript emit identical bytes — the same<br/>12 test vectors run in both languages to prove it."]
   receipt["The receipt: your data, its hash, the signature, the signer's key<br/>Check it against a public key you pinned in advance.<br/>You learn who wrote it, and that nobody changed it since.<br/>You do NOT learn that it is new — an old receipt<br/>still verifies, and that is correct behaviour."]
   ledger["Append-only ledger<br/>Each line carries its position (seq) and the hash of<br/>the line before it (prev_hash). The hash of the last line<br/>is pinned out of band, somewhere the ledger's writer<br/>cannot reach — another host, a git commit, a printout."]
-  caught["Where a replayed or missing entry is caught<br/>An old entry slipped back in no longer matches<br/>its seq or prev_hash. A deleted, reordered or truncated<br/>log no longer ends at the head you pinned.<br/>Freshness is the ledger's job, never the signature's."]
+  caught["Where a copied line or missing entry is caught<br/>An encoded line reinserted elsewhere no longer matches<br/>its seq or prev_hash. A deleted, reordered or truncated<br/>log no longer ends at the head you pinned.<br/>Semantic replay still needs caller-owned state."]
 
   data --> sign
   sign --> receipt
@@ -115,7 +123,7 @@ The first three boxes are the envelope; the last two are the ledger. The npm pac
 `@edgeproc/avow` ships the envelope (canonical bytes and sign/verify) **plus the metrics
 that go inside a receipt** — recall@k, precision@k, F1@k, MRR and the binary confusion
 set, giving the same answers as the Python `assay` face. It does not ship the ledger, so
-a browser gets tamper-evidence, not replay defence; the ledger is Python-side
+a browser gets tamper-evidence, not Python's encoded-line chain checks; the ledger is Python-side
 (`avow.ledger`).
 
 ## The names, spelled out
@@ -186,7 +194,7 @@ original receipt ..... VALID
 edited receipt ....... REJECTED (ReplayMismatch)
 ```
 
-Published 0.3.0 and 0.4.0 both print `PayloadHashMismatch` here.
+Published 0.3.0 and 0.4.0 both print `PayloadHashMismatch` here; 0.4.1 does too.
 
 Nudging `0.83` to `0.99` — a change that would be invisible in a database — makes the
 receipt fail to verify. That is the whole idea.
@@ -462,7 +470,7 @@ produced. The `tampered ledger entry` hash above is a payload hash and involves 
 that one reproduces exactly.
 
 That is the check no per-entry signature can do. Deleting, truncating (including emptying
-the file), reordering, replaying and splicing in an entry from another ledger all land
+the file), reordering, reinserting an encoded line and splicing in an entry from another ledger all land
 here, with exit code `1`.
 
 > **What this check does not cover.** The head is only as good as its custody. Verifying
@@ -487,11 +495,12 @@ Stated plainly, because each of these is a real boundary on what avow currently 
   re-verifiable offline years later is what makes it re-presentable. If your threat model
   includes "someone shows me an old receipt as if it were new", the answer must come from
   state the verifier keeps, not from the signature:
-  - **record entries in `avow.ledger`** — the chain rejects a replayed entry against a
-    pinned head (`avow.ledger_integrity`); that is a test in `tests/test_ledger.py` and in
-    `tests/test_verify.py`, watched go red with both its checks disabled; or
-  - **put a nonce or a request-id inside your own subject** before signing, and track the
-    ones you have already accepted.
+  - **record entries in `avow.ledger`** — the chain rejects copying an already encoded
+    ledger line into a different sequence position (`avow.ledger_integrity`); or
+  - **put a nonce or request ID inside your own subject** before signing, and track the
+    ones you have already accepted. The same signed receipt submitted twice through
+    `append` becomes two new, correctly sequenced entries. The ledger deliberately does
+    not guess whether those submissions represent one semantic occasion.
 
   Note the naming, because it changes in 0.3.0 for exactly this reason: the tamper error
   becomes `PayloadHashMismatch` (`avow.payload_hash_mismatch`). It is called
@@ -502,7 +511,7 @@ Stated plainly, because each of these is a real boundary on what avow currently 
 - **The ledger's tamper-evidence is only as good as the custody of its head.** The
   entries are chained (each carries its position and the hash of the entry before it) and
   the audit walks that chain to a head you pin out-of-band, so deleting, truncating,
-  reordering, replaying and splicing all fail — each of those five is a test in
+  reordering, encoded-line reinsertion and splicing all fail — each is a test in
   `tests/test_ledger.py`, and each guard has been watched go red with its check disabled.
   What remains is a **custody** limit, not a detection one: the chain moves the trust
   requirement from *N lines* down to *32 bytes*, it does not remove it. An attacker who
@@ -512,6 +521,14 @@ Stated plainly, because each of these is a real boundary on what avow currently 
   writer cannot reach: another host, a git commit, a printout, a transparency log. And
   pin the *current* head — a head from three appends ago legitimately fails, because
   three entries you did not acknowledge is exactly the thing this is built to notice.
+  In 0.4.1 the CLI holds one bounded process lock through the durable ledger append and
+  atomic convenience-head save, so concurrent CLI writers cannot publish an older pin
+  after a newer append. The two files still are not one crash-atomic transaction: a
+  failure between commits leaves the old pin rejecting the advanced ledger, which is a
+  fail-closed incident requiring investigation, not permission to trim or silently re-pin.
+  The combined CLI append checks that pin under the ledger lock before writing and raises
+  `avow.ledger_recovery_required` on any mismatch; only an empty ledger can start without
+  a convenience head.
 - **`writ`'s enforcement is in-process (v0).** The signing key and the privileged action
   live only inside the effector, which the gate captures in a closure; the agent receives
   the closure and never the effector, so the only route to the action is through the
@@ -700,9 +717,11 @@ See the honest limits above for exactly how far the enforcement seam and that di
 <details>
 <summary><b>Key custody and cross-language vectors</b></summary>
 
-`assay keygen` (and `avow.keys`) write a 32-byte Ed25519 seed to a `0600` file and the
-public key to a companion `.pub`. Keys are never logged and never committed (`*.key` is
-gitignored). The public key also travels inside each receipt for convenience, but that
+`assay keygen` creates a 32-byte Ed25519 seed and companion `.pub` as owner-only,
+same-directory staged files. It refuses to overwrite either path; move both artifacts
+through an explicit rotation procedure or choose new paths. The lower-level `avow.keys`
+single-file saves are also staged, synced, and atomically replaced. Keys are never logged
+or committed (`*.key` is gitignored). The public key also travels inside each receipt for convenience, but that
 embedded copy is **not** the trust anchor — a verifier pins the out-of-band key and passes
 it to `verify`.
 
@@ -757,19 +776,24 @@ edges, and the native-vs-browser story.
 
 v0, deterministic — no LLM anywhere in the path.
 
-Three gates, mirroring CI's three jobs. `uv run poe gate` covers **Python only** (ruff,
+Four release gates. `uv run poe gate` covers **Python only** (ruff,
 ruff-format, mypy `--strict`, xenon A, pytest with statement *and* branch coverage
 against a 90% floor); `uv run poe gate-ts` covers the TypeScript package (biome, `tsc`
 strict, vitest, build); `uv run poe mutants` breaks each guard in turn and requires the
-suite to notice. `uv run poe gate-all` runs the first two.
+suite to notice; and `uv run poe benchmark` plus `pnpm --dir ts benchmark` enforce the
+frozen p50/p95/p99 and RSS contract. `uv run poe gate-all` runs the first two.
 
-The Python, `@edgeproc/avow`, and `@edgeproc/receipt-ui` gates enforce **100% statement
-and branch coverage**. The mutation gate separately breaks **46 named claims** and
+The Python core, `@edgeproc/avow`, and `@edgeproc/receipt-ui` gates enforce **100%
+statement and branch coverage**; shipped benchmark tooling additionally runs its exact
+workloads as a dedicated acceptance gate. The mutation gate breaks **46 named claims** and
 requires every guard to turn red; 17 of those mutations exercise TypeScript under vitest.
 Run the commands above to regenerate the evidence from this exact checkout.
 
-Published releases: `avow` 0.4.0 on PyPI; `@edgeproc/avow` 0.4.0 and
-`@edgeproc/receipt-ui` 0.2.0 on npm. See [`CHANGELOG.md`](CHANGELOG.md) and
+Artifact versions in this source are `avow` 0.4.1 and `@edgeproc/avow` 0.4.1. Verify
+current availability on [PyPI](https://pypi.org/project/avow/) and
+[npm](https://www.npmjs.com/package/@edgeproc/avow). `@edgeproc/receipt-ui` 0.2.0 is
+separately versioned.
+See [`CHANGELOG.md`](CHANGELOG.md) and
 [`ts/packages/receipt-ui/CHANGELOG.md`](ts/packages/receipt-ui/CHANGELOG.md) for what each
 release contains. Read the honest limits above before depending on any of it.
 

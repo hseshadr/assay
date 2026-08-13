@@ -54,3 +54,13 @@ def test_python_and_typescript_packages_carry_the_same_version() -> None:
     # to the other registry, which npm and PyPI both reject — a release that fails at the
     # very last step, long after the tag is public.
     assert ts_version == avow.__version__
+
+
+def test_release_artifacts_ship_the_exact_benchmark_and_operational_contract() -> None:
+    cfg = _cfg()
+    only_include = cfg["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]  # type: ignore[index]
+    package = json.loads(Path("ts/package.json").read_text(encoding="utf-8"))
+
+    assert Path("src/avow/benchmarks/release.py").is_file()
+    assert "docs" in only_include
+    assert "benchmarks" in package["files"]
