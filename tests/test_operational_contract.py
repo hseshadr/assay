@@ -53,6 +53,7 @@ def test_operations_doc_freezes_every_release_acceptance_number() -> None:
     assert "prebuilt 5,000-entry history" in contract
     assert "one empty same-volume probe directory" in contract
     assert "blank lines, CRLF, and a partial final line are malformed" in contract
+    assert "it does not claim to verify older entries" in contract
     assert "**RPO 0**" in contract
     assert "p50 <= **2 ms**, p95 <= **4 ms**, p99 <= **10 ms**" in contract
     assert "p50 <= **3 ms**, p95 <= **8 ms**, p99 <= **20 ms**" in contract
