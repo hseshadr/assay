@@ -16,7 +16,7 @@ exact same benchmark entry point named here; a missed budget fails the release g
 |---|---|---|---|
 | Python `avow` envelope | Caller-supplied Pydantic subject, Ed25519 seed, pinned public key | In-process canonical JSON, SHA-256, and Ed25519 only. No network, DNS, telemetry, subprocess, or background thread. | `sign_payload` and verification are stateless. Inputs and intermediates live for the call; the returned receipt is retained only by its caller. |
 | Python `assay` scoring | Labels, scores, rankings, ratings, settings | In-process validation and local scientific-library calls, then the same envelope. No runtime egress. | No cache or implicit file. The returned receipt is retained only by its caller. |
-| Python CLI | Only the request, key, receipt, ledger, and head paths explicitly passed by the operator, plus `ASSAY_*` settings | Reads settings only after command dispatch and reads caller paths locally. It prints success status/output paths or a stable failure code plus safe schema field path. Help and failures do not print exception messages, environment/input values, payloads, or private-key bytes. No runtime network call. | Writes only requested key/public-key, receipt, ledger, and head artifacts. Before the first combined ledger/head write, path validation briefly creates and removes one empty same-volume probe directory; it contains no caller data. Requested artifacts remain until the operator deletes them. |
+| Python CLI | Only the request, key, receipt, ledger, and head paths explicitly passed by the operator, plus `ASSAY_*` settings | Reads settings only after command dispatch and reads caller paths locally. It prints success status/output paths or a stable failure code plus safe schema field path. Pre-dispatch parser failures, help, and command failures do not print exception messages, rejected tokens, environment/input values, payloads, or private-key bytes. No runtime network call. | Before any write, every command rejects filesystem aliases across its read/write roles, including hard links, symlinks, aliasing parents, and case/Unicode names collapsed by the destination volume. It then writes only requested key/public-key, receipt, ledger, and head artifacts. Path validation may briefly create and remove one empty same-volume probe directory; it contains no caller data. Requested artifacts remain until the operator deletes them. |
 | Python ledger | Plaintext signed receipts and an operator-chosen local path | One local JSONL append under a process lock; the CLI also saves its convenience head before releasing that same lock. Verification reads both files locally. | Persists plaintext until caller deletion. There is no upload, rotation, expiry, compaction, or automatic repair. |
 | TypeScript `@edgeproc/avow` | Caller JSON, seed, pinned public key, labels/rankings | In-process Web Crypto-compatible Ed25519 and local arithmetic. No fetch, XHR, beacon, socket, telemetry, cookie, storage, worker, or DOM access. | No cache or storage. Returned values remain under caller control. The TS package ships no ledger. |
 
@@ -55,7 +55,7 @@ Windows are outside the durability contract.
 | Event | Guaranteed outcome | Explicit bound or recovery action |
 |---|---|---|
 | Lock is held by another process | Append waits without changing the file, then raises coded `avow.ledger_lock_timeout`. | Default timeout: **5.0 seconds**. Poll interval: at most **10 ms**. |
-| Lock timeout is negative or non-finite, or ledger and head paths alias | The call raises coded `avow.ledger_configuration_invalid` before creating or replacing either persistence file. | Supply one finite, non-negative timeout and two distinct paths. |
+| Lock timeout is negative or non-finite, or CLI artifact roles alias | The call raises coded `avow.ledger_configuration_invalid` before creating or replacing any persistence file. Existing requests, keys, receipts, ledgers, and heads remain byte-identical. | Supply one finite, non-negative timeout and filesystem-distinct paths for every read/write role. |
 | Ledger exceeds 64 MiB, 100,000 entries, or one 64 KiB encoded line | Read, append, and verification fail closed with `avow.ledger_limit_exceeded`; append leaves existing bytes unchanged. | Rotate to a new externally pinned ledger before any ceiling. These are hard support limits, not tuning defaults. |
 | `append` returns a head | The complete JSONL line has been flushed and `fsync` has succeeded before return. Concurrent successful appenders form one valid chain. | **RPO 0** relative to a returned head on an in-scope filesystem. The caller must export that returned pin. |
 | CLI append plus convenience-head save returns | The ledger append and atomic head save happened while holding one ledger lock. A concurrent CLI writer cannot overwrite a newer head with an older one. | The saved head equals the ledger state at lock release. **RPO 0** for both returned operations; there is no cross-file crash atomicity before return. |
@@ -74,8 +74,9 @@ preferable to silently accepting an entry whose head was never exported.
 The release gate is `uv run poe benchmark` plus `pnpm --dir ts benchmark`. CI uses
 CPython 3.13 and Node 22 on `ubuntu-latest`, the committed lockfiles, fixed seed
 `000102...1f`, fixed generated data, `perf_counter_ns` / `performance.now`, and the
-nearest-rank percentile `sorted_samples[ceil(q*n)-1]`. Each process records peak RSS;
-any latency, memory, count, or integrity miss exits non-zero.
+nearest-rank percentile `sorted_samples[ceil(q*n)-1]`. Each workload reports the
+maximum peak RSS across its parent verification process and every append worker; any
+latency, memory, count, or integrity miss exits non-zero.
 
 | Deterministic workload | Warm-up / measured samples | Latency budget | Peak RSS budget |
 |---|---:|---|---:|

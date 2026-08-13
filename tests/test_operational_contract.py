@@ -8,11 +8,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from nacl.signing import SigningKey
 
+import avow.benchmarks.ledger as ledger_benchmark
 from assay.api import score, verify
 from assay.models import ScoreRequest
 from assay.settings import AssaySettings
+from avow.benchmarks._contracts import SampleBatch
 
 _SEED = bytes(range(32))
 
@@ -54,6 +57,8 @@ def test_operations_doc_freezes_every_release_acceptance_number() -> None:
     assert "one empty same-volume probe directory" in contract
     assert "blank lines, CRLF, and a partial final line are malformed" in contract
     assert "it does not claim to verify older entries" in contract
+    assert "Pre-dispatch parser failures" in contract
+    assert "maximum peak RSS across its parent verification process" in contract
     assert "**RPO 0**" in contract
     assert "p50 <= **2 ms**, p95 <= **4 ms**, p99 <= **10 ms**" in contract
     assert "p50 <= **3 ms**, p95 <= **8 ms**, p99 <= **20 ms**" in contract
@@ -89,6 +94,19 @@ def test_typescript_benchmark_measures_peak_not_current_rss() -> None:
     # Then the shipped benchmark reads Node's high-water mark directly
     assert "process.resourceUsage().maxRSS" in source
     assert "process.memoryUsage().rss" not in source
+
+
+def test_ledger_benchmark_reports_parent_verification_or_worker_peak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given append workers peaked below the parent after full ledger verification
+    results = [tmp_path / f"worker-{index}.json" for index in range(4)]
+    for result in results:
+        result.write_text(SampleBatch(samples_ms=(1.0,), peak_rss_mib=32.0).model_dump_json())
+    monkeypatch.setattr(ledger_benchmark, "peak_rss_mib", lambda: 53.0)
+    # Then the whole-workload report carries the parent's larger high-water mark
+    report = ledger_benchmark._aggregate(results, completion=2.0)
+    assert report.peak_rss_mib == 53.0
 
 
 def test_shipped_python_benchmarks_meet_the_frozen_contract() -> None:

@@ -8,6 +8,7 @@ from typing import Annotated, NoReturn
 
 import typer
 from pydantic import ValidationError
+from typer._click.exceptions import UsageError
 
 from assay.api import composite_score
 from assay.api import score as score_receipt
@@ -23,7 +24,13 @@ from avow.keys import (
     save_public_key,
     save_signing_key,
 )
-from avow.ledger import LedgerHead, append_and_save_head, read_head, verify_integrity
+from avow.ledger import (
+    LedgerHead,
+    append_and_save_head,
+    read_head,
+    require_distinct_paths,
+    verify_integrity,
+)
 from avow.verify import verify_receipt
 
 app = typer.Typer(help="Assay — the scoring engine that refuses to lie.")
@@ -92,19 +99,34 @@ def _key_paths(out: Path | None, pub: Path | None) -> tuple[Path, Path]:
     return private, public
 
 
-@app.command()
-def keygen(
-    out: _KeyOutput = None,
-    pub: _PublicOutput = None,
-) -> None:
-    """Generate a private Ed25519 seed plus its separately pinnable public key."""
-    out_path, pub_path = _key_paths(out, pub)
+def _require_distinct_cli_paths(*paths: Path) -> None:
+    """Reject any cross-role filesystem alias before a command writes."""
+    require_distinct_paths(paths)
+
+
+def _write_key_pair(out: Path, pub: Path) -> None:
+    """Generate both halves only after destination roles are proven distinct."""
+    key = generate_signing_key()
+    save_signing_key(key, path=out)
+    save_public_key(key, path=pub)
+
+
+def _run_keygen(out: Path, pub: Path) -> None:
+    """Translate all key-persistence failures to the stable CLI boundary."""
     try:
-        key = generate_signing_key()
-        save_signing_key(key, path=out_path)
-        save_public_key(key, path=pub_path)
+        _require_distinct_cli_paths(out, pub)
+        _write_key_pair(out, pub)
+    except AvowError as exc:
+        _fail(exc)
     except OSError:
         _fail(CliInputInvalid("key destinations are not writable"))
+
+
+@app.command()
+def keygen(out: _KeyOutput = None, pub: _PublicOutput = None) -> None:
+    """Generate a private Ed25519 seed plus its separately pinnable public key."""
+    out_path, pub_path = _key_paths(out, pub)
+    _run_keygen(out_path, pub_path)
     typer.echo(f"wrote signing key: {out_path}")
     typer.echo(f"wrote public key: {pub_path}")
 
@@ -137,6 +159,7 @@ def _run_score(
     """Translate every private scoring failure to one safe public boundary."""
     settings, ledger_path, head_path = _score_runtime(ledger, head)
     try:
+        _require_distinct_cli_paths(request, key, out, ledger_path, head_path)
         new_head = _write_score(request, key, out, ledger_path, head_path, settings)
     except ValidationError as exc:
         _fail_validation(exc, code=InvalidScoreRequest.code)
@@ -167,14 +190,10 @@ def _write_composite(request: Path, key: Path, out: Path) -> None:
     out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
 
 
-@app.command()
-def composite(
-    request: _RequestInput,
-    key: _SigningKeyInput,
-    out: _ReceiptOutput,
-) -> None:
-    """Score a weighted multi-scale composite and write a signed receipt."""
+def _run_composite(request: Path, key: Path, out: Path) -> None:
+    """Translate every private composite failure to one safe public boundary."""
     try:
+        _require_distinct_cli_paths(request, key, out)
         _write_composite(request, key, out)
     except ValidationError as exc:
         _fail_validation(exc, code=InvalidScoreRequest.code)
@@ -182,6 +201,12 @@ def composite(
         _fail(exc)
     except (OSError, ValueError):
         _fail(CliInputInvalid("composite input is unreadable or malformed"))
+
+
+@app.command()
+def composite(request: _RequestInput, key: _SigningKeyInput, out: _ReceiptOutput) -> None:
+    """Score a weighted multi-scale composite and write a signed receipt."""
+    _run_composite(request, key, out)
     typer.echo(f"wrote receipt: {out}")
 
 
@@ -228,3 +253,17 @@ def _ledger_entries(public_key: Path, head: Path, ledger: Path) -> tuple[ScoreRe
         expected_public_key=read_public_key(public_key),
         expected_head=read_head(head),
     )
+
+
+def _exit_status(result: object) -> int:
+    """Normalise Click's command return without trusting an arbitrary value."""
+    return result if isinstance(result, int) else 0
+
+
+def main() -> int:
+    """Run the real entry point with a redacted pre-dispatch parser boundary."""
+    try:
+        return _exit_status(app(standalone_mode=False))
+    except UsageError:
+        typer.echo(f"FAIL: {CliInputInvalid.code}")
+        return 1

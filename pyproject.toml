@@ -59,7 +59,7 @@ dev = [
 ]
 
 [project.scripts]
-assay = "assay.cli:app"
+assay = "assay.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/hseshadr/assay"

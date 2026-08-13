@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import assay.cli as cli_module
 from assay.cli import _safe_location, _safe_token, app
 
 _RUNNER = CliRunner()
@@ -47,6 +48,45 @@ def _write_request(path: Path) -> None:
             " ", ""
         )
     )
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    """Capture every regular artifact so rejected commands prove zero mutation."""
+    return {
+        str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()
+    }
+
+
+def _score_arguments(paths: dict[str, Path]) -> list[str]:
+    return [
+        "score",
+        "--request",
+        str(paths["request"]),
+        "--key",
+        str(paths["key"]),
+        "--out",
+        str(paths["out"]),
+        "--ledger",
+        str(paths["ledger"]),
+        "--head",
+        str(paths["head"]),
+    ]
+
+
+def _score_paths(root: Path) -> dict[str, Path]:
+    paths = {
+        role: root / name
+        for role, name in {
+            "request": "request.json",
+            "key": "signing.key",
+            "out": "receipt.json",
+            "ledger": "ledger.jsonl",
+            "head": "ledger.head",
+        }.items()
+    }
+    _write_request(paths["request"])
+    assert _RUNNER.invoke(app, ["keygen", "--out", str(paths["key"])]).exit_code == 0
+    return paths
 
 
 def _score_process(root: Path, index: int) -> None:
@@ -94,6 +134,32 @@ def test_real_cli_redacts_a_malformed_request_value(tmp_path: Path) -> None:
     assert sentinel not in combined
     assert "input_value" not in combined
     assert "Traceback" not in combined
+
+
+def test_real_cli_redacts_a_private_token_rejected_before_command_dispatch() -> None:
+    # Given an arbitrary private token reaches Typer's unknown-command parser
+    sentinel = "PII-SENTINEL-UNKNOWN-COMMAND"
+    # When the installed console entry point rejects it before any command runs
+    result = _real_cli(sentinel)
+    combined = result.stdout + result.stderr
+    # Then only the stable boundary code is emitted, never Click's echoed token/usage
+    assert result.returncode == 1
+    assert combined.strip() == "FAIL: assay.cli_input_invalid"
+    assert sentinel not in combined
+    assert "Usage:" not in combined
+
+
+def test_main_redacts_parser_errors_and_normalises_command_results(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sentinel = "PII-SENTINEL-IN-PROCESS-PARSER"
+    monkeypatch.setattr(sys, "argv", ["assay", sentinel])
+    assert cli_module.main() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: assay.cli_input_invalid"
+    monkeypatch.setattr(cli_module, "app", lambda *, standalone_mode: 7)
+    assert cli_module.main() == 7
+    monkeypatch.setattr(cli_module, "app", lambda *, standalone_mode: None)
+    assert cli_module.main() == 0
 
 
 @pytest.mark.parametrize(
@@ -166,6 +232,168 @@ def test_keygen_resolves_default_settings_only_inside_its_safe_boundary(
     assert sentinel not in result.stdout
 
 
+_SCORE_ROLE_PAIRS = [
+    (left, right)
+    for index, left in enumerate(("request", "key", "out", "ledger", "head"))
+    for right in ("request", "key", "out", "ledger", "head")[index + 1 :]
+]
+
+
+@pytest.mark.parametrize(("left", "right"), _SCORE_ROLE_PAIRS)
+def test_score_refuses_every_cross_role_path_before_any_write(
+    tmp_path: Path, left: str, right: str
+) -> None:
+    # Given any two of the five read/write roles name one filesystem path
+    paths = _score_paths(tmp_path)
+    paths[right] = paths[left]
+    before = _snapshot(tmp_path)
+    # When score validates the complete role map before parsing or persistence
+    result = _RUNNER.invoke(app, _score_arguments(paths))
+    # Then it fails coded and preserves every existing byte while creating nothing
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("out_name", "ledger_name"),
+    [("receipt.json", "RECEIPT.JSON"), ("café.json", "cafe\u0301.json")],
+)
+def test_score_refuses_absent_role_names_aliased_by_the_destination_volume(
+    tmp_path: Path, out_name: str, ledger_name: str
+) -> None:
+    # Given this actual volume collapses two initially absent role spellings
+    probe = tmp_path / out_name
+    probe.touch()
+    aliases = (tmp_path / ledger_name).exists()
+    probe.unlink()
+    if not aliases:
+        pytest.skip("test volume keeps these names distinct")
+    paths = _score_paths(tmp_path)
+    paths["out"], paths["ledger"] = tmp_path / out_name, tmp_path / ledger_name
+    before = _snapshot(tmp_path)
+    result = _RUNNER.invoke(app, _score_arguments(paths))
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("alias_kind", ["hardlink", "symlink", "dangling-symlink"])
+def test_score_refuses_linked_output_roles_without_damaging_the_key_or_ledger(
+    tmp_path: Path, alias_kind: str
+) -> None:
+    paths = _score_paths(tmp_path)
+    if alias_kind == "hardlink":
+        os.link(paths["key"], paths["out"])
+    elif alias_kind == "symlink":
+        paths["out"].symlink_to(paths["key"])
+    else:
+        paths["out"].symlink_to(paths["ledger"])
+    before = _snapshot(tmp_path)
+    result = _RUNNER.invoke(app, _score_arguments(paths))
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+    if alias_kind == "dangling-symlink":
+        assert paths["out"].is_symlink()
+
+
+def test_real_score_preserves_a_populated_ledger_when_receipt_path_aliases_it(
+    tmp_path: Path,
+) -> None:
+    # Given a real CLI score created one durable ledger entry and matching head
+    paths = _score_paths(tmp_path)
+    first = _real_cli(*_score_arguments(paths))
+    assert first.returncode == 0
+    before = _snapshot(tmp_path)
+    # When a second real command mistakenly names that ledger as its receipt output
+    paths["out"] = paths["ledger"]
+    rejected = _real_cli(*_score_arguments(paths))
+    # Then validation happens before receipt serialization and every byte survives
+    assert rejected.returncode == 1
+    assert "avow.ledger_configuration_invalid" in rejected.stdout
+    assert _snapshot(tmp_path) == before
+
+
+def test_real_score_preserves_the_private_key_when_receipt_path_aliases_it(
+    tmp_path: Path,
+) -> None:
+    paths = _score_paths(tmp_path)
+    before = _snapshot(tmp_path)
+    paths["out"] = paths["key"]
+    rejected = _real_cli(*_score_arguments(paths))
+    assert rejected.returncode == 1
+    assert "avow.ledger_configuration_invalid" in rejected.stdout
+    assert _snapshot(tmp_path) == before
+
+
+def test_score_resolves_aliasing_parent_directories_before_writing(tmp_path: Path) -> None:
+    actual, alias = tmp_path / "actual", tmp_path / "alias"
+    actual.mkdir()
+    alias.symlink_to(actual, target_is_directory=True)
+    paths = _score_paths(tmp_path)
+    paths["out"], paths["ledger"] = actual / "artifact", alias / "artifact"
+    before = _snapshot(tmp_path)
+    result = _RUNNER.invoke(app, _score_arguments(paths))
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+
+
+def test_keygen_refuses_aliasing_private_and_public_destinations(tmp_path: Path) -> None:
+    # Given two existing names are hard links to one sentinel file
+    private, public = tmp_path / "private.key", tmp_path / "public.key"
+    private.write_bytes(b"do-not-replace")
+    os.link(private, public)
+    before = _snapshot(tmp_path)
+    # When keygen validates both write roles before generating or saving either key
+    result = _RUNNER.invoke(app, ["keygen", "--out", str(private), "--pub", str(public)])
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("left", "right"), [("request", "key"), ("request", "out"), ("key", "out")]
+)
+def test_composite_refuses_every_cross_role_path_before_writing(
+    tmp_path: Path, left: str, right: str
+) -> None:
+    request, key, out = tmp_path / "composite.json", tmp_path / "key", tmp_path / "out"
+    request.write_text(
+        json.dumps(
+            {
+                "metric": "composite",
+                "metric_version": "1",
+                "subscores": [
+                    {"name": "a", "score": 0.2, "weight": 1},
+                    {"name": "b", "score": 0.4, "weight": 1},
+                    {"name": "c", "score": 0.6, "weight": 1},
+                ],
+            }
+        )
+    )
+    assert _RUNNER.invoke(app, ["keygen", "--out", str(key)]).exit_code == 0
+    paths = {"request": request, "key": key, "out": out}
+    paths[right] = paths[left]
+    before = _snapshot(tmp_path)
+    result = _RUNNER.invoke(
+        app,
+        [
+            "composite",
+            "--request",
+            str(paths["request"]),
+            "--key",
+            str(paths["key"]),
+            "--out",
+            str(paths["out"]),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "avow.ledger_configuration_invalid" in result.stdout
+    assert _snapshot(tmp_path) == before
+
+
 def test_real_cli_redacts_a_domain_value_from_scoring_errors(tmp_path: Path) -> None:
     # Given a validly shaped request carries an unregistered caller-controlled metric
     sentinel = "PII-SENTINEL-METRIC"
@@ -207,11 +435,43 @@ def test_cli_maps_every_input_boundary_without_a_traceback(tmp_path: Path) -> No
     malformed.write_text("{}", encoding="utf-8")
     missing = tmp_path / "missing"
     calls = (
-        ["keygen", "--out", str(missing / "key")],
-        ["score", "--request", str(malformed), "--key", str(missing), "--out", str(missing)],
-        ["score", "--request", str(missing), "--key", str(missing), "--out", str(missing)],
-        ["composite", "--request", str(malformed), "--key", str(missing), "--out", str(missing)],
-        ["composite", "--request", str(missing), "--key", str(missing), "--out", str(missing)],
+        ["keygen", "--out", str(tmp_path), "--pub", str(tmp_path / "public.key")],
+        _score_arguments(
+            {
+                "request": malformed,
+                "key": missing / "score-validation-key",
+                "out": tmp_path / "score-validation-out",
+                "ledger": tmp_path / "score-validation-ledger",
+                "head": tmp_path / "score-validation-head",
+            }
+        ),
+        _score_arguments(
+            {
+                "request": tmp_path / "absent-score-request",
+                "key": tmp_path / "absent-score-key",
+                "out": tmp_path / "score-out",
+                "ledger": tmp_path / "score-ledger",
+                "head": tmp_path / "score-head",
+            }
+        ),
+        [
+            "composite",
+            "--request",
+            str(malformed),
+            "--key",
+            str(missing / "composite-validation-key"),
+            "--out",
+            str(tmp_path / "composite-validation-out"),
+        ],
+        [
+            "composite",
+            "--request",
+            str(tmp_path / "absent-composite-request"),
+            "--key",
+            str(tmp_path / "absent-composite-key"),
+            "--out",
+            str(tmp_path / "composite-out"),
+        ],
         ["verify", "--receipt", str(malformed), "--public-key", str(missing)],
         ["verify", "--receipt", str(missing), "--public-key", str(missing)],
         [
