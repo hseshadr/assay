@@ -16,6 +16,7 @@ Two ways a guard like this rots into a no-op, both closed here:
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -92,6 +93,9 @@ def test_scheduled_security_audit_covers_python_and_typescript() -> None:
     assert isinstance(jobs, dict)
     assert {"pip-audit", "pnpm-audit"} <= set(jobs)
     assert "pnpm audit --audit-level low" in source
+    package = json.loads((ROOT / "ts/package.json").read_text(encoding="utf-8"))
+    version = package["packageManager"].removeprefix("pnpm@")
+    assert f"version: {version}" in source
 
 
 def test_dependency_update_intake_covers_both_package_ecosystems() -> None:
