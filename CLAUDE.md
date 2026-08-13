@@ -17,8 +17,12 @@ packages, plus a TypeScript surface.
   computes no metric math itself.
 - **`writ`** (`src/writ/`) — the **effect** face: a policy-gated, atomically-attested
   privileged effect, sealed as a receipt on the same envelope.
-- **`ts/`** — `@edgeproc/avow`, the byte-compatible TypeScript envelope. Pair-versioned
-  with the Python `avow` (a test enforces `ts/package.json` version == `avow.__version__`).
+- **`ts/`** — `@edgeproc/avow`: the byte-compatible TypeScript envelope, plus the
+  answer-compatible metrics face (`ranking.ts`, `metrics.ts`) mirroring `assay.ranking`
+  and `assay.metrics`. Both halves are pinned to Python by shared golden vectors in
+  `testdata/vectors/` — bytes in `canonical.json`/`receipts.json`, answers in
+  `metrics.json`, each replayed by both language suites. Pair-versioned with the Python
+  `avow` (a test enforces `ts/package.json` version == `avow.__version__`).
 - **`ts/packages/receipt-ui/`** — `@edgeproc/receipt-ui`, fail-closed React components that
   verify a receipt against a pinned key. Versioned **separately** from `@edgeproc/avow`.
 
