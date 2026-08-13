@@ -3,6 +3,7 @@ facade, translate results to exit codes. No business logic lives here."""
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -16,17 +17,16 @@ from assay.errors import AssayError, CliInputInvalid, InvalidScoreRequest
 from assay.models import CompositeRequest, ScoreRequest
 from assay.receipt import ScoreReceipt
 from assay.settings import AssaySettings
+from avow._atomic import atomic_write_bytes, discard_staged, install_staged, stage_bytes
 from avow.errors import AvowError
 from avow.keys import (
-    generate_signing_key,
+    _create_key_pair,
     load_signing_key,
     read_public_key,
-    save_public_key,
-    save_signing_key,
 )
 from avow.ledger import (
     LedgerHead,
-    append_and_save_head,
+    _append_and_save_head_with_install,
     read_head,
     require_distinct_paths,
     verify_integrity,
@@ -105,10 +105,8 @@ def _require_distinct_cli_paths(*paths: Path) -> None:
 
 
 def _write_key_pair(out: Path, pub: Path) -> None:
-    """Generate both halves only after destination roles are proven distinct."""
-    key = generate_signing_key()
-    save_signing_key(key, path=out)
-    save_public_key(key, path=pub)
+    """Create both halves without replacing an existing signing identity."""
+    _create_key_pair(private_path=out, public_path=pub)
 
 
 def _run_keygen(out: Path, pub: Path) -> None:
@@ -139,11 +137,23 @@ def _write_score(
     head_path: Path,
     settings: AssaySettings,
 ) -> LedgerHead:
+    if out.is_dir():
+        raise IsADirectoryError(out)
     parsed = ScoreRequest.model_validate_json(request.read_text(encoding="utf-8"))
     receipt = score_receipt(parsed, signing_key=load_signing_key(key), settings=settings)
-    head = append_and_save_head(receipt, path=ledger, head_path=head_path)
-    out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    return head
+    return _persist_score(receipt, out, ledger, head_path)
+
+
+def _persist_score(receipt: ScoreReceipt, out: Path, ledger: Path, head_path: Path) -> LedgerHead:
+    """Stage output, then install and append under the legacy ledger-file lock."""
+    staged = stage_bytes(receipt.model_dump_json(indent=2).encode(), path=out)
+    try:
+        install = partial(install_staged, staged, path=out)
+        return _append_and_save_head_with_install(
+            receipt, path=ledger, head_path=head_path, install=install
+        )
+    finally:
+        discard_staged(staged)
 
 
 def _score_runtime(ledger: Path | None, head: Path | None) -> tuple[AssaySettings, Path, Path]:
@@ -188,7 +198,7 @@ def score(
 def _write_composite(request: Path, key: Path, out: Path) -> None:
     parsed = CompositeRequest.model_validate_json(request.read_text(encoding="utf-8"))
     receipt = composite_score(parsed, signing_key=load_signing_key(key))
-    out.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
+    atomic_write_bytes(receipt.model_dump_json(indent=2).encode(), path=out)
 
 
 def _run_composite(request: Path, key: Path, out: Path) -> None:

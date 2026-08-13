@@ -59,6 +59,8 @@ def test_operations_doc_freezes_every_release_acceptance_number() -> None:
     assert "it does not claim to verify older entries" in contract
     assert "Pre-dispatch parser failures" in contract
     assert "maximum peak RSS across its parent verification process" in contract
+    assert "same signed receipt submitted twice" in contract
+    assert "nonce or request ID" in contract
     assert "**RPO 0**" in contract
     assert "p50 <= **2 ms**, p95 <= **4 ms**, p99 <= **10 ms**" in contract
     assert "p50 <= **3 ms**, p95 <= **8 ms**, p99 <= **20 ms**" in contract

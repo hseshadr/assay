@@ -45,3 +45,11 @@ def test_packaged_front_doors_never_freeze_prepublish_registry_state() -> None:
         "Upgrade when 0.4.1 is live",
     )
     assert all(phrase.lower() not in packaged.lower() for phrase in forbidden)
+
+
+def test_readme_distinguishes_line_reinsertion_from_semantic_receipt_replay() -> None:
+    readme = README.read_text(encoding="utf-8")
+
+    assert "same signed receipt submitted twice" in readme
+    assert "new, correctly sequenced entries" in readme
+    assert "nonce or request ID" in readme

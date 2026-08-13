@@ -11,8 +11,10 @@ import pytest
 from typer.testing import CliRunner
 
 import assay.cli as cli_module
+import avow._atomic as atomic_module
 from assay.cli import _safe_location, _safe_token, app
 from assay.receipt import ScoreReceipt
+from avow.keys import load_signing_key
 from avow.ledger import append
 
 _RUNNER = CliRunner()
@@ -108,6 +110,22 @@ def _score_process(root: Path, index: int) -> None:
     )
     if result.exit_code:
         raise RuntimeError(result.stdout) from result.exception
+
+
+def _shared_score_process(root: Path, index: int) -> None:
+    result = _real_cli(
+        "score",
+        "--request",
+        str(root / f"request-{index}.json"),
+        "--key",
+        str(root / "signing.key"),
+        "--out",
+        str(root / "shared-receipt.json"),
+        "--ledger",
+        str(root / "ledger.jsonl"),
+    )
+    if result.returncode:
+        raise RuntimeError(result.stdout + result.stderr)
 
 
 def test_real_cli_redacts_a_malformed_request_value(tmp_path: Path) -> None:
@@ -348,6 +366,97 @@ def test_real_score_requires_recovery_before_absorbing_an_unknown_append(
     assert _snapshot(tmp_path) == before
 
 
+def test_real_score_output_failure_never_commits_or_duplicates_a_ledger_entry(
+    tmp_path: Path,
+) -> None:
+    # Given a valid request but a directory where the receipt file must be installed
+    paths = _score_paths(tmp_path)
+    paths["out"].mkdir()
+    failed = _real_cli(*_score_arguments(paths))
+    # Then failure leaves no ledger or pin at all
+    assert failed.returncode == 1
+    assert not paths["ledger"].exists()
+    assert not paths["head"].exists()
+    # And an ordinary retry to a writable output records the receipt exactly once
+    paths["out"] = tmp_path / "retry-receipt.json"
+    assert _real_cli(*_score_arguments(paths)).returncode == 0
+    assert len(paths["ledger"].read_text(encoding="utf-8").splitlines()) == 1
+    assert json.loads(paths["head"].read_text(encoding="utf-8"))["count"] == 1
+
+
+def test_in_process_score_rejects_a_directory_output_before_ledger_creation(
+    tmp_path: Path,
+) -> None:
+    paths = _score_paths(tmp_path)
+    paths["out"].mkdir()
+    failed = _RUNNER.invoke(app, _score_arguments(paths))
+    assert failed.exit_code == 1
+    assert not paths["ledger"].exists()
+    assert not paths["head"].exists()
+
+
+def test_real_concurrent_scores_leave_shared_output_at_the_latest_ledger_entry(
+    tmp_path: Path,
+) -> None:
+    # Given two distinguishable requests share one output, ledger, head, and signing key
+    key = tmp_path / "signing.key"
+    assert _real_cli("keygen", "--out", str(key)).returncode == 0
+    for index, scores in enumerate(([0.1, 0.9] * 20, [0.3, 0.7] * 20)):
+        request = tmp_path / f"request-{index}.json"
+        request.write_text(
+            json.dumps(
+                {
+                    "metric": "binary",
+                    "metric_version": "1",
+                    "y_true": [0, 1] * 20,
+                    "y_score": scores,
+                }
+            )
+        )
+    context = multiprocessing.get_context("spawn")
+    workers = [
+        context.Process(target=_shared_score_process, args=(tmp_path, index)) for index in (0, 1)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=15)
+    assert [worker.exitcode for worker in workers] == [0, 0]
+    entries = [
+        json.loads(line)["receipt"] for line in (tmp_path / "ledger.jsonl").read_text().splitlines()
+    ]
+    published = json.loads((tmp_path / "shared-receipt.json").read_text())
+    assert published == entries[-1]
+
+
+def test_real_keygen_failure_preserves_an_existing_signing_identity(tmp_path: Path) -> None:
+    # Given one complete keypair and an invalid directory at the public-key destination
+    private, public = tmp_path / "signing.key", tmp_path / "signing.key.pub"
+    assert _real_cli("keygen", "--out", str(private)).returncode == 0
+    private_before = private.read_bytes()
+    public.unlink()
+    public.mkdir()
+    # When a second keygen cannot install the public companion
+    rejected = _real_cli("keygen", "--out", str(private))
+    # Then the failed rotation never changes the existing private signing identity
+    assert rejected.returncode == 1
+    assert private.read_bytes() == private_before
+    assert public.is_dir()
+
+
+def test_real_concurrent_keygen_never_publishes_a_mismatched_pair(tmp_path: Path) -> None:
+    private, public = tmp_path / "signing.key", tmp_path / "signing.key.pub"
+    command = [str(Path(sys.executable).with_name("assay")), "keygen", "--out", str(private)]
+    workers = [
+        subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)  # noqa: S603
+        for _ in range(2)
+    ]
+    results = [worker.communicate(timeout=15) for worker in workers]
+    assert sorted(worker.returncode for worker in workers) == [0, 1]
+    assert public.read_text(encoding="utf-8") == bytes(load_signing_key(private).verify_key).hex()
+    assert all("Traceback" not in stdout + stderr for (stdout, stderr) in results)
+
+
 def test_score_resolves_aliasing_parent_directories_before_writing(tmp_path: Path) -> None:
     actual, alias = tmp_path / "actual", tmp_path / "alias"
     actual.mkdir()
@@ -413,6 +522,39 @@ def test_composite_refuses_every_cross_role_path_before_writing(
     assert result.exit_code == 1
     assert "avow.ledger_configuration_invalid" in result.stdout
     assert _snapshot(tmp_path) == before
+
+
+def test_composite_replace_failure_preserves_an_existing_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, key, out = tmp_path / "composite.json", tmp_path / "key", tmp_path / "out"
+    request.write_text(
+        json.dumps(
+            {
+                "metric": "composite",
+                "metric_version": "1",
+                "subscores": [
+                    {"name": "a", "score": 0.2, "weight": 1},
+                    {"name": "b", "score": 0.4, "weight": 1},
+                    {"name": "c", "score": 0.6, "weight": 1},
+                ],
+            }
+        )
+    )
+    assert _RUNNER.invoke(app, ["keygen", "--out", str(key)]).exit_code == 0
+    out.write_bytes(b"previous-complete-receipt")
+    monkeypatch.setattr(atomic_module.os, "replace", lambda *_: _raise_replace())
+    result = _RUNNER.invoke(
+        app,
+        ["composite", "--request", str(request), "--key", str(key), "--out", str(out)],
+    )
+    assert result.exit_code == 1
+    assert out.read_bytes() == b"previous-complete-receipt"
+    assert not tuple(tmp_path.glob(".out.*"))
+
+
+def _raise_replace() -> None:
+    raise OSError("replace failed")
 
 
 def test_real_cli_redacts_a_domain_value_from_scoring_errors(tmp_path: Path) -> None:

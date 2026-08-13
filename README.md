@@ -50,8 +50,8 @@ an ordinary database. The signature bytes were never touched. It still fails, be
 payload no longer hashes to the value the signature covers.
 
 The published 0.3.0 code names this accurately: it is a **payload-hash mismatch**, not
-replay detection. The envelope detects tampering; ledger state detects replay and
-truncation. See [Honest limits](#honest-limits).
+replay detection. The envelope detects tampering; ledger state detects encoded-line
+reinsertion and truncation, not repeated API submissions. See [Honest limits](#honest-limits).
 
 **Artifact status:** This source and its artifacts identify as `avow` 0.4.1 and
 `@edgeproc/avow` 0.4.1. **0.4.1 supersedes 0.4.0 for Python CLI ledger writers** because
@@ -111,7 +111,7 @@ flowchart TD
   sign["Sign it<br/>Canonicalise to one exact byte string (RFC 8785),<br/>hash it with SHA-256, sign it with Ed25519.<br/>Python and TypeScript emit identical bytes — the same<br/>12 test vectors run in both languages to prove it."]
   receipt["The receipt: your data, its hash, the signature, the signer's key<br/>Check it against a public key you pinned in advance.<br/>You learn who wrote it, and that nobody changed it since.<br/>You do NOT learn that it is new — an old receipt<br/>still verifies, and that is correct behaviour."]
   ledger["Append-only ledger<br/>Each line carries its position (seq) and the hash of<br/>the line before it (prev_hash). The hash of the last line<br/>is pinned out of band, somewhere the ledger's writer<br/>cannot reach — another host, a git commit, a printout."]
-  caught["Where a replayed or missing entry is caught<br/>An old entry slipped back in no longer matches<br/>its seq or prev_hash. A deleted, reordered or truncated<br/>log no longer ends at the head you pinned.<br/>Freshness is the ledger's job, never the signature's."]
+  caught["Where a copied line or missing entry is caught<br/>An encoded line reinserted elsewhere no longer matches<br/>its seq or prev_hash. A deleted, reordered or truncated<br/>log no longer ends at the head you pinned.<br/>Semantic replay still needs caller-owned state."]
 
   data --> sign
   sign --> receipt
@@ -123,7 +123,7 @@ The first three boxes are the envelope; the last two are the ledger. The npm pac
 `@edgeproc/avow` ships the envelope (canonical bytes and sign/verify) **plus the metrics
 that go inside a receipt** — recall@k, precision@k, F1@k, MRR and the binary confusion
 set, giving the same answers as the Python `assay` face. It does not ship the ledger, so
-a browser gets tamper-evidence, not replay defence; the ledger is Python-side
+a browser gets tamper-evidence, not Python's encoded-line chain checks; the ledger is Python-side
 (`avow.ledger`).
 
 ## The names, spelled out
@@ -470,7 +470,7 @@ produced. The `tampered ledger entry` hash above is a payload hash and involves 
 that one reproduces exactly.
 
 That is the check no per-entry signature can do. Deleting, truncating (including emptying
-the file), reordering, replaying and splicing in an entry from another ledger all land
+the file), reordering, reinserting an encoded line and splicing in an entry from another ledger all land
 here, with exit code `1`.
 
 > **What this check does not cover.** The head is only as good as its custody. Verifying
@@ -495,11 +495,12 @@ Stated plainly, because each of these is a real boundary on what avow currently 
   re-verifiable offline years later is what makes it re-presentable. If your threat model
   includes "someone shows me an old receipt as if it were new", the answer must come from
   state the verifier keeps, not from the signature:
-  - **record entries in `avow.ledger`** — the chain rejects a replayed entry against a
-    pinned head (`avow.ledger_integrity`); that is a test in `tests/test_ledger.py` and in
-    `tests/test_verify.py`, watched go red with both its checks disabled; or
-  - **put a nonce or a request-id inside your own subject** before signing, and track the
-    ones you have already accepted.
+  - **record entries in `avow.ledger`** — the chain rejects copying an already encoded
+    ledger line into a different sequence position (`avow.ledger_integrity`); or
+  - **put a nonce or request ID inside your own subject** before signing, and track the
+    ones you have already accepted. The same signed receipt submitted twice through
+    `append` becomes two new, correctly sequenced entries. The ledger deliberately does
+    not guess whether those submissions represent one semantic occasion.
 
   Note the naming, because it changes in 0.3.0 for exactly this reason: the tamper error
   becomes `PayloadHashMismatch` (`avow.payload_hash_mismatch`). It is called
@@ -510,7 +511,7 @@ Stated plainly, because each of these is a real boundary on what avow currently 
 - **The ledger's tamper-evidence is only as good as the custody of its head.** The
   entries are chained (each carries its position and the hash of the entry before it) and
   the audit walks that chain to a head you pin out-of-band, so deleting, truncating,
-  reordering, replaying and splicing all fail — each of those five is a test in
+  reordering, encoded-line reinsertion and splicing all fail — each is a test in
   `tests/test_ledger.py`, and each guard has been watched go red with its check disabled.
   What remains is a **custody** limit, not a detection one: the chain moves the trust
   requirement from *N lines* down to *32 bytes*, it does not remove it. An attacker who
@@ -716,9 +717,11 @@ See the honest limits above for exactly how far the enforcement seam and that di
 <details>
 <summary><b>Key custody and cross-language vectors</b></summary>
 
-`assay keygen` (and `avow.keys`) write a 32-byte Ed25519 seed to a `0600` file and the
-public key to a companion `.pub`. Keys are never logged and never committed (`*.key` is
-gitignored). The public key also travels inside each receipt for convenience, but that
+`assay keygen` creates a 32-byte Ed25519 seed and companion `.pub` as owner-only,
+same-directory staged files. It refuses to overwrite either path; move both artifacts
+through an explicit rotation procedure or choose new paths. The lower-level `avow.keys`
+single-file saves are also staged, synced, and atomically replaced. Keys are never logged
+or committed (`*.key` is gitignored). The public key also travels inside each receipt for convenience, but that
 embedded copy is **not** the trust anchor — a verifier pins the out-of-band key and passes
 it to `verify`.
 

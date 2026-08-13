@@ -37,9 +37,11 @@ of networked inputs or outputs are outside this runtime boundary.
   and delete those files when that period ends. Normal file deletion is not a promise
   of secure erasure from snapshots, journaling filesystems, or backups.
 - A pinned public key authenticates the signer. A pinned ledger head detects deletion,
-  replay, reorder, splice, and truncation only when kept outside the ledger writer's
-  control. A head stored beside its ledger is a copying convenience, not a security
-  boundary.
+  reorder, encoded-line reinsertion, splice, and truncation only when kept outside the
+  ledger writer's control. The same signed receipt submitted twice through `append`
+  becomes two new valid ledger entries; semantic replay prevention requires a
+  **nonce or request ID** in the signed subject plus caller-owned acceptance state. A head stored
+  beside its ledger is a copying convenience, not a security boundary.
 
 ## Reliability and recovery boundary
 
@@ -55,20 +57,27 @@ Windows are outside the durability contract.
 | Event | Guaranteed outcome | Explicit bound or recovery action |
 |---|---|---|
 | Lock is held by another process | Append waits without changing the file, then raises coded `avow.ledger_lock_timeout`. | Default timeout: **5.0 seconds**. Poll interval: at most **10 ms**. |
+| `keygen` destination already exists or pair creation fails | Neither existing key artifact is replaced. Both new pair members are staged and synced before race-safe no-overwrite hard-link claims; a reported second-claim or directory-sync failure rolls back this operation's claims and syncs their directories. | `keygen` does not rotate. Move both old artifacts through an explicit operator rotation or choose new paths. It introduces no blocking lock. The pair is not cross-file crash-atomic: a crash between claims can leave only a non-secret public-key orphan, which the operator must inspect and remove before retry. |
 | Lock timeout is negative or non-finite, or CLI artifact roles alias | The call raises coded `avow.ledger_configuration_invalid` before creating or replacing any persistence file. Existing requests, keys, receipts, ledgers, and heads remain byte-identical. | Supply one finite, non-negative timeout and filesystem-distinct paths for every read/write role. |
 | Ledger exceeds 64 MiB, 100,000 entries, or one 64 KiB encoded line | Read, append, and verification fail closed with `avow.ledger_limit_exceeded`; append leaves existing bytes unchanged. | Rotate to a new externally pinned ledger before any ceiling. These are hard support limits, not tuning defaults. |
 | `append` returns a head | The complete JSONL line has been flushed and `fsync` has succeeded before return. Concurrent successful appenders form one valid chain. | **RPO 0** relative to a returned head on an in-scope filesystem. The caller must export that returned pin. |
 | CLI append plus convenience-head save returns | The ledger append and atomic head save happened while holding one ledger lock. A concurrent CLI writer cannot overwrite a newer head with an older one. | The saved head equals the ledger state at lock release. **RPO 0** for both returned operations; there is no cross-file crash atomicity before return. |
+| CLI receipt output cannot be installed | The staged receipt fails before a new ledger entry or convenience head is committed. A retry cannot duplicate an entry from the failed command. | Receipt installation, append, and head save share the ledger serialization boundary. A crash after one cross-file commit remains an unknown outcome requiring pin verification. |
 | Process or host fails before `append` returns | The append outcome is unknown; no success is claimed. A partial line or an entry beyond the previously pinned head fails closed. | Verify once against the last trusted external head. Do not silently trim or re-pin. |
 | Combined append starts with a missing, malformed, or stale convenience head for a non-empty ledger | Before writing, the locked ledger state is compared with the existing head. Any mismatch raises `avow.ledger_recovery_required`; a later append cannot silently absorb an unacknowledged entry. | Investigate and explicitly restore or authorise a new pin. Only a truly empty ledger may bootstrap with no head. |
 | `save_head` returns | A complete head replaced the target atomically and both file and parent directory were synced. | **RPO 0** relative to the returned save on an in-scope filesystem. |
+| A single-file key/receipt replacement reports failure after `replace` | The destination contains either the prior complete bytes or the new complete bytes; partial/truncated content is never installed, but a parent-directory sync failure makes crash durability unknown. | Inspect the complete file and retry or restore deliberately. A reported failure never proves which generation survived a simultaneous host crash. |
 | Ledger/head is malformed, missing, unreadable, truncated, or inconsistent | Verification raises a coded error and returns no receipts. Ledger JSONL is canonical UTF-8 with exactly one LF terminator per entry: blank lines, CRLF, and a partial final line are malformed. Bounded append rejects a noncanonical final line without changing its bytes; it does not claim to verify older entries. | Detection is one `verify_integrity` pass, **O(number of entries)**. Automatic repair and a wall-clock RTO are intentionally not promised. Restore both data and pin from a trusted backup, or investigate and explicitly authorise a new pin. |
 
-The ledger and head remain two filesystem commits because the real head must eventually
-leave the ledger writer's trust domain. The CLI holds one process lock across both so
-concurrent writers cannot publish a stale final pin. A crash between the commits can
-still leave a durable new entry that the old head rejects. That fail-closed mismatch is
-preferable to silently accepting an entry whose head was never exported.
+Receipt output, ledger, and head remain separate filesystem commits because the real head
+must eventually leave the ledger writer's trust domain. The CLI stages output first and
+holds one process lock across output installation, ledger append, and head save, so an
+ordinary output failure cannot create an entry and concurrent writers cannot publish an
+older receipt or pin last. A crash between commits can still leave output without an
+entry, or a durable new entry that the old head rejects. That unknown/fail-closed outcome
+requires verification and is preferable to silently accepting an unexported head.
+The transaction continues to lock the ledger data-file descriptor used by 0.4.0, so
+old and new writers remain serialized during a rolling upgrade.
 
 ## Frozen performance acceptance contract
 
