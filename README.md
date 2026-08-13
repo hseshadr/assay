@@ -6,7 +6,7 @@ and verification fails.
 
 ## Proof
 
-A real session. `avow` 0.2.0 from PyPI on Python 3.13.14; output copied verbatim, including
+A real session. `avow` 0.3.0 from PyPI on Python 3.13.5; output copied verbatim, including
 the failure.
 
 ```console
@@ -21,9 +21,9 @@ wrote receipt: receipt.json
 wrote ledger head: ledger.jsonl.head (1 entries)
 
 $ tail -4 receipt.json
-  "payload_hash": "sha256:a2ada15199d7586958d9754a4adeba4d13a4e73122f9604f65a536fb4a4bad7e",
-  "public_key": "cfcc49b01cc3019ce451a1bde8a146fbe423682faa2a2c7d0d0f0a01da008292",
-  "signature": "3cb2ae7edb1831ef47246cb0f07854a6a63aa9ba5457659455532dfc972758b4aaa1f73912b041a8606cb6b7d413bbc77defd6b2141a2aa50325d139f9143804"
+  "payload_hash": "sha256:bb6bcf8b468d336619f8234c1258180544939e000c466061f1c872a597085447",
+  "public_key": "790bcd495fff4256aa609de0310fbf22acc42f5a5a3749fa2cef4302c1c39db7",
+  "signature": "676387217bd1dbaa800e250e5281a86ae0551e5a082eb9a6fdafaf362e2bc512f72df6010cc2c855f186cf68323312782f4d6089ce96ff344a0444c2551d6601"
 }
 
 $ assay verify --receipt receipt.json --public-key signing.key.pub; echo "exit $?"
@@ -39,7 +39,7 @@ $ diff receipt.json tampered.json
 >     "abstained": false,
 
 $ assay verify --receipt tampered.json --public-key signing.key.pub; echo "exit $?"
-FAIL: avow.replay_mismatch: payload hash does not match payload content
+FAIL: avow.payload_hash_mismatch: payload hash does not match payload content
 exit 1
 ```
 
@@ -49,10 +49,13 @@ abstention into a confident answer — the sort of quiet correction that leaves 
 an ordinary database. The signature bytes were never touched. It still fails, because the
 payload no longer hashes to the value the signature covers.
 
-> The code above reads `avow.replay_mismatch`, which is what 0.2.0 prints. It is a
-> misnomer: this is a **tamper** failure, and the envelope detects no replay at all. It is
-> renamed `avow.payload_hash_mismatch` on `main` and ships in 0.3.0, with `ReplayMismatch`
-> kept as a deprecated alias. See [Honest limits](#honest-limits).
+The published 0.3.0 code names this accurately: it is a **payload-hash mismatch**, not
+replay detection. The envelope detects tampering; ledger state detects replay and
+truncation. See [Honest limits](#honest-limits).
+
+**Artifact status:** Published now: `avow` 0.3.0 on PyPI and `@edgeproc/avow` 0.3.0
+on npm. Source `main`: 0.4.0, prepared for its next release. The opening proof uses the
+published contract; later sections label source-only 0.4.0 features explicitly.
 
 ## Run it
 
@@ -183,9 +186,7 @@ original receipt ..... VALID
 edited receipt ....... REJECTED (ReplayMismatch)
 ```
 
-That is the output on the published 0.2.0. On `main` the same run prints
-`PayloadHashMismatch` — the rename described above; the class is the same object either
-way, and `except ReplayMismatch:` keeps working after it.
+Published 0.3.0 and source `main` both print `PayloadHashMismatch` here.
 
 Nudging `0.83` to `0.99` — a change that would be invisible in a database — makes the
 receipt fail to verify. That is the whole idea.
@@ -428,7 +429,7 @@ Now edit the stored entry the same way as before — `"abstained":true` to
 `"abstained":false` — and ask again:
 
 ```
-FAIL: avow.ledger_integrity: tampered ledger entry: sha256:a2ada15199d7586958d9754a4adeba4d13a4e73122f9604f65a536fb4a4bad7e
+FAIL: avow.ledger_integrity: tampered ledger entry: sha256:bb6bcf8b468d336619f8234c1258180544939e000c466061f1c872a597085447
 ```
 
 Exit code `1`, and the coded cause names both the failure and the entry that caused it.
@@ -494,7 +495,7 @@ Stated plainly, because each of these is a real boundary on what avow currently 
 
   Note the naming, because it changes in 0.3.0 for exactly this reason: the tamper error
   becomes `PayloadHashMismatch` (`avow.payload_hash_mismatch`). It is called
-  `ReplayMismatch` (`avow.replay_mismatch`) through 0.2.0 — the version on PyPI today —
+  `ReplayMismatch` (`avow.replay_mismatch`) through 0.2.0 — an older published version —
   which named a property the envelope has never had. `ReplayMismatch` stays as a
   deprecated alias, so `except ReplayMismatch:` keeps working; code that branches on the
   literal string `"avow.replay_mismatch"` must be updated.
