@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The split branch now identifies as the scoring-only `assay-engine` distribution,
+  version `0.5.0.dev0`, and builds only the `assay` Python package.
+- The exact mixed-product `0.4.x` source line is preserved locally at
+  `release/avow-0.4.x` commit `3121df1af33a41b457faa2fd1ce84dc823950c39` as migration
+  provenance. This task did not push, tag, merge, or publish that maintenance reference.
+
 ## [0.4.1] - 2026-08-13
 
 ### Security and correctness

@@ -8,11 +8,9 @@ from __future__ import annotations
 import assay
 
 
-def test_should_expose_semver_version_when_imported() -> None:
+def test_should_expose_development_version_when_imported() -> None:
     # Given the installed assay package
     # When reading its version string
     version = assay.__version__
-    # Then it is a non-empty three-part semantic version
-    parts = version.split(".")
-    assert len(parts) == 3
-    assert all(part.isdigit() for part in parts)
+    # Then it matches the scoring-only split candidate
+    assert version == "0.5.0.dev0"

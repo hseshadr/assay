@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from nacl.signing import SigningKey
 
 from assay.agreement import (
     agreement_report,
@@ -29,15 +28,10 @@ from assay.agreement import (
     quadratic_kappa,
     weighted_agreement,
 )
-from assay.api import agreement_score, verify
-from assay.errors import InvalidAgreementRequest, UnknownMetric
-from assay.models import AgreementRequest, ItemRating
+from assay.errors import InvalidAgreementRequest
+from assay.models import ItemRating
 from assay.settings import AssaySettings
 from assay.uncertainty import Abstention, Interval
-
-_SEED = bytes(range(32))
-_KEY = SigningKey(_SEED)
-_EXPECTED = bytes(_KEY.verify_key).hex()
 
 # The ordered band scale almamesh grades on. Weakest first — the ORDER is the
 # measurement, and `sorted()` would put it in a completely different order.
@@ -374,92 +368,3 @@ def test_should_refuse_to_mutate_a_report() -> None:
     # Then it refuses: the report is the evidence, and evidence does not get edited
     with pytest.raises(ValueError, match="frozen"):
         report.quadratic_kappa = 1.0  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------------
-# The receipt: an agreement measurement is sealable like any other Assay number
-# ---------------------------------------------------------------------------------
-
-
-def _request(rater_a: list[str], rater_b: list[str]) -> AgreementRequest:
-    return AgreementRequest(metric_version="1", scale=_SCALE, ratings=_rows(rater_a, rater_b))
-
-
-def test_should_seal_an_agreement_report_into_a_verifiable_receipt() -> None:
-    # Given an agreement request over 20 doubly-graded items
-    request = _request(_SKEW_A, _SKEW_B)
-    # When it is scored into a receipt
-    receipt = agreement_score(request, signing_key=_KEY, settings=AssaySettings())
-    # Then the receipt verifies against the pinned signer and carries the agreement detail
-    assert verify(receipt, expected_public_key=_EXPECTED) is True
-    assert receipt.payload.metric == "agreement"
-    assert receipt.payload.agreement is not None
-    assert receipt.payload.agreement.scale == _SCALE
-    assert receipt.payload.agreement.n_items == 20
-    assert receipt.payload.agreement.quadratic_kappa == pytest.approx(-3 / 22)
-    assert receipt.payload.agreement.kendall_tau_b == pytest.approx(-1 / np.sqrt(51))
-    # And the headline score abstains below the sample floor, as the other faces do
-    assert receipt.payload.abstained is True
-    assert receipt.payload.score is None
-
-
-def test_should_carry_the_headline_weighted_agreement_when_above_the_sample_floor() -> None:
-    # Given enough items to support an interval
-    request = _request(_SKEW_A * 2, _SKEW_B * 2)
-    settings = AssaySettings(min_samples=10, bootstrap_resamples=499)
-    # When it is scored
-    receipt = agreement_score(request, signing_key=_KEY, settings=settings)
-    # Then the headline score is the weighted agreement with its interval. Kappa is NOT
-    # the headline: it is not a mean of per-item values, so no bootstrap of a mean can
-    # put an interval on it, and pairing it with one would be fake precision.
-    assert receipt.payload.abstained is False
-    assert receipt.payload.score == pytest.approx(0.75)
-    assert receipt.payload.interval_low is not None
-    assert receipt.payload.agreement is not None
-    assert receipt.payload.agreement.weighted_agreement == pytest.approx(0.75)
-
-
-def test_should_refuse_an_unregistered_metric_name_on_an_agreement_request() -> None:
-    # Given a request naming a metric the agreement face does not implement
-    request = AgreementRequest(
-        metric="mystery", metric_version="1", scale=_SCALE, ratings=_rows(_SKEW_A, _SKEW_B)
-    )
-    # When it is scored
-    # Then it refuses: the metric label is signed into the receipt, so it is verified
-    with pytest.raises(UnknownMetric):
-        agreement_score(request, signing_key=_KEY, settings=AssaySettings())
-
-
-def test_should_fail_verification_when_an_agreement_receipt_is_tampered() -> None:
-    # Given a sealed agreement receipt whose kappa is embarrassing
-    request = _request(_SKEW_A, _SKEW_B)
-    receipt = agreement_score(request, signing_key=_KEY, settings=AssaySettings())
-    assert receipt.payload.agreement is not None
-    # When the reported kappa is edited upward, leaving the stale hash in place
-    forged = receipt.payload.model_copy(
-        update={"agreement": receipt.payload.agreement.model_copy(update={"quadratic_kappa": 0.9})}
-    )
-    tampered = receipt.model_copy(update={"payload": forged})
-    # Then verification fails — the number is bound to the signature, not merely asserted
-    assert verify(tampered, expected_public_key=_EXPECTED) is False
-
-
-def test_should_sign_the_band_order_into_the_receipt() -> None:
-    # Given the same ratings scored against the declared order and against a reordering
-    declared = agreement_score(
-        _request(_EXTREME_A, _EXTREME_B), signing_key=_KEY, settings=AssaySettings()
-    )
-    shuffled_request = AgreementRequest(
-        metric_version="1",
-        scale=tuple(sorted(_SCALE)),
-        ratings=_rows(_EXTREME_A, _EXTREME_B),
-    )
-    shuffled = agreement_score(shuffled_request, signing_key=_KEY, settings=AssaySettings())
-    # When the two receipts are compared
-    # Then they are different measurements with different hashes, and each one carries the
-    # order it was computed under. A kappa without its band order is not a number.
-    assert declared.payload.agreement is not None
-    assert shuffled.payload.agreement is not None
-    assert declared.payload.agreement.quadratic_kappa == pytest.approx(-1 / 3)
-    assert shuffled.payload.agreement.quadratic_kappa == pytest.approx(2 / 3)
-    assert declared.payload.inputs_hash != shuffled.payload.inputs_hash
