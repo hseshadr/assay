@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import ClassVar
 
 __all__ = [
     "AssayError",
     "CliInputInvalid",
+    "ContractCode",
     "EmptyRelevantSet",
     "InsufficientSamples",
     "InvalidAgreementRequest",
@@ -19,10 +21,36 @@ __all__ = [
 ]
 
 
+class ContractCode(StrEnum):
+    """Stable, value-free validation codes for public scoring contracts."""
+
+    DUPLICATE_IDENTIFIER = "assay.duplicate_identifier"
+    EMPTY_COMPONENTS = "assay.empty_components"
+    EMPTY_TERMS = "assay.empty_terms"
+    INVALID_CLAMP_POLICY = "assay.invalid_clamp_policy"
+    INVALID_COEFFICIENT = "assay.invalid_coefficient"
+    INVALID_DIRECTION = "assay.invalid_direction"
+    INVALID_IDENTIFIER = "assay.invalid_identifier"
+    INVALID_INPUTS_HASH = "assay.invalid_inputs_hash"
+    INVALID_INTERVAL = "assay.invalid_interval"
+    INVALID_LABEL = "assay.invalid_label"
+    INVALID_METHOD = "assay.invalid_method"
+    INVALID_NUMBER = "assay.invalid_number"
+    INVALID_OPERATION = "assay.invalid_operation"
+    INVALID_SCALE = "assay.invalid_scale"
+    INVALID_WEIGHT = "assay.invalid_weight"
+    MISSING_WEIGHT = "assay.missing_weight"
+    OUT_OF_RANGE = "assay.out_of_range"
+
+
 class AssayError(Exception):
     """Base class for Assay domain failures."""
 
     code: ClassVar[str] = "assay.error"
+
+    def __init__(self, _detail: object | None = None) -> None:
+        """Expose only the stable code; caller values never enter the message."""
+        super().__init__(self.code)
 
 
 class CliInputInvalid(AssayError):
