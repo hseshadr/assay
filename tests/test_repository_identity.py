@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import importlib
+import inspect
+import re
 import runpy
 import sys
 import tomllib
@@ -13,8 +15,22 @@ from typing import cast
 
 import pytest
 
+from assay import models
+from assay.settings import AssaySettings
+
 ROOT = Path(__file__).parents[1]
 FORBIDDEN_IMPORT_ROOTS = frozenset({"avow", "writ", "nacl", "rfc8785"})
+FORBIDDEN_EVIDENCE_TERMS = re.compile(r"\b(?:key|signature|signing|receipt|ledger)\b", re.I)
+PUBLIC_MODEL_TYPES = (
+    models.ScoreRequest,
+    models.SubScoreInput,
+    models.CompositeRequest,
+    models.RelevanceJudgment,
+    models.RankedQuery,
+    models.ItemRating,
+    models.AgreementRequest,
+    models.RankingRequest,
+)
 
 
 def _load_pyproject() -> Mapping[str, object]:
@@ -55,6 +71,14 @@ def _console_main() -> Callable[[], int]:
     assert separator
     module = importlib.import_module(module_name)
     return cast(Callable[[], int], getattr(module, attribute))
+
+
+def _dependency_names(value: object) -> frozenset[str]:
+    assert isinstance(value, list)
+    dependencies = [item for item in value if isinstance(item, str)]
+    assert len(dependencies) == len(value)
+    names = (re.split(r"[<>=!~;\[]", item, maxsplit=1)[0] for item in dependencies)
+    return frozenset(name.lower() for name in names)
 
 
 def test_should_name_scoring_distribution_assay_engine() -> None:
@@ -157,3 +181,50 @@ def test_should_reject_cross_product_imports_from_assay() -> None:
 
     # Then
     assert not violations, violations
+
+
+def test_should_exclude_evidence_storage_from_scoring_settings() -> None:
+    # Given / When
+    setting_names = frozenset(AssaySettings.model_fields)
+
+    # Then
+    assert "signing_key_path" not in setting_names
+    assert "ledger_path" not in setting_names
+
+
+def test_should_use_scoring_language_on_public_request_models() -> None:
+    # Given / When
+    documentation = "\n".join(inspect.getdoc(model) or "" for model in PUBLIC_MODEL_TYPES)
+
+    # Then
+    assert not FORBIDDEN_EVIDENCE_TERMS.findall(documentation)
+
+
+def test_should_keep_base_dependencies_minimal() -> None:
+    # Given / When
+    project = _table(_load_pyproject(), "project")
+
+    # Then
+    assert _dependency_names(project["dependencies"]) == frozenset({"pydantic"})
+
+
+def test_should_isolate_metric_and_cli_dependencies() -> None:
+    # Given / When
+    extras = _table(_load_pyproject(), "project", "optional-dependencies")
+
+    # Then
+    assert _dependency_names(extras["metrics"]) == frozenset(
+        {"pydantic-settings", "scikit-learn", "scipy", "numpy", "ir-measures"}
+    )
+    assert _dependency_names(extras["cli"]) == frozenset({"typer"})
+
+
+def test_should_exclude_cryptography_dependencies_from_metadata_and_lock() -> None:
+    # Given / When
+    dependency_state = "\n".join(
+        (ROOT / name).read_text(encoding="utf-8").lower() for name in ("pyproject.toml", "uv.lock")
+    )
+
+    # Then
+    assert "pynacl" not in dependency_state
+    assert "rfc8785" not in dependency_state

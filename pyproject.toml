@@ -152,23 +152,13 @@ fmt-check = "ruff format --check src/ tests/ scripts/"
 fmt = "ruff format src/ tests/ scripts/"
 complexity = "xenon --max-absolute A --max-modules A --max-average A src/assay scripts"
 test = "pytest --cov=assay --cov-branch --cov-report=term-missing --cov-fail-under=90"
-# `gate` mirrors the CI `gate` job exactly: lint + format-check + typecheck +
-# complexity + test. It is PYTHON ONLY — the TypeScript package has its own gate,
-# mirroring the separate CI `ts-gate` job. `gate-all` runs both, as CI does.
+# `gate` mirrors the transitional CI gate exactly: Python quality and tests only.
+# Task 9 owns release-ready performance and publication controls.
 gate = ["lint", "fmt-check", "typecheck", "complexity", "test"]
-gate-all = ["gate", "gate-ts"]
 
-# `mutants` mirrors the CI `mutation-gate` job. Deliberately NOT part of `gate`: `gate`
-# asks whether the tests pass, this asks whether they can fail. It breaks one named
-# guard at a time, requires the suite to go red, restores the file, and reads its
-# verdict from pytest's exit code only. Takes about a minute; run it on a clean tree.
+# Pure Assay mutations remain available locally but are not yet a release CI claim.
+# Task 9 owns the release-ready mutation lane.
 mutants = "python scripts/mutation_harness.py"
-
-# Mirrors the CI `ts-gate` job (biome -> tsc --noEmit -> vitest -> build).
-# Needs pnpm; the Python gate above does not.
-[tool.poe.tasks.gate-ts]
-cmd = "pnpm gate"
-cwd = "ts"
 
 [tool.poe.tasks.typecheck]
 cmd = "mypy --strict src/assay scripts"

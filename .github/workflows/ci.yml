@@ -30,99 +30,16 @@ jobs:
 
       # --frozen: install the committed uv.lock verbatim, so CI cannot silently
       # re-resolve dependencies. --all-extras: the gate exercises the full surface
-      # (scoring face + CLI), now behind the [assay]/[cli] extras.
+      # (scoring face + CLI), now behind the [metrics]/[cli] extras.
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
       - name: Run the gate
         run: uv run poe gate
 
-      - name: Enforce frozen Python performance budgets
-        run: uv run poe benchmark
-
-  # The TypeScript package `@edgeproc/avow`. Its conformance suite replays the SAME golden
-  # vectors (testdata/vectors/*.json) the Python gate generates, asserting the TS
-  # canonicalizer + verifier reproduce Python's bytes/hashes/signatures exactly.
-  # A cross-language byte divergence fails HERE, in CI, never in production.
-  ts-gate:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ts
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
-        with:
-          version: 11.5.0
-
-      - name: Install Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: ts/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # lint (biome) -> typecheck (tsc strict) -> vitest conformance -> build,
-      # across every workspace package (avow + receipt-ui), not just the root.
-      - name: Run the TS gate
-        run: pnpm -r --include-workspace-root gate
-
-      - name: Enforce frozen TypeScript performance budgets
-        run: pnpm benchmark
-
-  # Mirrors `uv run poe mutants`. A separate job, not a step inside `gate`, because it
-  # answers a different question: `gate` asks "do the tests pass", this asks "can they
-  # fail". It breaks each named guard in turn and requires the suite to go red, so a
-  # test that quietly stops guarding its claim fails HERE rather than being discovered
-  # in an audit months later.
-  #
-  # It needs BOTH toolchains: the harness breaks guards in `src/` (pytest) and in
-  # `ts/src/` (vitest). A metrics claim that only Python could break would be a claim
-  # only Python defends, and half of it now ships in the browser.
-  mutation-gate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          version: "latest"
-      - name: Pin Python
-        run: uv python install 3.13
-
-      - name: Install dependencies
-        run: uv sync --frozen --all-extras
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
-        with:
-          version: 11.5.0
-
-      - name: Install Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: ts/pnpm-lock.yaml
-
-      - name: Install TypeScript dependencies
-        run: pnpm install --frozen-lockfile
-        working-directory: ts
-
-      # The harness edits tracked files in place and restores them in a `finally`; it
-      # refuses to start if any file it touches is already dirty.
-      - name: Break every guard and require the suite to notice
-        run: uv run poe mutants
+  # Benchmark, TypeScript, and mutation CI lanes belonged to the mixed Avow product.
+  # They remain unavailable during the split. Task 9 must add release-ready controls;
+  # this transitional workflow makes no publication or performance claim.
 
   # Secret scan, via the shared brick in hseshadr/ci — where the
   # mechanics and their rationale now live. One maintained copy of this control

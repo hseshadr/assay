@@ -22,23 +22,16 @@ Each mutation runs its named guard tests twice and then restores the file:
 The mutation is read back off disk before the second run, so an edit that silently
 failed to apply can never be reported as a guard that held.
 
-**It breaks TypeScript too.** Half the guards below live in ``ts/src``, because half
-the claims do: ``@edgeproc/avow`` ships the same metrics as the Python face and is
-pinned to it by shared golden vectors. A guard that only Python can break is a guard
-that only defends Python. Vitest's verdict is read from the JSON reporter's
-pass/fail counts rather than its exit code, and that is not a stylistic choice —
-``vitest run -t 'no-such-test'`` **exits 0**, reporting every test in the file as
-"total" while running none of them. An exit-code reading of that is a green baseline
-for a guard that does not exist. ``numPassedTests`` is the only field that says
-something ran. If the reporter writes no file at all — which is what a misspelled
-reporter name does — that is a harness error, never a verdict.
+The active transitional set is limited to pure Assay Python scoring guards. Legacy
+Avow and TypeScript declarations remain inert below while the split is in progress;
+Task 9 owns the release-ready mutation lane.
 
 Run it::
 
     uv run poe mutants
 
 It edits tracked files in place, so it refuses to start unless every file it will touch
-is clean in git. The TypeScript half needs ``ts/node_modules`` installed.
+is clean in git.
 """
 
 from __future__ import annotations
@@ -142,7 +135,7 @@ def _delete_throw(statement: str) -> Callable[[str], str]:
     return _replace_once(statement, "      // mutated: this refusal was deleted")
 
 
-MUTATIONS: tuple[Mutation, ...] = (
+_MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
     # ----------------------------------------------------------------------------------
     # The ranking metrics are trec_eval's arithmetic, reached through ir_measures.
     # Every mutation below breaks the WIRING to that engine, not assay's own maths.
@@ -485,7 +478,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         claim="the documented first-page depth of 10 is the shipped default k",
         target=_SETTINGS,
         guard=(
-            "tests/test_documented_constants.py::test_the_default_ranking_cutoff_the_docs_promise",
+            "tests/test_documented_constants.py::test_should_match_documented_default_ranking_cutoff",
         ),
         edit=_replace_once("    ranking_k: int = 10", "    ranking_k: int = 4"),
     ),
@@ -727,11 +720,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         "classification-refusal shared metric cases are all still shipped",
         target=_METRIC_VECTORS,
         guard=(
-            "tests/test_documented_constants.py::test_the_metric_vector_counts_the_readme_promises",
+            "tests/test_documented_constants.py::test_should_match_documented_metric_vector_counts",
         ),
         edit=_drop_last_metric_vector,
     ),
 )
+
+
+def _is_active_assay_mutation(mutation: Mutation) -> bool:
+    """Keep only scoring guards whose targets remain in the Assay distribution."""
+    is_assay_source = mutation.target.startswith("src/assay/")
+    return mutation.runner == _PYTEST and (is_assay_source or mutation.target == _METRIC_VECTORS)
+
+
+MUTATIONS = tuple(filter(_is_active_assay_mutation, _MIXED_PRODUCT_MUTATIONS))
 
 
 @dataclass(frozen=True)
