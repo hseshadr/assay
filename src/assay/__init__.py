@@ -21,12 +21,14 @@ from assay.contracts import (
     parse_request,
     parse_request_json,
 )
+from assay.errors import ContractValidationError
 
 __all__ = [
     "AdditiveRequest",
     "AdditiveTerm",
     "ClampPolicy",
     "Component",
+    "ContractValidationError",
     "Direction",
     "ExplainedComponent",
     "Interval",

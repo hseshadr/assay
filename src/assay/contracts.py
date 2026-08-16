@@ -15,15 +15,16 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     TypeAdapter,
     ValidationError,
+    model_serializer,
     model_validator,
 )
 from pydantic.config import ExtraValues
 from pydantic.fields import FieldInfo
-from pydantic_core import PydanticCustomError
 
-from assay.errors import ContractCode, InvalidMethod, InvalidScoreRequest
+from assay.errors import ContractCode, ContractValidationError
 
 __all__ = [
     "AdditiveRequest",
@@ -49,6 +50,7 @@ _MODEL_CONFIG = ConfigDict(
     extra="forbid",
     hide_input_in_errors=True,
     populate_by_name=True,
+    revalidate_instances="always",
     serialize_by_alias=True,
 )
 _STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
@@ -62,6 +64,14 @@ _OptionalBool = bool | None
 _OptionalExtra = ExtraValues | None
 _ValidationOptions = tuple[
     _OptionalBool, _OptionalExtra, object | None, _OptionalBool, _OptionalBool
+]
+_PythonValidationOptions = tuple[
+    _OptionalBool,
+    _OptionalExtra,
+    _OptionalBool,
+    object | None,
+    _OptionalBool,
+    _OptionalBool,
 ]
 
 
@@ -87,15 +97,15 @@ class Operation(StrEnum):
 
 
 def _fail(code: ContractCode) -> NoReturn:
-    raise PydanticCustomError(code.value, code.value)
+    raise ContractValidationError(code) from None
 
 
 def _decode_json(data: _JsonData) -> object:
     try:
-        decoded: object = json.loads(data)
+        return json.loads(data)
     except (JSONDecodeError, UnicodeDecodeError, TypeError):
-        raise InvalidScoreRequest from None
-    return decoded
+        pass
+    _fail(ContractCode.INVALID_CONTRACT)
 
 
 def _finite(value: object) -> float:
@@ -104,7 +114,7 @@ def _finite(value: object) -> float:
     try:
         number = float(value)
     except OverflowError:
-        _fail(ContractCode.INVALID_NUMBER)
+        number = math.nan
     if not math.isfinite(number):
         _fail(ContractCode.INVALID_NUMBER)
     return number
@@ -235,6 +245,18 @@ def _contains_required_fields(
     )
 
 
+def _contains_alias_duplicate(
+    data: Mapping[object, object], fields: Mapping[str, FieldInfo]
+) -> bool:
+    return any(
+        isinstance(field.alias, str)
+        and field.alias != name
+        and field.alias in data
+        and name in data
+        for name, field in fields.items()
+    )
+
+
 def _require_mapping(data: object) -> Mapping[object, object]:
     if not isinstance(data, Mapping):
         _fail(ContractCode.INVALID_OBJECT)
@@ -244,6 +266,13 @@ def _require_mapping(data: object) -> Mapping[object, object]:
 def _require_known_fields(data: Mapping[object, object], fields: Mapping[str, FieldInfo]) -> None:
     if not _contains_only_known_fields(data, fields):
         _fail(ContractCode.UNKNOWN_FIELD)
+
+
+def _require_no_alias_duplicates(
+    data: Mapping[object, object], fields: Mapping[str, FieldInfo]
+) -> None:
+    if _contains_alias_duplicate(data, fields):
+        _fail(ContractCode.DUPLICATE_FIELD)
 
 
 def _require_method(data: Mapping[object, object], expected: str | None) -> None:
@@ -258,11 +287,25 @@ def _require_required_fields(
         _fail(ContractCode.MISSING_FIELD)
 
 
+def _require_alias_config(by_alias: _OptionalBool, by_name: _OptionalBool) -> None:
+    if by_alias is False and by_name is not True:
+        _fail(ContractCode.INVALID_ALIAS_CONFIG)
+
+
 class _ContractModel(BaseModel):
     """Shared fail-closed shape validation for every public JSON model."""
 
     model_config = _MODEL_CONFIG
     _expected_method: ClassVar[str | None] = None
+
+    def __init__(self, **data: object) -> None:
+        try:
+            super().__init__(**data)
+        except ValidationError:
+            pass
+        else:
+            return
+        _fail(ContractCode.INVALID_CONTRACT)
 
     @model_validator(mode="before")
     @classmethod
@@ -270,10 +313,44 @@ class _ContractModel(BaseModel):
         if isinstance(data, cls):
             return data
         mapping = _require_mapping(data)
+        _require_no_alias_duplicates(mapping, cls.model_fields)
         _require_known_fields(mapping, cls.model_fields)
         _require_method(mapping, cls._expected_method)
         _require_required_fields(mapping, cls.model_fields)
         return mapping
+
+    @classmethod
+    def model_validate(
+        cls,
+        obj: object,
+        *,
+        strict: _OptionalBool = None,
+        extra: _OptionalExtra = None,
+        from_attributes: _OptionalBool = None,
+        context: object | None = None,
+        by_alias: _OptionalBool = None,
+        by_name: _OptionalBool = None,
+    ) -> Self:
+        _require_alias_config(by_alias, by_name)
+        options = (strict, extra, from_attributes, context, by_alias, by_name)
+        return cls._validate_python(obj, options)
+
+    @classmethod
+    def _validate_python(cls, obj: object, options: _PythonValidationOptions) -> Self:
+        strict, extra, from_attributes, context, by_alias, by_name = options
+        try:
+            return super().model_validate(
+                obj,
+                strict=strict,
+                extra=extra,
+                from_attributes=from_attributes,
+                context=context,
+                by_alias=by_alias,
+                by_name=by_name,
+            )
+        except ValidationError:
+            pass
+        _fail(ContractCode.INVALID_CONTRACT)
 
     @classmethod
     def model_validate_json(
@@ -300,6 +377,15 @@ class _ContractModel(BaseModel):
             by_alias=by_alias,
             by_name=by_name,
         )
+
+    def model_copy(self, *, update: Mapping[str, object] | None = None, deep: bool = False) -> Self:
+        candidate = super().model_copy(update=update, deep=deep)
+        return type(self).model_validate(candidate)
+
+    @model_serializer(mode="wrap")
+    def _serialize_validated(self, handler: SerializerFunctionWrapHandler) -> object:
+        validated = type(self).model_validate(self)
+        return handler(validated)
 
 
 class NativeScale(_ContractModel):
@@ -492,9 +578,10 @@ _METHODS = frozenset(("weighted_mean", "additive", "minimum"))
 
 def _validate_request_method(data: object) -> object:
     if not isinstance(data, Mapping):
-        raise InvalidScoreRequest from None
-    if data.get("method") not in _METHODS:
-        raise InvalidMethod from None
+        _fail(ContractCode.INVALID_METHOD)
+    method = data.get("method")
+    if not isinstance(method, str) or method not in _METHODS:
+        _fail(ContractCode.INVALID_METHOD)
     return data
 
 
@@ -504,7 +591,8 @@ def parse_request(data: object) -> ScoreRequest:
     try:
         return _REQUEST_ADAPTER.validate_python(prepared)
     except ValidationError:
-        raise InvalidScoreRequest from None
+        pass
+    _fail(ContractCode.INVALID_CONTRACT)
 
 
 def parse_request_json(data: _JsonData) -> ScoreRequest:

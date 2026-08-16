@@ -6,13 +6,16 @@ import json
 import math
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
+from pydantic_core import PydanticSerializationError
 
 from assay import (
     AdditiveRequest,
     AdditiveTerm,
     ClampPolicy,
     Component,
+    ContractValidationError,
     Direction,
     ExplainedComponent,
     Interval,
@@ -26,7 +29,7 @@ from assay import (
     parse_request,
     parse_request_json,
 )
-from assay.errors import InvalidMethod, InvalidScoreRequest
+from assay.errors import InvalidScoreRequest
 
 _INPUTS_HASH = "sha256:7f83b1657ff1fc53b92dc18148a1d65dfa13514d74c69915a0b7543842cff331"
 _SENTINEL = "PII-SENTINEL-ALICE"
@@ -126,7 +129,7 @@ def test_should_forbid_and_redact_extra_fields_on_every_public_model() -> None:
     for model in _public_models():
         payload = model.model_dump()
         payload[_SENTINEL] = "private-value"
-        with pytest.raises(ValidationError) as caught:
+        with pytest.raises(ContractValidationError) as caught:
             type(model).model_validate(payload)
         assert "assay.unknown_field" in str(caught.value)
         assert _SENTINEL not in str(caught.value)
@@ -137,7 +140,7 @@ def test_should_freeze_every_public_model() -> None:
     # Given / When / Then
     for model in _public_models():
         field_name = next(iter(type(model).model_fields))
-        with pytest.raises(ValidationError):
+        with pytest.raises(PydanticValidationError):
             setattr(model, field_name, None)
 
 
@@ -148,13 +151,24 @@ def _assert_redacted(error: Exception, code: str) -> None:
     assert "private-value" not in text
 
 
+def _assert_code_only(error: ContractValidationError, code: str) -> None:
+    assert error.code == code
+    assert str(error) == code
+    assert error.args == (code,)
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert not hasattr(error, "errors")
+    assert not hasattr(error, "json")
+    assert not hasattr(error, "model_dump")
+
+
 def test_should_redact_nested_unknown_field_from_direct_construction() -> None:
     # Given
     scale = {"minimum": 0, "maximum": 1, "direction": "higher_is_better"}
     scale[_SENTINEL] = "private-value"
 
     # When
-    with pytest.raises(ValidationError) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         Component(id="quality", label="Quality", value=0.5, scale=scale, weight=1)
 
     # Then
@@ -167,7 +181,7 @@ def test_should_redact_nested_unknown_field_from_model_validate() -> None:
     payload["components"][0]["scale"][_SENTINEL] = "private-value"
 
     # When
-    with pytest.raises(ValidationError) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         WeightedMeanRequest.model_validate(payload)
 
     # Then
@@ -180,7 +194,7 @@ def test_should_redact_nested_unknown_field_from_model_validate_json() -> None:
     payload["terms"][0][_SENTINEL] = "private-value"
 
     # When
-    with pytest.raises(ValidationError) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         AdditiveRequest.model_validate_json(json.dumps(payload))
 
     # Then
@@ -194,7 +208,7 @@ def test_should_redact_nested_missing_operation_from_model_validate_json() -> No
     payload["terms"][0].pop("operation")
 
     # When
-    with pytest.raises(ValidationError) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         AdditiveRequest.model_validate_json(json.dumps(payload))
 
     # Then
@@ -208,7 +222,7 @@ def test_should_redact_nested_missing_direction_from_model_validate() -> None:
     payload["scale"].pop("direction")
 
     # When
-    with pytest.raises(ValidationError) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         Component.model_validate(payload)
 
     # Then
@@ -237,7 +251,7 @@ def test_should_use_stable_code_for_missing_required_fields(
     model: type[BaseModel], payload: object
 ) -> None:
     # Given / When
-    with pytest.raises(ValidationError) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         model.model_validate(payload)
 
     # Then
@@ -246,13 +260,13 @@ def test_should_use_stable_code_for_missing_required_fields(
 
 def test_should_require_a_literal_method_on_every_request() -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_method"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_method"):
         WeightedMeanRequest.model_validate(
             {"method_version": "v1", "components": (), "clamp": "reject"}
         )
-    with pytest.raises(ValidationError, match=r"assay\.invalid_method"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_method"):
         AdditiveRequest.model_validate({"method_version": "v1", "terms": (), "clamp": "reject"})
-    with pytest.raises(ValidationError, match=r"assay\.invalid_method"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_method"):
         MinimumRequest.model_validate({"method_version": "v1", "components": (), "clamp": "reject"})
 
 
@@ -261,7 +275,7 @@ def test_should_reject_weighted_payload_as_minimum() -> None:
     payload = _weighted_request().model_dump()
 
     # When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_method"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_method"):
         MinimumRequest.model_validate(payload)
 
 
@@ -287,7 +301,7 @@ def test_should_redact_unknown_or_missing_method_from_parser(method: str | None)
     payload["method"] = method
 
     # When
-    with pytest.raises(InvalidMethod) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         parse_request(payload)
 
     # Then
@@ -301,7 +315,7 @@ def test_should_redact_unknown_method_from_json_parser() -> None:
     payload["method"] = _SENTINEL
 
     # When
-    with pytest.raises(InvalidMethod) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         parse_request_json(json.dumps(payload))
 
     # Then
@@ -315,13 +329,79 @@ def test_should_redact_nested_validation_from_exported_parser() -> None:
     payload["components"][0][_SENTINEL] = "private-value"
 
     # When
-    with pytest.raises(InvalidScoreRequest) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         parse_request(payload)
 
     # Then
-    assert str(caught.value) == "assay.invalid_request"
+    assert str(caught.value) == "assay.unknown_field"
     assert _SENTINEL not in str(caught.value)
     assert "private-value" not in str(caught.value)
+
+
+@pytest.mark.parametrize("value", [[], {}, None, 1, True, "unknown"])
+def test_should_reject_nonstring_or_unknown_discriminator_values(value: object) -> None:
+    # Given
+    payload = _weighted_request().model_dump()
+    payload["method"] = value
+
+    # When
+    with pytest.raises(ContractValidationError) as caught:
+        parse_request(payload)
+
+    # Then
+    _assert_code_only(caught.value, "assay.invalid_method")
+
+
+@pytest.mark.parametrize("payload", [[], {}, None, 1, True, "unknown"])
+def test_should_reject_payloads_without_string_discriminator(payload: object) -> None:
+    # Given / When
+    with pytest.raises(ContractValidationError) as caught:
+        parse_request_json(json.dumps(payload))
+
+    # Then
+    _assert_code_only(caught.value, "assay.invalid_method")
+
+
+def test_should_hide_pydantic_surface_from_direct_constructor_error() -> None:
+    # Given
+    scale = {"minimum": 0, "maximum": 1, "direction": "higher_is_better"}
+    scale[_SENTINEL] = "private-value"
+
+    # When
+    with pytest.raises(ContractValidationError) as caught:
+        Component(id="quality", label=_SENTINEL, value=0.5, scale=scale)
+
+    # Then
+    _assert_code_only(caught.value, "assay.unknown_field")
+    _assert_redacted(caught.value, "assay.unknown_field")
+
+
+def test_should_hide_pydantic_surface_from_model_validate_error() -> None:
+    # Given
+    payload = _weighted_request().model_dump()
+    payload["components"] = _SENTINEL
+
+    # When
+    with pytest.raises(ContractValidationError) as caught:
+        WeightedMeanRequest.model_validate(payload)
+
+    # Then
+    _assert_code_only(caught.value, "assay.invalid_contract")
+    assert _SENTINEL not in repr(caught.value)
+
+
+def test_should_hide_pydantic_surface_from_model_validate_json_error() -> None:
+    # Given
+    payload = _weighted_request().model_dump()
+    payload["components"] = _SENTINEL
+
+    # When
+    with pytest.raises(ContractValidationError) as caught:
+        WeightedMeanRequest.model_validate_json(json.dumps(payload))
+
+    # Then
+    _assert_code_only(caught.value, "assay.invalid_contract")
+    assert _SENTINEL not in repr(caught.value)
 
 
 def test_should_redact_missing_method_from_parser() -> None:
@@ -331,7 +411,7 @@ def test_should_redact_missing_method_from_parser() -> None:
     payload["method_version"] = _SENTINEL
 
     # When
-    with pytest.raises(InvalidMethod) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         parse_request(payload)
 
     # Then
@@ -351,13 +431,13 @@ def test_should_reject_unpaired_unicode_surrogates(loader: object) -> None:
     value = json.dumps(payload) if loader == Component.model_validate_json else payload
 
     # When
-    with pytest.raises(ValidationError, match=r"assay\.invalid_text"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_text"):
         loader(value)
 
 
 def test_should_reject_unpaired_unicode_surrogate_from_constructor() -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_text"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_text"):
         Component(id="quality", label="\ud800", value=0.5, scale=_scale())
 
 
@@ -372,17 +452,102 @@ def test_should_round_trip_valid_unicode_labels() -> None:
     assert restored == component
 
 
+def test_should_revalidate_model_copy_updates() -> None:
+    # Given / When / Then
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
+        _scale().model_copy(update={"minimum": math.nan})
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
+        _component().model_copy(update={"value": math.inf})
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_method"):
+        _weighted_request().model_copy(update={"method": "minimum"})
+
+
+def test_should_revalidate_forged_nested_scale_instances() -> None:
+    # Given
+    forged = NativeScale.model_construct(minimum=2, maximum=1, direction=Direction.HIGHER_IS_BETTER)
+
+    # When / Then
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_scale"):
+        Component(id="quality", label="Quality", value=1, scale=forged)
+
+
+def test_should_revalidate_forged_components_entering_requests() -> None:
+    # Given
+    forged = Component.model_construct(
+        id="quality", label="Quality", value=math.nan, scale=_scale(), weight=1
+    )
+    payload = _weighted_request().model_dump()
+    payload["components"] = (forged,)
+
+    # When / Then
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
+        WeightedMeanRequest.model_validate(payload)
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
+        parse_request(payload)
+
+
+def test_should_revalidate_forged_explanations_entering_results() -> None:
+    # Given
+    forged = ExplainedComponent.model_construct(
+        id="quality", raw=1, normalized=1, operation="add", coefficient=1, contribution=math.inf
+    )
+    payload = _result().model_dump()
+    payload["components"] = (forged,)
+
+    # When / Then
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
+        ScoreResult.model_validate(payload)
+
+
+def test_should_refuse_to_serialize_forged_nonfinite_values_as_null() -> None:
+    # Given
+    forged = NativeScale.model_construct(
+        minimum=math.nan, maximum=1, direction=Direction.HIGHER_IS_BETTER
+    )
+
+    # When / Then
+    with pytest.raises(PydanticSerializationError, match=r"assay\.invalid_number"):
+        forged.model_dump_json()
+
+
+def test_should_reject_alias_and_field_name_duplicates_before_extras() -> None:
+    # Given
+    payload = _result().model_dump()
+    payload["schema_version"] = "assay.result/v1"
+    payload[_SENTINEL] = "private-value"
+
+    # When
+    with pytest.raises(ContractValidationError) as caught:
+        ScoreResult.model_validate(payload)
+
+    # Then
+    _assert_code_only(caught.value, "assay.duplicate_field")
+    _assert_redacted(caught.value, "assay.duplicate_field")
+
+
+def test_should_reject_conflicting_alias_validation_paths() -> None:
+    # Given
+    payload = _result().model_dump()
+
+    # When
+    with pytest.raises(ContractValidationError) as caught:
+        ScoreResult.model_validate(payload, by_alias=False, by_name=False)
+
+    # Then
+    _assert_code_only(caught.value, "assay.invalid_alias_config")
+
+
 @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
 def test_should_reject_nonfinite_scale_numbers(bad: float) -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_number"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
         NativeScale(minimum=bad, maximum=1, direction=Direction.HIGHER_IS_BETTER)
 
 
 @pytest.mark.parametrize(("minimum", "maximum"), [(1, 1), (2, 1)])
 def test_should_reject_nonincreasing_native_scales(minimum: float, maximum: float) -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_scale"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_scale"):
         NativeScale(
             minimum=minimum,
             maximum=maximum,
@@ -392,7 +557,7 @@ def test_should_reject_nonincreasing_native_scales(minimum: float, maximum: floa
 
 def test_should_require_an_explicit_scale_direction() -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError):
+    with pytest.raises(ContractValidationError):
         NativeScale(minimum=0, maximum=1)
 
 
@@ -409,47 +574,47 @@ def test_should_support_both_declared_directions() -> None:
 @pytest.mark.parametrize(("low", "high"), [(2, 1), (1, 1)])
 def test_should_reject_unordered_or_zero_width_intervals(low: float, high: float) -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_interval"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_interval"):
         Interval(low=low, high=high)
 
 
 @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
 def test_should_reject_nonfinite_interval_numbers(bad: float) -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_number"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
         Interval(low=0, high=bad)
 
 
 @pytest.mark.parametrize("identifier", ["", " space", "two words", "Uppercase", "a/b"])
 def test_should_reject_unstable_component_ids(identifier: str) -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_identifier"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_identifier"):
         _component(identifier)
 
 
 @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
 def test_should_reject_nonfinite_component_values_and_weights(bad: float) -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_number"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
         Component(id="value", label="Value", value=bad, scale=_scale(), weight=1)
-    with pytest.raises(ValidationError, match=r"assay\.invalid_number"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
         Component(id="weight", label="Weight", value=1, scale=_scale(), weight=bad)
 
 
 @pytest.mark.parametrize("weight", [0, -1])
 def test_should_reject_nonpositive_weighted_mean_weights(weight: float) -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_weight"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_weight"):
         _component(weight=weight)
 
 
 def test_should_require_nonempty_unique_weighted_components() -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.empty_components"):
+    with pytest.raises(ContractValidationError, match=r"assay\.empty_components"):
         WeightedMeanRequest(
             method="weighted_mean", method_version="northstar-v2", components=(), clamp="reject"
         )
-    with pytest.raises(ValidationError, match=r"assay\.duplicate_identifier"):
+    with pytest.raises(ContractValidationError, match=r"assay\.duplicate_identifier"):
         WeightedMeanRequest(
             method="weighted_mean",
             method_version="northstar-v2",
@@ -460,7 +625,7 @@ def test_should_require_nonempty_unique_weighted_components() -> None:
 
 def test_should_require_a_weight_for_every_weighted_component() -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.missing_weight"):
+    with pytest.raises(ContractValidationError, match=r"assay\.missing_weight"):
         WeightedMeanRequest(
             method="weighted_mean",
             method_version="northstar-v2",
@@ -474,7 +639,7 @@ def test_should_reject_out_of_range_components_without_clamping() -> None:
     component = Component(id="reliability", label="Reliability", value=16, scale=_scale(), weight=1)
 
     # When / Then
-    with pytest.raises(ValidationError, match=r"assay\.out_of_range"):
+    with pytest.raises(ContractValidationError, match=r"assay\.out_of_range"):
         WeightedMeanRequest(
             method="weighted_mean",
             method_version="northstar-v2",
@@ -491,13 +656,13 @@ def test_should_reject_out_of_range_components_without_clamping() -> None:
 
 def test_should_require_an_explicit_clamp_policy_for_every_request() -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError):
+    with pytest.raises(ContractValidationError):
         WeightedMeanRequest(
             method="weighted_mean", method_version="northstar-v2", components=(_component(),)
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ContractValidationError):
         AdditiveRequest(method="additive", method_version="edge-v1", terms=(_term(),))
-    with pytest.raises(ValidationError):
+    with pytest.raises(ContractValidationError):
         MinimumRequest(
             method="minimum", method_version="alma-v1", components=(_component(weight=None),)
         )
@@ -526,7 +691,7 @@ def test_should_support_both_explicit_clamp_policies() -> None:
 @pytest.mark.parametrize("coefficient", [-1, -0.1])
 def test_should_reject_negative_additive_coefficients(coefficient: float) -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_coefficient"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_coefficient"):
         AdditiveTerm(
             id="semantic",
             label="Semantic",
@@ -538,7 +703,7 @@ def test_should_reject_negative_additive_coefficients(coefficient: float) -> Non
 
 def test_should_require_explicit_additive_operations() -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError):
+    with pytest.raises(ContractValidationError):
         AdditiveTerm(id="semantic", label="Semantic", value=0.8, coefficient=0.75)
 
 
@@ -555,9 +720,9 @@ def test_should_support_add_and_subtract_operations() -> None:
 @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
 def test_should_reject_nonfinite_additive_numbers(bad: float) -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_number"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
         AdditiveTerm(id="term", label="Term", value=bad, coefficient=1, operation="add")
-    with pytest.raises(ValidationError, match=r"assay\.invalid_number"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
         AdditiveRequest(
             method="additive",
             method_version="edge-v1",
@@ -569,9 +734,9 @@ def test_should_reject_nonfinite_additive_numbers(bad: float) -> None:
 
 def test_should_require_nonempty_unique_additive_terms() -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.empty_terms"):
+    with pytest.raises(ContractValidationError, match=r"assay\.empty_terms"):
         AdditiveRequest(method="additive", method_version="edge-v1", terms=(), clamp="reject")
-    with pytest.raises(ValidationError, match=r"assay\.duplicate_identifier"):
+    with pytest.raises(ContractValidationError, match=r"assay\.duplicate_identifier"):
         AdditiveRequest(
             method="additive",
             method_version="edge-v1",
@@ -582,9 +747,9 @@ def test_should_require_nonempty_unique_additive_terms() -> None:
 
 def test_should_require_nonempty_unique_minimum_components() -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.empty_components"):
+    with pytest.raises(ContractValidationError, match=r"assay\.empty_components"):
         MinimumRequest(method="minimum", method_version="alma-v1", components=(), clamp="reject")
-    with pytest.raises(ValidationError, match=r"assay\.duplicate_identifier"):
+    with pytest.raises(ContractValidationError, match=r"assay\.duplicate_identifier"):
         MinimumRequest(
             method="minimum",
             method_version="alma-v1",
@@ -604,7 +769,7 @@ def test_should_reject_out_of_range_minimum_intervals_without_clamping() -> None
     )
 
     # When / Then
-    with pytest.raises(ValidationError, match=r"assay\.out_of_range"):
+    with pytest.raises(ContractValidationError, match=r"assay\.out_of_range"):
         MinimumRequest(
             method="minimum",
             method_version="alma-v1",
@@ -671,7 +836,7 @@ def test_should_round_trip_a_result_with_explicit_deterministic_interval() -> No
 @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
 def test_should_reject_nonfinite_result_and_explanation_numbers(bad: float) -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_number"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
         ExplainedComponent(
             id="reliability",
             raw=13,
@@ -680,7 +845,7 @@ def test_should_reject_nonfinite_result_and_explanation_numbers(bad: float) -> N
             coefficient=0.15,
             contribution=bad,
         )
-    with pytest.raises(ValidationError, match=r"assay\.invalid_number"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
         ScoreResult(
             method=Method(id="minimum", version="alma-v1"),
             score=bad,
@@ -692,7 +857,7 @@ def test_should_reject_nonfinite_result_and_explanation_numbers(bad: float) -> N
 
 def test_should_reject_malformed_result_input_hashes() -> None:
     # Given / When / Then
-    with pytest.raises(ValidationError, match=r"assay\.invalid_inputs_hash"):
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_inputs_hash"):
         ScoreResult(
             method=Method(id="minimum", version="alma-v1"),
             score=0.5,
@@ -707,7 +872,7 @@ def test_should_redact_caller_values_from_contract_errors() -> None:
     sentinel = "PII-SENTINEL-ALICE"
 
     # When
-    with pytest.raises(ValidationError) as caught:
+    with pytest.raises(ContractValidationError) as caught:
         Component(id=sentinel, label="Name", value=math.inf, scale=_scale(), weight=1)
 
     # Then
