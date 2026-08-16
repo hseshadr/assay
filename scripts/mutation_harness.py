@@ -22,9 +22,9 @@ Each mutation runs its named guard tests twice and then restores the file:
 The mutation is read back off disk before the second run, so an edit that silently
 failed to apply can never be reported as a guard that held.
 
-The active transitional set is limited to pure Assay Python scoring guards. Legacy
-Avow and TypeScript declarations remain inert below while the split is in progress;
-Task 9 owns the release-ready mutation lane.
+The active release set covers the complete Assay Python and TypeScript scoring
+surfaces plus the dependency-quarantine policy. Legacy Avow receipt and ledger
+declarations are intentionally absent: they are not part of the Assay distribution.
 
 Run it::
 
@@ -36,6 +36,7 @@ is clean in git.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -66,15 +67,26 @@ _METRICS = "src/assay/metrics.py"
 _CALIBRATION = "src/assay/calibration.py"
 _UNCERTAINTY = "src/assay/uncertainty.py"
 _OPTIONAL = "src/assay/_optional.py"
-_ENVELOPE = "src/avow/envelope.py"
-_LEDGER = "src/avow/ledger.py"
 _SETTINGS = "src/assay/settings.py"
-_VECTORS = "testdata/vectors/canonical.json"
 _METRIC_VECTORS = "testdata/vectors/metrics.json"
 _COMPOSITION_VECTORS = "testdata/vectors/composition.json"
 _PNPM_WORKSPACE = "ts/pnpm-workspace.yaml"
 _TS_RANKING = "ts/src/ranking.ts"
 _TS_METRICS = "ts/src/metrics.ts"
+_TS_NORMALIZE = "ts/src/normalize.ts"
+_TS_ADDITIVE = "ts/src/additive.ts"
+_TS_MINIMUM = "ts/src/minimum.ts"
+_TS_REQUEST_HASH = "ts/src/requestHash.ts"
+_TS_CONTRACTS = "ts/src/contracts.ts"
+
+_NODE_VERSION = "v22.13.0"
+_PNPM_VERSION = "11.5.0"
+_TS_ADDITIVE_ORDER_GUARD = (
+    "src/additive.test.ts::adds and subtracts left to right before applying the final policy"
+)
+_TS_VECTOR_REPLAY_GUARD = (
+    "src/compositionVectors.test.ts::executes every named vector with byte-equivalent result JSON"
+)
 
 
 class MutationNotAppliedError(RuntimeError):
@@ -113,14 +125,6 @@ def _replace_once(old: str, new: str) -> Callable[[str], str]:
         return text.replace(old, new)
 
     return edit
-
-
-def _drop_last_vector(text: str) -> str:
-    """Delete one golden vector, so a count the README states out loud stops being true."""
-    vectors = json.loads(text)
-    if len(vectors) < _MIN_VECTORS_TO_DROP_ONE:
-        raise MutationNotAppliedError("fewer than two vectors; nothing to drop")
-    return json.dumps(vectors[:-1], indent=2) + "\n"
 
 
 def _drop_last_metric_vector(text: str) -> str:
@@ -531,77 +535,6 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         ),
     ),
     # ----------------------------------------------------------------------------------
-    # The envelope: what a receipt actually proves.
-    # ----------------------------------------------------------------------------------
-    Mutation(
-        name="envelope-recomputes-the-payload-hash",
-        claim="verification re-derives the payload hash instead of believing the field",
-        target=_ENVELOPE,
-        guard=(
-            "tests/test_receipt.py::test_should_raise_payload_hash_mismatch_when_hash_is_tampered",
-        ),
-        edit=_replace_once(
-            '        raise PayloadHashMismatch("payload hash does not match payload content")',
-            "        pass",
-        ),
-    ),
-    Mutation(
-        name="envelope-pins-the-signer",
-        claim="a receipt carrying a key the caller did not pin is rejected before any maths",
-        target=_ENVELOPE,
-        guard=(
-            "tests/test_verify.py::test_should_code_a_pinned_key_mismatch_as_a_signer_mismatch",
-        ),
-        edit=_replace_once(
-            '        raise SignerMismatch("receipt public key is not the expected signer")',
-            "        pass",
-        ),
-    ),
-    # ----------------------------------------------------------------------------------
-    # The ledger: append-only means chained, counted and signed — three separate checks.
-    # ----------------------------------------------------------------------------------
-    Mutation(
-        name="ledger-chains-each-entry-to-the-one-before",
-        claim="the chain is walked link by link, not inferred from the last line",
-        target=_LEDGER,
-        # NOT the splice test, which this harness found survives with the link check
-        # deleted: a spliced entry also breaks the count, so the head pin catches it
-        # first. Only a rewritten interior prev_hash isolates the chain walk.
-        guard=("tests/test_ledger.py::test_should_reject_a_ledger_whose_chain_link_was_rewritten",),
-        edit=_replace_once(
-            "        raise LedgerIntegrityError("
-            'f"ledger entry {position} does not chain to the entry before it")',
-            "        pass",
-        ),
-    ),
-    Mutation(
-        name="ledger-requires-the-pinned-head",
-        claim="a self-consistent but truncated ledger is refused against the pinned head",
-        target=_LEDGER,
-        guard=("tests/test_ledger.py::test_should_reject_a_ledger_truncated_at_the_end",),
-        edit=_replace_once(
-            "        raise LedgerIntegrityError(\n"
-            '            f"ledger ends at {head.count} entries / {head.head_hash}, "\n'
-            '            f"but the pinned head is {expected_head.count} entries / '
-            '{expected_head.head_hash}"\n'
-            "        )",
-            "        pass",
-        ),
-    ),
-    Mutation(
-        name="ledger-verifies-every-entry-signature",
-        claim="a re-hashed forgery cannot launder itself past the pinned key",
-        target=_LEDGER,
-        guard=(
-            "tests/test_ledger.py::test_should_reject_a_rehashed_tampered_entry_without_the_signing_key",
-        ),
-        edit=_replace_once(
-            '        raise LedgerIntegrityError(f"tampered ledger entry: '
-            '{receipt.payload_hash}") from exc',
-            "        pass",
-        ),
-    ),
-    # ----------------------------------------------------------------------------------
     # The literals the docs promise. A constant asserted only against itself is
     # unguarded: `assert settings.min_samples == settings.min_samples` holds at any value.
     # ----------------------------------------------------------------------------------
@@ -631,15 +564,6 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_documented_constants.py::test_should_match_documented_default_ranking_cutoff",
         ),
         edit=_replace_once("    ranking_k: _RankingK = 10", "    ranking_k: _RankingK = 4"),
-    ),
-    Mutation(
-        name="documented-golden-vector-count-is-12",
-        claim="the README's 9 canonicalization vectors + 3 receipts are all still shipped",
-        target=_VECTORS,
-        guard=(
-            "tests/test_documented_constants.py::test_the_golden_vector_counts_the_readme_promises",
-        ),
-        edit=_drop_last_vector,
     ),
     # ----------------------------------------------------------------------------------
     # Not a claim about assay's maths — a claim about what assay will install. The
@@ -1527,6 +1451,187 @@ _COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
 )
 
 
+_TS_COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
+    Mutation(
+        name="ts-composition-honors-normalization-direction",
+        claim="lower-is-better normalization reverses the native scale",
+        target=_TS_NORMALIZE,
+        runner=_VITEST,
+        guard=("src/normalize.test.ts::executes every shared Python normalization vector",),
+        edit=_replace_once(
+            'scale.direction === "lower_is_better"',
+            'scale.direction === "higher_is_better"',
+        ),
+    ),
+    Mutation(
+        name="ts-additive-add-is-not-subtract",
+        claim="add and subtract terms use distinct ordered arithmetic",
+        target=_TS_ADDITIVE,
+        runner=_VITEST,
+        guard=(_TS_ADDITIVE_ORDER_GUARD,),
+        edit=_replace_once(
+            'operation === "add" ? total + amount : total - amount',
+            'operation === "add" ? total - amount : total + amount',
+        ),
+    ),
+    Mutation(
+        name="ts-additive-keeps-declaration-order",
+        claim="additive binary64 arithmetic follows declaration order",
+        target=_TS_ADDITIVE,
+        runner=_VITEST,
+        guard=(_TS_ADDITIVE_ORDER_GUARD,),
+        edit=_replace_once(
+            "  for (const item of rows)\n"
+            "    total = apply(total, item.contribution, item.operation);",
+            "  for (const item of [...rows].reverse())\n"
+            "    total = apply(total, item.contribution, item.operation);",
+        ),
+    ),
+    Mutation(
+        name="ts-additive-clamps-only-after-all-terms",
+        claim="the final clamp is applied after every ordered contribution",
+        target=_TS_ADDITIVE,
+        runner=_VITEST,
+        guard=(
+            "src/compositionVectors.test.ts::clamps additive output only after every "
+            "ordered contribution",
+        ),
+        edit=_replace_once(
+            "    total = apply(total, item.contribution, item.operation);",
+            "    total = final(apply(total, item.contribution, item.operation), request);",
+        ),
+    ),
+    Mutation(
+        name="ts-additive-subtraction-reverses-interval-endpoints",
+        claim="subtraction uses the high endpoint for the low aggregate bound",
+        target=_TS_ADDITIVE,
+        runner=_VITEST,
+        guard=(_TS_ADDITIVE_ORDER_GUARD,),
+        edit=_replace_once(
+            ': [apply(low, termHigh, "subtract"), apply(high, termLow, "subtract")];',
+            ': [apply(low, termLow, "subtract"), apply(high, termHigh, "subtract")];',
+        ),
+    ),
+    Mutation(
+        name="ts-additive-interval-collapses-after-final-clamp",
+        claim="equal final endpoints serialize as a deterministic null interval",
+        target=_TS_ADDITIVE,
+        runner=_VITEST,
+        guard=(
+            "src/additive.test.ts::collapses the final interval only after clamping its endpoints",
+        ),
+        edit=_replace_once(
+            "  return result.low === result.high ? null : result;",
+            "  return result;",
+        ),
+    ),
+    Mutation(
+        name="ts-minimum-ties-select-first-declared",
+        claim="minimum ties keep the first declared component",
+        target=_TS_MINIMUM,
+        runner=_VITEST,
+        guard=(
+            "src/minimum.test.ts::selects the first declared minimum and propagates "
+            "candidate bounds",
+        ),
+        edit=_replace_once(
+            "    if (candidate.contribution < selected.contribution) selected = candidate;",
+            "    if (candidate.contribution <= selected.contribution) selected = candidate;",
+        ),
+    ),
+    Mutation(
+        name="ts-minimum-selected-score-is-candidate-score",
+        claim="minimum score is the selected candidate contribution",
+        target=_TS_MINIMUM,
+        runner=_VITEST,
+        guard=("src/minimum.test.ts::supports mixed deterministic and uncertain candidates",),
+        edit=_replace_once(
+            "    score: selected.contribution,",
+            "    score: rows.at(-1)?.contribution ?? Number.NaN,",
+        ),
+    ),
+    Mutation(
+        name="ts-minimum-150k-selection-is-bounded-arity",
+        claim="minimum selection never spreads untrusted component counts into a call",
+        target=_TS_MINIMUM,
+        runner=_VITEST,
+        guard=(
+            "src/minimum.test.ts::composes a 150k-component accepted request without an "
+            "argument-limit failure",
+        ),
+        edit=_replace_once(
+            "  const selected = firstMinimum(rows);",
+            "  const selectedScore = Math.min(...rows.map((item) => item.contribution));\n"
+            "  const selected = rows.find((item) => item.contribution === selectedScore) "
+            "as ExplainedComponent;",
+        ),
+    ),
+    Mutation(
+        name="ts-request-hash-includes-term-order",
+        claim="additive declaration order changes the request digest",
+        target=_TS_REQUEST_HASH,
+        runner=_VITEST,
+        guard=(_TS_VECTOR_REPLAY_GUARD,),
+        edit=_replace_once(
+            "    request.terms.map(termToken),",
+            "    [...request.terms].reverse().map(termToken),",
+        ),
+    ),
+    Mutation(
+        name="ts-request-hash-includes-component-order",
+        claim="component declaration order changes the request digest",
+        target=_TS_REQUEST_HASH,
+        runner=_VITEST,
+        guard=(_TS_VECTOR_REPLAY_GUARD,),
+        edit=_replace_once(
+            "    request.components.map(componentToken),",
+            "    [...request.components].reverse().map(componentToken),",
+        ),
+    ),
+    Mutation(
+        name="ts-result-requires-selected-minimum-id",
+        claim="minimum replay rejects a forged selected component id",
+        target=_TS_CONTRACTS,
+        runner=_VITEST,
+        guard=("src/contractBoundaries.test.ts::rejects additive and minimum replay mutations",),
+        edit=_replace_once(
+            "    result.selected_component_id !== selected.id ||\n"
+            "    result.score !== selected.contribution",
+            "    result.score !== selected.contribution",
+        ),
+    ),
+    Mutation(
+        name="ts-result-interval-totality-is-checked",
+        claim="result replay requires null exactly when aggregate bounds collapse",
+        target=_TS_CONTRACTS,
+        runner=_VITEST,
+        guard=(
+            "src/contractBoundaries.test.ts::rejects weighted metadata, row, score, and "
+            "interval mutations",
+        ),
+        edit=_replace_once(
+            "  if (expected === null || expected[0] === expected[1]) return actual === null;",
+            "  if (expected === null || expected[0] === expected[1]) return true;",
+        ),
+    ),
+    Mutation(
+        name="ts-minimum-result-replay-scan-is-bounded-arity",
+        claim="minimum result validation scans large component sets without argument spreading",
+        target=_TS_CONTRACTS,
+        runner=_VITEST,
+        guard=(
+            "src/minimum.test.ts::keeps composition and result replay minimum scans bounded-arity",
+        ),
+        edit=_replace_once(
+            "  const selected = firstMinimum(result.components);",
+            "  const score = Math.min(...result.components.map((row) => row.contribution));\n"
+            "  const selected = result.components.find((row) => row.contribution === score) "
+            "as ExplainedComponent;",
+        ),
+    ),
+)
+
+
 def _is_allowed_assay_target(target: str) -> bool:
     """Admit Assay source plus the two exact Assay-owned vector files."""
     vector_targets = frozenset((_METRIC_VECTORS, _COMPOSITION_VECTORS))
@@ -1534,11 +1639,19 @@ def _is_allowed_assay_target(target: str) -> bool:
 
 
 def _is_active_assay_mutation(mutation: Mutation) -> bool:
-    """Keep only scoring guards whose targets remain in the Assay distribution."""
-    return mutation.runner == _PYTEST and _is_allowed_assay_target(mutation.target)
+    """Keep Assay scoring guards in both runtimes plus the exact quarantine guard."""
+    return (
+        mutation.runner == _VITEST
+        or _is_allowed_assay_target(mutation.target)
+        or mutation.target == _PNPM_WORKSPACE
+    )
 
 
-MUTATIONS = (*filter(_is_active_assay_mutation, _MIXED_PRODUCT_MUTATIONS), *_COMPOSITION_MUTATIONS)
+MUTATIONS = (
+    *filter(_is_active_assay_mutation, _MIXED_PRODUCT_MUTATIONS),
+    *_COMPOSITION_MUTATIONS,
+    *_TS_COMPOSITION_MUTATIONS,
+)
 
 
 @dataclass(frozen=True)
@@ -1578,6 +1691,48 @@ def _pytest(node_ids: Sequence[str]) -> int:
         check=False,
     )
     return completed.returncode
+
+
+def _typescript() -> int:
+    """Run the complete locked TypeScript suite and return its process exit code."""
+    completed = subprocess.run(  # noqa: S603
+        ["pnpm", "--dir", str(_TS), "test"],  # noqa: S607 - exact pinned CLI verified below
+        cwd=_ROOT,
+        check=False,
+    )
+    return completed.returncode
+
+
+def _tool_version(command: str) -> str:
+    completed = subprocess.run(  # noqa: S603
+        [command, "--version"], capture_output=True, text=True, check=False
+    )
+    return completed.stdout.strip() if completed.returncode == 0 else "unavailable"
+
+
+def _require_toolchain() -> bool:
+    node = _tool_version("node")
+    pnpm = _tool_version("pnpm")
+    if (node, pnpm) == (_NODE_VERSION, _PNPM_VERSION):
+        return True
+    print(
+        f"REFUSING: mutations require Node {_NODE_VERSION} / pnpm {_PNPM_VERSION}; "
+        f"got {node} / {pnpm}"
+    )
+    return False
+
+
+def _tree_snapshot() -> str:
+    """Hash the complete tracked diff and untracked-path inventory."""
+    commands = (
+        ["git", "diff", "--binary", "HEAD", "--", "."],
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )
+    digest = hashlib.sha256()
+    for command in commands:
+        completed = subprocess.run(command, cwd=_ROOT, capture_output=True, check=True)  # noqa: S603
+        digest.update(completed.stdout)
+    return digest.hexdigest()
 
 
 def _split_guards(guard: Sequence[str]) -> tuple[list[str], str]:
@@ -1721,31 +1876,37 @@ def _report(results: Sequence[Result]) -> None:
     print("=" * 108)
 
 
-def _restore_note(restored: int) -> str:
-    return "green" if restored == _ALL_PASSED else "NOT GREEN"
+def _restore_note(restored: tuple[int, int], tree_clean: bool) -> str:
+    return "green" if restored == (_ALL_PASSED, _ALL_PASSED) and tree_clean else "NOT GREEN"
 
 
-def _summarise(results: Sequence[Result], restored: int) -> int:
+def _summarise(results: Sequence[Result], restored: tuple[int, int], tree_clean: bool) -> int:
     """Exit non-zero if any guard survived its break, or if restore left the suite red."""
     fired = [result for result in results if result.held]
     print(f"\n{len(fired)}/{len(results)} guards fired when their claim was broken.")
-    print(f"whole suite after restore: exit {restored} ({_restore_note(restored)})")
-    if len(fired) < len(results):
+    print(
+        f"complete suites after restore: pytest={restored[0]}, pnpm={restored[1]}; "
+        f"whole-tree exact={tree_clean} ({_restore_note(restored, tree_clean)})"
+    )
+    if len(fired) < len(results) or not tree_clean:
         return _TESTS_FAILED
-    return restored
+    return max(restored)
 
 
 def main() -> int:
-    if not _require_clean_targets():
+    if not _require_toolchain() or not _require_clean_targets():
         return _TESTS_FAILED
-    print("baseline — the whole suite, unmutated")
-    if _pytest(()) != _ALL_PASSED:
-        print("REFUSING: the suite is not green before any mutation is applied.")
+    initial_tree = _tree_snapshot()
+    print("baseline — both complete suites, unmutated")
+    baseline = (_pytest(()), _typescript())
+    if baseline != (_ALL_PASSED, _ALL_PASSED):
+        print(f"REFUSING: baseline suites are not green: pytest={baseline[0]}, pnpm={baseline[1]}")
         return _TESTS_FAILED
     results = [_check(mutation) for mutation in MUTATIONS]
     _report(results)
-    print("\ngreen after restore — the whole suite again")
-    return _summarise(results, _pytest(()))
+    print("\ngreen after restore — both complete suites again")
+    restored = (_pytest(()), _typescript())
+    return _summarise(results, restored, _tree_snapshot() == initial_tree)
 
 
 if __name__ == "__main__":

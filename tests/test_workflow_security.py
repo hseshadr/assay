@@ -128,13 +128,14 @@ def test_scheduled_security_audit_covers_python_and_typescript() -> None:
     source = (ROOT / ".github/workflows/security-audit.yml").read_text(encoding="utf-8")
 
     assert isinstance(triggers, dict)
-    assert {"schedule", "workflow_dispatch"} <= set(triggers)
+    assert set(triggers) == {"push", "pull_request", "schedule"}
     assert isinstance(jobs, dict)
-    assert {"pip-audit", "pnpm-audit"} <= set(jobs)
-    assert "pnpm audit --audit-level low" in source
+    assert set(jobs) == {"secrets", "dependencies", "workflows"}
+    assert "uv export --frozen --all-groups --all-extras" in source
+    assert "pnpm --dir ts audit --audit-level high" in source
     package = json.loads((ROOT / "ts/package.json").read_text(encoding="utf-8"))
     version = package["packageManager"].removeprefix("pnpm@")
-    assert f"version: {version}" in source
+    assert f'version: "{version}"' in source
 
 
 def test_dependency_update_intake_covers_both_package_ecosystems() -> None:
@@ -160,50 +161,40 @@ def test_checkout_never_persists_push_credentials() -> None:
     assert offenders == []
 
 
-def test_should_fail_closed_while_publication_contract_is_pending() -> None:
+def test_should_accept_only_an_exact_release_identity() -> None:
     workflow = _yaml(ROOT / ".github/workflows/publish.yml")
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
-    assert jobs["publish-pypi"]["needs"] == "release-identity"
-    assert jobs["publish-npm"]["needs"] == "release-identity"
+    assert {"build", "preflight-python", "preflight-npm"} <= set(jobs)
+    assert "verify_release_identity.py" in str(jobs["build"])
     attempt = subprocess.run(
-        [sys.executable, "scripts/verify_release_identity.py", "v0.5.0.dev0"],
+        [sys.executable, "scripts/verify_release_identity.py", "v0.5.0-dev.0"],
         cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
     )
-    assert attempt.returncode == 1
-    assert attempt.stdout == ""
-    assert attempt.stderr.strip() == "publication disabled until Task 9 release hardening"
+    assert (attempt.returncode, attempt.stdout, attempt.stderr) == (
+        0,
+        "verified release identity: v0.5.0-dev.0\n",
+        "",
+    )
 
 
-def test_should_gate_every_publication_workflow_behind_disabled_release_guard() -> None:
-    # Given every tag-triggered publication workflow in this repository
-    workflows = sorted((ROOT / ".github/workflows").glob("publish*.yml"))
-    publications: list[str] = []
-    unguarded: list[str] = []
-
-    # When each OIDC or publication job's prerequisites are inspected
-    for workflow in workflows:
-        jobs = _yaml(workflow)["jobs"]
-        assert isinstance(jobs, dict)
-        for name, job in jobs.items():
-            if not _is_publication_job(name, job):
-                continue
-            publication = f"{workflow.name}:{name}"
-            publications.append(publication)
-            assert isinstance(job, dict)
-            if not any(_runs_disabled_release_guard(jobs.get(need)) for need in _needs(job)):
-                unguarded.append(publication)
-
-    # Then every publication rail is transitively blocked by the real disabled guard
-    assert workflows
-    assert publications
-    assert unguarded == []
+def test_should_gate_every_publication_lane_behind_both_preflights() -> None:
+    # Given the tag-triggered trusted-publication workflow
+    jobs = _yaml(ROOT / ".github/workflows/publish.yml")["jobs"]
+    assert isinstance(jobs, dict)
+    # When both OIDC-capable lanes are inspected
+    for name in ("publish-python", "publish-npm"):
+        job = jobs[name]
+        assert isinstance(job, dict)
+        # Then neither lane starts before both registries have failed closed or passed
+        assert {"build", "preflight-python", "preflight-npm"} <= set(_needs(job))
+        assert job["permissions"] == {"actions": "read", "id-token": "write"}
 
 
-def test_should_run_only_transitional_python_ci_gate() -> None:
+def test_should_run_the_complete_release_ci_contract() -> None:
     # Given / When
     workflow = _yaml(ROOT / ".github/workflows/ci.yml")
     jobs = workflow["jobs"]
@@ -211,10 +202,19 @@ def test_should_run_only_transitional_python_ci_gate() -> None:
 
     # Then
     assert isinstance(jobs, dict)
-    assert set(jobs) == {"gate", "gitleaks"}
-    assert "poe benchmark" not in source
-    assert "poe mutants" not in source
-    assert "pnpm" not in source
+    assert set(jobs) == {
+        "python",
+        "typescript",
+        "parity",
+        "mutation",
+        "example",
+        "benchmarks",
+        "artifacts",
+    }
+    assert "benchmarks.release" in source
+    assert "poe mutants" in source
+    assert 'node-version: "22.13.0"' in source
+    assert 'version: "11.5.0"' in source
 
 
 def test_should_activate_only_existing_assay_mutations() -> None:
@@ -227,6 +227,8 @@ def test_should_activate_only_existing_assay_mutations() -> None:
     assert targets
     assert all(
         target.startswith("src/assay/")
+        or target.startswith("ts/src/")
+        or target == "ts/pnpm-workspace.yaml"
         or target in {"testdata/vectors/metrics.json", "testdata/vectors/composition.json"}
         for target in targets
     )

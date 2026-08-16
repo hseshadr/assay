@@ -57,7 +57,7 @@ _MIGRATION_BOUNDARY_FILES = frozenset(
 def built_artifacts(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     out = tmp_path_factory.mktemp("artifacts")
     subprocess.run(  # noqa: S603 - fixed build command and test-owned output
-        ["uv", "build", "--out-dir", str(out)],  # noqa: S607
+        ["bash", "scripts/build_python_artifacts.sh", str(out)],  # noqa: S607
         cwd=_ROOT,
         check=True,
         capture_output=True,
@@ -113,14 +113,15 @@ def test_should_exclude_legacy_product_assets_from_the_sdist(
 ) -> None:
     _, sdist = built_artifacts
     names = _sdist_names(sdist)
+    source = {
+        f"/src/assay/{path.name.lower()}"
+        for path in (_ROOT / "src/assay").iterdir()
+        if path.is_file()
+    }
     assert not any(token in name for name in names for token in _LEGACY_PATHS)
     assert not any(name.endswith("/changelog.md") for name in names)
-    assert any(name.endswith("/pyproject.toml") for name in names)
-    assert any(name.endswith("/readme.md") for name in names)
-    assert sum("/tests/test_" in name and name.endswith(".py") for name in names) >= 20
-    assert any(name.endswith("/testdata/vectors/composition.json") for name in names)
-    assert any(name.endswith("/testdata/vectors/metrics.json") for name in names)
-    assert any(name.endswith("/testdata/vectors/normalize.json") for name in names)
+    expected = {"/license", "/pkg-info", "/readme.md", "/pyproject.toml"} | source
+    assert {name[name.index("/") :] for name in names} == expected
 
 
 def test_should_keep_one_bounded_integration_paragraph_and_no_legacy_product_copy(

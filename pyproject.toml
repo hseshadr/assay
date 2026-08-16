@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -40,6 +40,7 @@ cli = [
 
 [dependency-groups]
 dev = [
+    "hatchling==1.27.0",
     "pytest>=9.1.1",
     "pytest-cov>=6.0",
     "mypy>=2.2.0",
@@ -47,6 +48,7 @@ dev = [
     "xenon>=0.9",
     "radon>=6.0",
     "poethepoet>=0.48.0",
+    "pyyaml>=6.0.2,<7",
 ]
 
 [project.scripts]
@@ -65,20 +67,13 @@ path = "src/assay/_version.py"
 packages = ["src/assay"]
 
 [tool.hatch.build.targets.sdist]
-# Python-distribution sources only; the TypeScript package ships separately.
-only-include = [
-  "src",
-  "tests",
-  "testdata/vectors/composition.json",
-  "testdata/vectors/metrics.json",
-  "testdata/vectors/normalize.json",
-  "README.md",
-  "LICENSE",
+include = [
+  "/LICENSE",
+  "/README.md",
+  "/pyproject.toml",
+  "/src/assay",
 ]
-exclude = [
-  "/tests/test_repository_identity.py",
-  "/tests/test_scoring_artifacts.py",
-]
+exclude = ["/.gitignore"]
 
 [tool.ruff]
 target-version = "py313"
@@ -96,6 +91,8 @@ ignore = ["S101", "PLR0913"]
 "tests/test_cli_migration.py" = ["S603", "S607"]
 "tests/test_cli_privacy.py" = ["S603", "S607"]
 "tests/test_measurement.py" = ["S603", "S607"]
+"tests/test_release_contract.py" = ["S603", "S607"]
+"tests/test_workflow_contract.py" = ["S603", "S607"]
 # Domain errors use semantic names such as InvalidRankingRequest. They are the stable,
 # coded interface consumed across Assay's calculators, CLI, and tests.
 "src/assay/errors.py" = ["N818"]
@@ -153,18 +150,24 @@ fail_under = 90.0
 [tool.poe.tasks]
 # scripts/ is held to the same bar as src/ and tests/: the mutation harness is the thing
 # that proves the guards can fail, so it is not exempt from the gate that guards them.
-lint = "ruff check src/ tests/ scripts/"
-fmt-check = "ruff format --check src/ tests/ scripts/"
-fmt = "ruff format src/ tests/ scripts/"
-complexity = "xenon --max-absolute A --max-modules A --max-average A src/assay scripts"
+lint = "ruff check src/ tests/ scripts/ benchmarks/"
+fmt-check = "ruff format --check src/ tests/ scripts/ benchmarks/"
+fmt = "ruff format src/ tests/ scripts/ benchmarks/"
+complexity = "xenon --max-absolute A --max-modules A --max-average A src/assay scripts benchmarks"
 test = "pytest --cov=assay --cov-branch --cov-report=term-missing --cov-fail-under=90"
-# `gate` mirrors the transitional CI gate exactly: Python quality and tests only.
-# Task 9 owns release-ready performance and publication controls.
 gate = ["lint", "fmt-check", "typecheck", "complexity", "test"]
 
-# Pure Assay mutations remain available locally but are not yet a release CI claim.
-# Task 9 owns the release-ready mutation lane.
 mutants = "python scripts/mutation_harness.py"
+benchmark = "python -m benchmarks.release"
+workflow-contract = "pytest tests/test_workflow_contract.py tests/test_release_contract.py -q"
+workflow-lint = "actionlint"
+workflow-security = "uvx zizmor==1.29.0 --persona=pedantic --min-severity=low --offline --strict-collection .github"
+secrets = { shell = "gitleaks git --redact --no-banner --log-opts=--all . && gitleaks dir --redact --no-banner ." }
+audit-python = { shell = "uv export --frozen --all-groups --all-extras --no-emit-project --format requirements.txt --output-file /tmp/assay-audit-requirements.txt >/dev/null && uvx --from pip-audit==2.10.1 pip-audit --requirement /tmp/assay-audit-requirements.txt --require-hashes --strict --disable-pip --progress-spinner off" }
+audit-typescript = { shell = "pnpm --dir ts install --frozen-lockfile --ignore-scripts && pnpm --dir ts audit --audit-level high" }
+audit = ["audit-python", "audit-typescript"]
+artifacts = "bash scripts/build_release_artifacts.sh dist/release"
+release-candidate = "bash scripts/verify_release_candidate.sh"
 
 [tool.poe.tasks.typecheck]
-cmd = "mypy --strict src/assay scripts"
+cmd = "mypy --strict src/assay scripts benchmarks"

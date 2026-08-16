@@ -40,9 +40,11 @@
   "sideEffects": false,
   "scripts": {
     "build": "node scripts/clean.mjs && tsc -p tsconfig.build.json",
+    "clean": "node scripts/clean.mjs",
     "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --coverage",
+    "benchmark": "pnpm build && node benchmarks/release.mjs",
     "test:watch": "vitest",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

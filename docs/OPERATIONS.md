@@ -102,3 +102,29 @@ bash examples/run_composite.sh
 
 The exact package status and future registry identities are in the root [README](../README.md).
 Do not publish either package without a fresh, explicit authorization.
+
+## Frozen release benchmarks
+
+The benchmark gate measures scoring operations only; it does not reuse receipt or ledger claims.
+Every report includes the operation count, p50, p95, p99, peak RSS, exact SHA, operating system,
+and the exact Python or Node/pnpm toolchain.
+
+| Workload | Frozen count | p99 budget | Peak RSS budget |
+|---|---:|---:|---:|
+| Python composition batch | 2,000 compositions × 5 samples | 8,000 ms | 512 MiB |
+| TypeScript composition batch | 2,000 compositions × 5 samples | 8,000 ms | 512 MiB |
+| Python minimum compose + serialized replay | 150000 components | 60,000 ms | 1,536 MiB |
+| TypeScript minimum compose + serialized replay | 150000 components | 60,000 ms | 1,536 MiB |
+| Python binary measurement | 10000 items, exactly 99 bootstrap resamples | 30,000 ms | 768 MiB |
+
+The 10000-item binary workload uses 99 resamples, or 990,000 bootstrap work cells. It never uses
+the library default of 9,999 resamples and remains below Assay's 10,000,000-cell boundary. The
+150000-component workload is isolated in its own process because realistic runs can approach 1 GiB
+of memory; its budget is deliberately broad enough for `ubuntu-24.04` hosted runners.
+
+Run the same evidence locally with exact Node 22.13.0 and pnpm 11.5.0:
+
+```bash
+uv run python -m benchmarks.release
+cd ts && pnpm benchmark
+```

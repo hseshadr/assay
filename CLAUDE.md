@@ -15,7 +15,7 @@ uv run poe mutants
 cd ts
 NODE22=$(npx --yes --package=node@22.13.0 -c 'command -v node')
 COREPACK=$(npx --yes --package=corepack@0.34.0 -c 'command -v corepack')
-export PATH="$(dirname "$NODE22"):$(dirname "$COREPACK"):$PATH"
+PATH="$(dirname "$NODE22"):$(dirname "$COREPACK"):$PATH"
 node --version
 corepack pnpm --version
 corepack pnpm install --frozen-lockfile
@@ -26,6 +26,17 @@ corepack pnpm pack --pack-destination "${TMPDIR:-/tmp}/assay-pack"
 
 These commands select Node 22.13.0 and pnpm 11.5.0. The version lines must print
 `v22.13.0` and `11.5.0`; ambient tools can produce a different archive.
+
+The local release and security equivalents are executable through the task runner:
+
+```bash
+uv run poe release-candidate
+uv run poe audit
+uv run poe secrets
+uv run poe workflow-lint
+uv run poe workflow-security
+uv run poe benchmark
+```
 
 ## Layout
 
@@ -50,8 +61,11 @@ These commands select Node 22.13.0 and pnpm 11.5.0. The version lines must print
 ## Workflow
 
 - Use red -> green -> refactor. A behavior change starts with a failing test.
-- Run both language gates after shared-contract changes; current CI is intentionally Python-only
-  until the TypeScript release lane is restored.
+- CI has seven required jobs: Python 3.13, TypeScript on Node 22.13.0, parity, mutation
+  guards, installed-artifact example, frozen benchmarks, and release artifacts. Security
+  has three required jobs: full-history secrets, locked dependency audits, and workflow
+  security.
+- Run both complete language gates after shared-contract changes.
 - Keep TypeScript scoring modules above 90% branch, function, and line coverage per file.
 - `@edgeproc/assay@0.5.0-dev.0` is an unpublished local candidate. Do not publish, tag, or change
   release settings without explicit approval.

@@ -4,6 +4,15 @@
 
 ### Changed
 
+- The scoring-only release candidate now has independent Python 3.13 and Node 22.13.0
+  gates, cross-runtime parity, 120 mutation guards, installed-artifact examples, frozen
+  benchmarks, reproducible minimal artifacts, and fail-closed registry verification.
+- Release publication is tag-only and trusted-publisher-only. Existing byte-identical,
+  provenance-bound versions are safe to retry; stable and development channels never
+  move backward during out-of-order publication.
+- Security automation now scans the complete Git history and current tree with Gitleaks
+  8.30.1, audits both locked dependency graphs, and checks workflows with actionlint,
+  ShellCheck, and zizmor 1.29.0 in pedantic mode.
 - The split branch now identifies as the scoring-only `assay-engine` distribution,
   version `0.5.0.dev0`, and builds only the `assay` Python package.
 - The exact mixed-product `0.4.x` source line is preserved locally at
