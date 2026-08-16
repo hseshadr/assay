@@ -30,11 +30,17 @@ jobs:
           GITLEAKS_ENABLE_SUMMARY: "false"
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
           GITLEAKS_VERSION: "8.30.1"
+      - name: Remove action-generated SARIF
+        if: ${{ always() }}
+        run: rm -f -- results.sarif
       - name: Scan every commit and the current tree
         run: |
           gitleaks git --log-opts=--all --redact --no-banner .
           gitleaks dir --redact --no-banner .
-          test -z "$(git status --porcelain)"
+          test ! -e results.sarif
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
   dependencies:
     name: Locked dependency audits

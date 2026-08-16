@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -21,7 +22,8 @@ _PNPM_DOCUMENTS = (_ROOT / "QUICKSTART.md", _ROOT / "ts" / "README.md", _ROOT / 
 _DEMO_DOCUMENTS = (_ROOT / "README.md", _ROOT / "QUICKSTART.md", _ROOT / "ts" / "README.md")
 _MULTIPLY = "\N{MULTIPLICATION SIGN}"
 _ARCHIVE = "edgeproc-assay-0.5.0-dev.0.tgz"
-_ARCHIVE_SHA256 = "b5464cdf2fac0b8525451dc5d96f9f9446e9b205d875c57be838fc6113b4c5c9"
+_ARCHIVE_SHA256 = "04a6ac4a6a2004b25c3b680f512f65510b3bdd9954e5b7157363ba46a51cb7cc"
+_ARCHIVE_NORMALIZER = _ROOT / "ts" / "scripts" / "normalize-package-archive.mjs"
 _SHELL_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 _ARCHIVE_MEMBERS = (
     "package/LICENSE",
@@ -124,22 +126,46 @@ def _node_environment() -> tuple[Path, Path, dict[str, str]]:
     return node, pnpm, env
 
 
-def _pack_real_package(destination: Path) -> Path:
-    _node, pnpm, env = _node_environment()
-    completed = subprocess.run(  # noqa: S603 - pinned package manager
-        [str(pnpm), "--dir", "ts", "pack", "--pack-destination", str(destination)],
+def _run_node_tool(
+    command: list[str], env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - fixed repository tool and arguments
+        command,
         cwd=_ROOT,
         check=False,
         capture_output=True,
         text=True,
         env=env,
     )
+
+
+def _pack_real_package(destination: Path) -> Path:
+    node, pnpm, env = _node_environment()
+    completed = _run_node_tool(
+        [str(pnpm), "--dir", "ts", "pack", "--pack-destination", str(destination)], env
+    )
     assert completed.returncode == 0, completed.stderr
-    return destination / _ARCHIVE
+    archive = destination / _ARCHIVE
+    normalized = _run_node_tool([str(node), str(_ARCHIVE_NORMALIZER), str(archive)], env)
+    assert normalized.returncode == 0, normalized.stderr
+    return archive
 
 
 def _archive_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _normalize_archive(path: Path) -> subprocess.CompletedProcess[str]:
+    node = shutil.which("node")
+    assert node is not None
+    return _run_node_tool([node, str(_ARCHIVE_NORMALIZER), str(path)])
+
+
+def _gzip_with_os(os_byte: int) -> bytearray:
+    archive = bytearray(gzip.compress(b"assay-portable-archive", mtime=0))
+    archive[:9] = bytes.fromhex("1f8b08000000000000")
+    archive[9] = os_byte
+    return archive
 
 
 def _archive_members(path: Path) -> tuple[str, ...]:
@@ -254,6 +280,48 @@ def test_should_pack_the_exact_real_npm_artifact_from_the_demo(tmp_path: Path) -
     assert _archive_members(demo) == tuple(sorted(_ARCHIVE_MEMBERS))
     assert demo.read_bytes() == normal.read_bytes()
     assert _archive_hash(demo) == _ARCHIVE_SHA256
+
+
+def test_should_canonicalize_only_the_npm_gzip_os_byte(tmp_path: Path) -> None:
+    # Given equivalent gzip streams marked as macOS and Unix
+    macos, unix = _gzip_with_os(0x13), _gzip_with_os(0x03)
+    archive = tmp_path / "package.tgz"
+    archive.write_bytes(macos)
+    # When the shipped archive normalizer processes the macOS spelling
+    completed = _normalize_archive(archive)
+    # Then it emits the Unix-canonical bytes without touching the payload
+    assert completed.returncode == 0, completed.stderr
+    assert archive.read_bytes() == bytes(unix)
+    assert archive.read_bytes()[:9] + archive.read_bytes()[10:] == bytes(macos[:9] + macos[10:])
+
+
+@pytest.mark.parametrize(("offset", "value"), [(0, 0), (2, 0), (3, 1), (4, 1), (8, 2)])
+def test_should_reject_an_unexpected_gzip_header_without_mutation(
+    offset: int, value: int, tmp_path: Path
+) -> None:
+    # Given an archive whose fixed gzip header drifted from npm's reviewed format
+    unexpected = _gzip_with_os(0x13)
+    unexpected[offset] = value
+    archive = tmp_path / "unexpected.tgz"
+    archive.write_bytes(unexpected)
+    # When normalization is attempted
+    completed = _normalize_archive(archive)
+    # Then the boundary fails closed and preserves every input byte
+    assert (completed.returncode, completed.stderr) == (1, "expected canonical gzip header\n")
+    assert archive.read_bytes() == bytes(unexpected)
+
+
+def test_should_leave_a_canonical_gzip_archive_byte_identical(tmp_path: Path) -> None:
+    # Given an already canonical archive
+    archive = tmp_path / "canonical.tgz"
+    archive.write_bytes(_gzip_with_os(0x03))
+    before = archive.read_bytes()
+    # When normalization is repeated
+    completed = _normalize_archive(archive)
+    # Then it is idempotent and the payload still decompresses exactly
+    assert completed.returncode == 0, completed.stderr
+    assert archive.read_bytes() == before
+    assert gzip.decompress(archive.read_bytes()) == b"assay-portable-archive"
 
 
 @pytest.mark.parametrize("document", _PNPM_DOCUMENTS)

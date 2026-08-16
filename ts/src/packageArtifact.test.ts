@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 const PACKAGE_ROOT = new URL("..", import.meta.url);
 const ARCHIVE_NAME = "edgeproc-assay-0.5.0-dev.0.tgz";
 const EXPECTED_ARCHIVE_SHA256 =
-  "b5464cdf2fac0b8525451dc5d96f9f9446e9b205d875c57be838fc6113b4c5c9";
+  "04a6ac4a6a2004b25c3b680f512f65510b3bdd9954e5b7157363ba46a51cb7cc";
 const OPTIONAL_INTEGRATION =
   "Assay computes scores; Avow seals evidence. They are separate products and neither requires the other.";
 const EXPECTED_MEMBERS = [
@@ -59,7 +59,9 @@ function run(command: string, args: ReadonlyArray<string>): string {
 
 function pack(destination: string): string {
   run("pnpm", ["pack", "--pack-destination", destination]);
-  return join(destination, ARCHIVE_NAME);
+  const archive = join(destination, ARCHIVE_NAME);
+  run("node", ["scripts/normalize-package-archive.mjs", archive]);
+  return archive;
 }
 
 function archiveHash(path: string): string {

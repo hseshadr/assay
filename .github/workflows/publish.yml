@@ -43,6 +43,9 @@ jobs:
           GITLEAKS_ENABLE_SUMMARY: "false"
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
           GITLEAKS_VERSION: "8.30.1"
+      - name: Remove action-generated SARIF
+        if: ${{ always() }}
+        run: rm -f -- results.sarif
       - name: Install fixed actionlint
         run: |
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12

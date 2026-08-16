@@ -74,6 +74,8 @@ if [[ ${#TARBALLS[@]} -ne 1 || ! -f ${TARBALLS[0]} ]]; then
   echo "Expected exactly one @edgeproc/assay tarball" >&2
   exit 1
 fi
+run_step node-normalize "$NODE22" "$TS_COPY/scripts/normalize-package-archive.mjs" \
+  "${TARBALLS[0]}"
 if [[ -n ${ASSAY_EXAMPLE_ARTIFACT_DIR:-} ]]; then
   mkdir -p "$ASSAY_EXAMPLE_ARTIFACT_DIR"
   cp "${TARBALLS[0]}" "$ASSAY_EXAMPLE_ARTIFACT_DIR/"

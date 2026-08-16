@@ -49,6 +49,7 @@ _NPM_PUBLISHER_SHA512 = (
     "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf"
     "9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
 )
+_NPM_ARCHIVE_SHA256 = "04a6ac4a6a2004b25c3b680f512f65510b3bdd9954e5b7157363ba46a51cb7cc"
 
 
 def _mapping(value: object) -> dict[str, object]:
@@ -384,6 +385,58 @@ def test_should_verify_real_release_artifacts_through_clean_installs(tmp_path: P
     assert result.stdout == (
         "verified release artifacts: assay-engine 0.5.0.dev0 and @edgeproc/assay 0.5.0-dev.0\n"
     )
+    npm = next((artifacts / "npm").glob("*.tgz"))
+    assert hashlib.sha256(npm.read_bytes()).hexdigest() == _NPM_ARCHIVE_SHA256
+
+
+@pytest.mark.parametrize(
+    ("workflow", "job"),
+    [("security-audit.yml", "secrets"), ("publish.yml", "build")],
+)
+def test_should_remove_action_sarif_before_clean_tree_checks(
+    workflow: str, job: str, tmp_path: Path
+) -> None:
+    # Given the exact step after the pinned Gitleaks action and its generated report
+    steps = _steps(_job(_workflow(workflow), job))
+    action_index = next(i for i, step in enumerate(steps) if "gitleaks-action" in str(step))
+    cleanup = steps[action_index + 1]
+    report = tmp_path / "results.sarif"
+    unrelated = tmp_path / "unrelated.txt"
+    report.write_text("generated", encoding="utf-8")
+    unrelated.write_text("preserve", encoding="utf-8")
+    # When the workflow cleanup runs
+    result = subprocess.run(
+        ["bash", "-eu", "-c", str(cleanup["run"])],
+        cwd=tmp_path,
+        check=False,
+    )
+    # Then only the known action output is removed before repository cleanliness is asserted
+    assert result.returncode == 0
+    assert cleanup["name"] == "Remove action-generated SARIF"
+    assert cleanup["if"] == "${{ always() }}"
+    assert not report.exists()
+    assert unrelated.read_text(encoding="utf-8") == "preserve"
+
+
+def test_should_keep_secret_scan_cleanup_fail_closed() -> None:
+    # Given every workflow lane that invokes the pinned Gitleaks action
+    sites = (("security-audit.yml", "secrets"), ("publish.yml", "build"))
+    discovered = []
+    for workflow in _WORKFLOW_NAMES:
+        for job, value in _jobs(_workflow(workflow)).items():
+            if any("gitleaks-action" in str(step) for step in _steps(_mapping(value))):
+                discovered.append((workflow, job))
+    # Then each known lane is covered and the security lane proves the full tree clean
+    assert tuple(discovered) == sites
+    scan = _commands(_job(_workflow("security-audit.yml"), "secrets"))
+    assert "test ! -e results.sarif" in scan
+    assert "git diff --check" in scan
+    assert "git diff --exit-code" in scan
+    assert "git status --porcelain=v1 --untracked-files=all" in scan
+    ignored = subprocess.run(
+        ["git", "check-ignore", "results.sarif"], check=False, capture_output=True
+    )
+    assert ignored.returncode == 1
 
 
 def test_should_explain_node_22_requirement_before_running_release_gate(tmp_path: Path) -> None:

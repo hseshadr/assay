@@ -22,6 +22,8 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm gate
 mkdir -p "${TMPDIR:-/tmp}/assay-pack"
 corepack pnpm pack --pack-destination "${TMPDIR:-/tmp}/assay-pack"
+node scripts/normalize-package-archive.mjs \
+  "${TMPDIR:-/tmp}/assay-pack/edgeproc-assay-0.5.0-dev.0.tgz"
 ```
 
 These commands select Node 22.13.0 and pnpm 11.5.0. The version lines must print
