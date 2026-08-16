@@ -27,7 +27,7 @@
  * both at least one, so recall, FPR and FNR can never divide by zero.
  */
 
-import { InvalidScoreRequest } from "./scoringErrors.js";
+import { InvalidScoreRequest } from "./errors.js";
 
 /**
  * The default decision threshold, matching Python's `binary_scores(threshold=0.5)`.

@@ -1,0 +1,56 @@
+import { readFile } from "node:fs/promises";
+
+import { describe, expect, it } from "vitest";
+
+interface PackageManifest {
+  readonly dependencies?: Readonly<Record<string, string>>;
+  readonly name?: string;
+  readonly version?: string;
+}
+
+async function readManifest(): Promise<PackageManifest> {
+  const text = await readFile(
+    new URL("../package.json", import.meta.url),
+    "utf8",
+  );
+  return JSON.parse(text) as PackageManifest;
+}
+
+describe("the public Assay package boundary", () => {
+  it("uses the unpublished Assay candidate identity with no runtime dependencies", async () => {
+    const manifest = await readManifest();
+
+    expect(manifest.name).toBe("@edgeproc/assay");
+    expect(manifest.version).toBe("0.5.0-dev.0");
+    expect(manifest.dependencies ?? {}).toEqual({});
+  });
+
+  it("exports scoring but no evidence, key, receipt, or ledger API", async () => {
+    const api: Record<string, unknown> = await import("./index.js");
+    const names = Object.keys(api);
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "compose",
+        "additive",
+        "minimum",
+        "normalize",
+        "parseRequest",
+        "parseRequestJson",
+        "parseScoreResult",
+        "parseScoreResultJson",
+        "weightedMean",
+      ]),
+    );
+    expect(names).not.toEqual(
+      expect.arrayContaining([
+        "canonicalBytes",
+        "contentHash",
+        "generateSeedHex",
+        "publicKeyHex",
+        "signPayload",
+        "verifySignature",
+      ]),
+    );
+  });
+});

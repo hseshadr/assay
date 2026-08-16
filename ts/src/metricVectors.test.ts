@@ -16,6 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { AssayError, InvalidScoreRequest } from "./errors.js";
 import { binaryRates, confusionCounts, ratesFromCounts } from "./metrics.js";
 import {
   f1AtK,
@@ -24,7 +25,6 @@ import {
   precisionAtK,
   recallAtK,
 } from "./ranking.js";
-import { AssayError, InvalidScoreRequest } from "./scoringErrors.js";
 
 interface RankingCase {
   name: string;

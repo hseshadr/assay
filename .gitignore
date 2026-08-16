@@ -13,6 +13,7 @@ coverage.json
 .mypy_cache/
 .DS_Store
 .env
+.pnpm-debug.log
 
 # Local credentials and generated secret material.
 private.key

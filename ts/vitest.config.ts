@@ -8,7 +8,7 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       exclude: ["src/**/*.test.ts", "src/index.ts"],
-      // Kernel logic floor — the canonicalize + verify + pinned-key + tamper paths.
+      // Portable scoring logic must keep its input, method, and replay branches covered.
       thresholds: {
         lines: 90,
         functions: 90,

@@ -1,32 +1,18 @@
 {
-  "name": "@edgeproc/avow",
-  "version": "0.4.1",
+  "name": "@edgeproc/assay",
+  "version": "0.5.0-dev.0",
   "publishConfig": {
     "access": "public"
   },
   "type": "module",
-  "description": "Browser-side Avow trust kernel: RFC-8785 canonical bytes + Ed25519 sign/verify, plus recall@k / MRR / confusion-set metrics — all kept identical to the Python avow+assay faces by shared golden vectors.",
+  "description": "A small scoring engine that normalizes different measurements and explains one combined score.",
   "keywords": [
-    "ed25519",
-    "rfc8785",
-    "jcs",
-    "canonical-json",
-    "signed-receipt",
-    "digital-signature",
-    "tamper-evident",
-    "offline-verification",
-    "provenance",
-    "audit-log",
-    "cryptography",
-    "browser",
-    "typescript",
-    "metrics",
-    "recall-at-k",
-    "precision-at-k",
-    "mrr",
-    "confusion-matrix",
-    "information-retrieval",
-    "evaluation"
+    "scoring",
+    "normalization",
+    "weighted-mean",
+    "explainability",
+    "evaluation",
+    "typescript"
   ],
   "license": "MIT",
   "author": "Harish Seshadri",
@@ -40,8 +26,7 @@
     "node": ">=22.13"
   },
   "files": [
-    "dist",
-    "benchmarks"
+    "dist"
   ],
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -54,19 +39,16 @@
   },
   "sideEffects": false,
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.build.json",
+    "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
-    "benchmark": "tsc -p tsconfig.build.json && node benchmarks/release.mjs",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "gate": "biome check . && tsc -p tsconfig.json --noEmit && vitest run --coverage && tsc -p tsconfig.build.json && node benchmarks/release.mjs"
+    "gate": "biome check . && tsc -p tsconfig.json --noEmit && vitest run --coverage && pnpm build"
   },
-  "dependencies": {
-    "@noble/ed25519": "^3.1.0",
-    "canonicalize": "^3.0.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
     "@types/node": "^26.1.1",
