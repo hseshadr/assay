@@ -134,6 +134,27 @@ def _agreement_request() -> AgreementMeasurementRequest:
     )
 
 
+def _abstaining_agreement_result() -> AgreementMeasurementResult:
+    controls = _agreement_request().controls.model_copy(update={"min_samples": 4})
+    request = _agreement_request().model_copy(update={"controls": controls})
+    return measure(request)
+
+
+def _contradictory_agreement() -> tuple[AgreementMeasurementResult, dict[str, object]]:
+    result = _abstaining_agreement_result()
+    payload = result.model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    report["weighted_agreement"] = 0.1
+    return result, payload
+
+
+def _constructed_agreement(result: AgreementMeasurementResult) -> AgreementMeasurementResult:
+    forged = result.report.model_copy(update={"weighted_agreement": 0.1})
+    data = result.model_dump(exclude={"report"})
+    return AgreementMeasurementResult.model_construct(**data, report=forged)
+
+
 def test_should_return_binary_specific_report_without_universal_score(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -515,6 +536,98 @@ def test_should_reject_forged_agreement_result_invariants() -> None:
         AgreementMeasurementResult.model_validate(mismatch)
 
 
+def test_should_reject_weighted_agreement_below_exact_rate_in_constructor() -> None:
+    # Given an abstaining report claiming exact matches contribute less than one
+    result, payload = _contradictory_agreement()
+
+    # When / Then direct construction rejects the impossible weighted aggregate
+    with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
+        AgreementMeasurementResult(
+            metric="agreement",
+            metric_version=result.metric_version,
+            controls=result.controls,
+            report=payload["report"],
+        )
+
+
+def test_should_reject_weighted_agreement_below_exact_rate_in_json() -> None:
+    # Given an abstaining agreement wire with weighted agreement below 2/3
+    _, payload = _contradictory_agreement()
+
+    # When / Then JSON replay returns only the stable agreement-family code
+    with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
+        AgreementMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_reject_weighted_agreement_below_exact_rate_in_copy() -> None:
+    # Given a valid result and a contradictory report update
+    result, payload = _contradictory_agreement()
+
+    # When / Then validated copying cannot install the contradiction
+    with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
+        result.model_copy(update={"report": payload["report"]})
+
+
+def test_should_reject_constructed_weighted_contradiction_when_serializing() -> None:
+    # Given model_construct bypassed validation for an impossible agreement report
+    result, _ = _contradictory_agreement()
+    forged = _constructed_agreement(result)
+
+    # When / Then serialization revalidates and emits no forged number
+    with pytest.raises(
+        PydanticSerializationError, match=r"assay\.invalid_agreement_request"
+    ) as caught:
+        forged.model_dump_json(by_alias=True)
+    assert "0.1" not in str(caught.value)
+
+
+@pytest.mark.parametrize("field", ["quadratic_kappa", "kendall_tau_b"])
+def test_should_reject_nonperfect_statistic_from_all_exact_ratings(field: str) -> None:
+    # Given all ratings match but one correlation statistic claims 0.5
+    result = _constant_agreement_result()
+    payload = result.model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    report[field] = 0.5
+    report[f"{'kappa' if field == 'quadratic_kappa' else 'tau'}_undefined_reason"] = None
+
+    # When / Then replay refuses a defined all-exact statistic below one
+    with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
+        AgreementMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def _constant_agreement_result() -> AgreementMeasurementResult:
+    ratings = tuple(
+        OrdinalRating(item=str(index), rater_a="low", rater_b="low") for index in range(3)
+    )
+    request = _agreement_request().model_copy(update={"ratings": ratings})
+    return measure(request)
+
+
+def test_should_accept_degenerate_and_varying_all_exact_agreement_results() -> None:
+    # Given valid all-exact results with constant and varying ratings
+    constant = _constant_agreement_result()
+    varying_request = _agreement_request().model_copy(
+        update={
+            "ratings": tuple(
+                OrdinalRating(item=band, rater_a=band, rater_b=band)
+                for band in ("low", "middle", "high")
+            )
+        }
+    )
+    varying = measure(varying_request)
+
+    # When / Then undefined degeneracy and defined perfect correlation both replay
+    assert constant.report.quadratic_kappa is None
+    assert constant.report.kendall_tau_b is None
+    assert varying.report.quadratic_kappa == 1.0
+    assert varying.report.kendall_tau_b == 1.0
+    assert all(
+        type(result).model_validate_json(result.model_dump_json(by_alias=True)) == result
+        for result in (constant, varying)
+    )
+
+
 def test_should_redact_finite_integer_overflow_in_measurement_json() -> None:
     # Given a valid sub-limit JSON number whose binary64 conversion overflows
     huge = "9" * 1_000
@@ -539,6 +652,53 @@ def test_should_redact_finite_integer_overflow_in_measurement_json() -> None:
     # When / Then result replay returns the same stable family code
     with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
         BinaryMeasurementResult.model_validate_json(json.dumps(result))
+
+
+def test_should_map_oversized_ranking_gain_to_context_free_family_error() -> None:
+    # Given a valid ranking request whose gain is a 1,000-digit integer
+    huge = 10**999
+    payload = _ranking_request().model_dump(mode="json")
+    queries = payload["queries"]
+    assert isinstance(queries, list)
+    assert isinstance(queries[0], dict)
+    judgments = queries[0]["judgments"]
+    assert isinstance(judgments, list)
+    assert isinstance(judgments[0], dict)
+    judgments[0]["gain"] = huge
+
+    # When / Then constructor and JSON parsing use only the ranking family error
+    for operation in (
+        lambda: RelevanceInput(doc_id="a", gain=huge),
+        lambda: parse_measurement_json(json.dumps(payload)),
+    ):
+        with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$") as caught:
+            operation()
+        assert caught.value.__context__ is None
+        assert caught.value.__cause__ is None
+        assert str(huge) not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [_binary_request(), _ranking_request(), _agreement_request()],
+    ids=["binary", "ranking", "agreement"],
+)
+def test_should_map_oversized_confidence_to_context_free_settings_error(model: object) -> None:
+    # Given each family request with a 1,000-digit confidence level
+    assert isinstance(
+        model,
+        (BinaryMeasurementRequest, RankingMeasurementRequest, AgreementMeasurementRequest),
+    )
+    payload = model.model_dump(mode="json")
+    controls = payload["controls"]
+    assert isinstance(controls, dict)
+    controls["confidence_level"] = 10**999
+
+    # When / Then shared controls expose only the settings-family error without context
+    with pytest.raises(InvalidSettings, match=r"^assay\.invalid_settings$") as caught:
+        parse_measurement_json(json.dumps(payload))
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
 
 
 def test_should_reject_duplicate_measurement_request_json_members() -> None:

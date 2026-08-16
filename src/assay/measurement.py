@@ -115,20 +115,22 @@ _JsonValidationOptions = tuple[
 
 
 def _converted_float(value: int | float, error: type[Exception]) -> float:
+    failure: Exception
     try:
         return float(value)
     except OverflowError:
-        raise error from None
+        failure = error()
+    raise failure from None
 
 
-def _finite(value: object) -> float:
+def _finite(value: object, error: type[AssayError] = InvalidScoreRequest) -> float:
     if isinstance(value, bool):
-        raise InvalidScoreRequest
+        raise error
     if not isinstance(value, (int, float)):
-        raise InvalidScoreRequest
-    number = _converted_float(value, InvalidScoreRequest)
+        raise error
+    number = _converted_float(value, error)
     if not math.isfinite(number):
-        raise InvalidScoreRequest
+        raise error
     return 0.0 if number == 0.0 else number
 
 
@@ -158,10 +160,14 @@ def _nonnegative_int(value: object) -> int:
 
 
 def _confidence(value: object) -> float:
-    number = _finite(value)
+    number = _finite(value, InvalidSettings)
     if not 0.0 < number < 1.0:
         raise InvalidSettings
     return number
+
+
+def _ranking_finite(value: object) -> float:
+    return _finite(value, InvalidRankingRequest)
 
 
 def _identifier(value: object) -> str:
@@ -217,7 +223,7 @@ def _require_result_workload(sample_count: int, resamples: int, error: type[Assa
 
 
 type _Probability = Annotated[float, BeforeValidator(_probability)]
-type _Finite = Annotated[float, BeforeValidator(_finite)]
+type _RankingFinite = Annotated[float, BeforeValidator(_ranking_finite)]
 type _BinaryLabel = Annotated[int, BeforeValidator(_binary_label)]
 type _PositiveInt = Annotated[int, BeforeValidator(_positive_int)]
 type _NonnegativeInt = Annotated[int, BeforeValidator(_nonnegative_int)]
@@ -348,7 +354,7 @@ class RelevanceInput(_MeasurementModel):
 
     _error = InvalidRankingRequest
     doc_id: _SafeText
-    gain: Annotated[_Finite, Field(ge=0.0, le=MAX_RELEVANCE_GAIN)] = 1.0
+    gain: Annotated[_RankingFinite, Field(ge=0.0, le=MAX_RELEVANCE_GAIN)] = 1.0
 
     @model_validator(mode="after")
     def _require_integer_gain(self) -> RelevanceInput:
@@ -715,9 +721,24 @@ class _AgreementReportProof(_ProofModel):
             raise ValueError
         if self.percent_agreement != self.n_exact_matches / self.n_items:
             raise ValueError
+        _require_agreement_bounds(self)
         _require_reason_pair(self.quadratic_kappa, self.kappa_undefined_reason)
         _require_reason_pair(self.kendall_tau_b, self.tau_undefined_reason)
         return self
+
+
+def _require_agreement_bounds(report: _AgreementReportProof) -> None:
+    if report.weighted_agreement < report.percent_agreement:
+        raise ValueError
+    if report.n_exact_matches != report.n_items:
+        return
+    _require_perfect_if_defined(report.quadratic_kappa)
+    _require_perfect_if_defined(report.kendall_tau_b)
+
+
+def _require_perfect_if_defined(value: float | None) -> None:
+    if value is not None and value != 1.0:
+        raise ValueError
 
 
 def _require_reason_pair(value: float | None, reason: str | None) -> None:

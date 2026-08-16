@@ -228,6 +228,56 @@ def test_should_redact_finite_integer_overflow_from_installed_cli(
     assert "Traceback" not in completed.stderr
 
 
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        (
+            '{"metric":"ranking","metric_version":"ranking.2026-08",'
+            '"queries":[{"query":"q","judgments":[{"doc_id":"a","gain":HUGE}],'
+            '"ranked":["a"]}]}',
+            "assay.invalid_ranking_request",
+        ),
+        (
+            '{"metric":"binary","metric_version":"classification.2026-08",'
+            '"y_true":[0,1],"y_score":[0.1,0.9],"controls":{"confidence_level":HUGE}}',
+            "assay.invalid_settings",
+        ),
+        (
+            '{"metric":"ranking","metric_version":"ranking.2026-08",'
+            '"queries":[{"query":"q","judgments":[{"doc_id":"a","gain":1}],'
+            '"ranked":["a"]}],"controls":{"confidence_level":HUGE}}',
+            "assay.invalid_settings",
+        ),
+        (
+            '{"metric":"agreement","metric_version":"agreement.2026-08",'
+            '"scale":["low","high"],"ratings":'
+            '[{"item":"a","rater_a":"low","rater_b":"high"}],'
+            '"controls":{"confidence_level":HUGE}}',
+            "assay.invalid_settings",
+        ),
+    ],
+    ids=["ranking-gain", "binary-confidence", "ranking-confidence", "agreement-confidence"],
+)
+def test_should_redact_family_numeric_overflow_from_installed_cli(
+    installed_cli: Path, tmp_path: Path, payload: str, code: str
+) -> None:
+    # Given one valid sub-megabyte family wire containing a 1,000-digit integer
+    huge = "9" * 1_000
+    request = tmp_path / "PRIVATE_FAMILY_OVERFLOW.json"
+    request.write_text(payload.replace("HUGE", huge), encoding="utf-8")
+
+    # When the real CLI-only wheel parses the request
+    completed = _invoke(installed_cli, tmp_path, "measure", "--request", str(request))
+
+    # Then it returns the intended family code without values or exception context
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == f"FAIL: {code}\n"
+    assert huge not in completed.stderr
+    assert "OverflowError" not in completed.stderr
+    assert "Traceback" not in completed.stderr
+
+
 def test_should_reject_duplicate_json_members_from_every_installed_command(
     installed_cli: Path, tmp_path: Path
 ) -> None:
