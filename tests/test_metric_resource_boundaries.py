@@ -11,9 +11,9 @@ import pytest
 import scipy.stats
 import sklearn.calibration
 
-from assay import _optional
+from assay import BinaryMeasurementRequest, BinaryMetricControls, _optional, measure
 from assay.calibration import calibration_report
-from assay.errors import InvalidRankingRequest, InvalidScoreRequest
+from assay.errors import InvalidRankingRequest, InvalidScoreRequest, InvalidSettings
 from assay.metrics import confusion_counts
 from assay.ranking import ndcg_at_k
 from assay.uncertainty import mean_interval
@@ -171,3 +171,36 @@ def test_should_bound_scipy_batch_cells_for_accepted_bootstrap(
     assert isinstance(observed_batch, int)
     assert observed_batch * len(samples) <= 1_000_000
     assert (result.point, result.low, result.high) == (0.5, 0.25, 0.75)
+
+
+def test_should_revalidate_constructed_request_before_optional_dependency_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a model_construct request claiming 30 million resampled cells
+    controls = BinaryMetricControls.model_construct(
+        min_samples=30,
+        bootstrap_resamples=1_000_000,
+        confidence_level=0.95,
+        ece_bins=15,
+        bootstrap_seed=7,
+    )
+    request = BinaryMeasurementRequest.model_construct(
+        metric="binary",
+        metric_version="classification.2026-08",
+        y_true=tuple(index % 2 for index in range(30)),
+        y_score=tuple(0.75 if index % 2 else 0.25 for index in range(30)),
+        threshold=0.5,
+        controls=controls,
+    )
+    called = False
+
+    def mark_called() -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("assay.measurement.require_metrics_extra", mark_called)
+
+    # When / Then the public boundary revalidates before optional dependency resolution
+    with pytest.raises(InvalidSettings, match=r"^assay\.invalid_settings$"):
+        measure(request)
+    assert not called

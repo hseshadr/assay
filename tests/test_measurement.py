@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from pydantic_core import PydanticSerializationError
 
 from assay import (
     AgreementMeasurementRequest,
@@ -328,6 +329,120 @@ def test_should_reject_forged_binary_result_on_every_validation_path() -> None:
         BinaryMeasurementResult.model_validate(forged)
 
 
+def test_should_reject_binary_precision_that_disagrees_with_counts() -> None:
+    # Given a binary report claiming imperfect precision with zero false positives
+    result = measure(_binary_request())
+    report = result.report.model_dump(mode="python")
+    classification = report["classification"]
+    assert isinstance(classification, dict)
+    classification["precision"] = 0.125
+
+    # When / Then direct result construction refuses the contradictory summary
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult(
+            metric="binary",
+            metric_version=result.metric_version,
+            controls=result.controls,
+            report=report,
+        )
+
+
+def test_should_accept_generated_binary_summary_with_one_ulp_f1_rounding() -> None:
+    # Given counts whose sklearn F1 differs by one ULP from replayed precision/recall
+    request = BinaryMeasurementRequest(
+        metric="binary",
+        metric_version="classification.2026-08",
+        y_true=(1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0),
+        y_score=(0.9, 0.8, 0.7, 0.4, 0.3, 0.2, 0.9, 0.8, 0.7, 0.6, 0.2, 0.1),
+        controls=BinaryMetricControls(
+            min_samples=13,
+            bootstrap_resamples=19,
+            confidence_level=0.9,
+            ece_bins=4,
+            bootstrap_seed=7,
+        ),
+    )
+
+    # When the genuine native report is wrapped and replayed
+    result = measure(request)
+
+    # Then binary64 engine rounding remains accepted as the same derived summary
+    assert result.report.classification.counts.false_positives == 4
+    assert type(result).model_validate_json(result.model_dump_json(by_alias=True)) == result
+
+
+def test_should_reject_binary_ece_that_disagrees_with_reliability_bins() -> None:
+    # Given a wire whose bins still imply ECE 0.25 but whose summary claims 0.5
+    payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    calibration = report["calibration"]
+    assert isinstance(calibration, dict)
+    calibration["ece"] = 0.5
+
+    # When / Then JSON replay refuses the inconsistent calibration summary
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_reject_binary_calibration_population_that_disagrees_with_counts() -> None:
+    # Given internally consistent ECE bins that erase every observed positive
+    payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    calibration = report["calibration"]
+    assert isinstance(calibration, dict)
+    bins = calibration["bins"]
+    assert isinstance(bins, list)
+    assert isinstance(bins[1], dict)
+    bins[1]["fraction_positive"] = 0.0
+    calibration["ece"] = 0.5
+
+    # When / Then Python replay refuses the population contradiction
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate(payload)
+
+
+def test_should_reject_result_claiming_over_budget_bootstrap_work() -> None:
+    # Given a valid 30-item result edited to claim one million resamples
+    request = _binary_request().model_copy(
+        update={
+            "y_true": tuple(index % 2 for index in range(30)),
+            "y_score": tuple(0.75 if index % 2 else 0.25 for index in range(30)),
+            "controls": {**_binary_request().controls.model_dump(), "min_samples": 30},
+        }
+    )
+    result = measure(request)
+    controls = {**result.controls.model_dump(), "bootstrap_resamples": 1_000_000}
+
+    # When / Then validated copy rejects the claimed 30-million-cell workload
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        result.model_copy(update={"controls": controls})
+
+
+def test_should_revalidate_constructed_binary_summary_before_serializing() -> None:
+    # Given a model_construct result whose precision contradicts its native counts
+    result = measure(_binary_request())
+    scores = replace(result.report.classification, precision=0.125)
+    report = BinaryMeasurementReport.model_construct(
+        classification=scores,
+        calibration=result.report.calibration,
+        accuracy_interval=result.report.accuracy_interval,
+    )
+    forged = BinaryMeasurementResult.model_construct(
+        schema_version="assay.measurement/v1",
+        metric="binary",
+        metric_version=result.metric_version,
+        controls=result.controls,
+        report=report,
+    )
+
+    # When / Then the serialization boundary refuses the forged summary
+    with pytest.raises(PydanticSerializationError, match=r"assay\.invalid_request") as caught:
+        forged.model_dump_json(by_alias=True)
+    assert "0.125" not in str(caught.value)
+
+
 def test_should_reject_forged_ranking_result_invariants() -> None:
     # Given a ranking result whose counts, controls, and interval disagree
     result = measure(_ranking_request())
@@ -350,6 +465,28 @@ def test_should_reject_forged_ranking_result_invariants() -> None:
     # When / Then standalone result replay refuses the contradiction
     with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
         RankingMeasurementResult.model_validate(mismatch)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "mean_precision_at_k",
+        "mean_recall_at_k",
+        "mean_f1_at_k",
+        "mrr",
+        "mean_average_precision",
+    ],
+)
+def test_should_reject_ranking_aggregate_that_disagrees_with_query_rows(field: str) -> None:
+    # Given a ranking report whose aggregate no longer summarizes its query rows
+    payload = measure(_ranking_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    report[field] = 0.123
+
+    # When / Then replay refuses every contradictory aggregate with one family code
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        RankingMeasurementResult.model_validate_json(json.dumps(payload))
 
 
 def test_should_reject_forged_agreement_result_invariants() -> None:
@@ -376,6 +513,66 @@ def test_should_reject_forged_agreement_result_invariants() -> None:
     # When / Then direct replay refuses it
     with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
         AgreementMeasurementResult.model_validate(mismatch)
+
+
+def test_should_redact_finite_integer_overflow_in_measurement_json() -> None:
+    # Given a valid sub-limit JSON number whose binary64 conversion overflows
+    huge = "9" * 1_000
+    request = (
+        '{"metric":"binary","metric_version":"classification.2026-08",'
+        f'"y_true":[0,1],"y_score":[0.1,{huge}]}}'
+    )
+
+    # When / Then request parsing returns only the binary family code
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$") as caught:
+        parse_measurement_json(request)
+    assert huge not in repr(caught.value)
+
+    # Given the same value forged into a binary result wire
+    result = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = result["report"]
+    assert isinstance(report, dict)
+    classification = report["classification"]
+    assert isinstance(classification, dict)
+    classification["accuracy"] = int(huge)
+
+    # When / Then result replay returns the same stable family code
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(result))
+
+
+def test_should_reject_duplicate_measurement_request_json_members() -> None:
+    # Given a valid binary request with a conflicting repeated discriminator
+    payload = json.dumps(_binary_request().model_dump(mode="json"), separators=(",", ":"))
+    duplicate = payload.replace(
+        '"metric":"binary"', '"metric":"PRIVATE_FIRST","metric":"binary"', 1
+    )
+
+    # When / Then union and direct-model parsers reject it before last-wins validation
+    for parse in (parse_measurement_json, BinaryMeasurementRequest.model_validate_json):
+        with pytest.raises(AssayError, match=r"^assay\.duplicate_field$") as caught:
+            parse(duplicate)
+        assert "PRIVATE" not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(lambda: measure(_binary_request()), id="binary"),
+        pytest.param(lambda: measure(_ranking_request()), id="ranking"),
+        pytest.param(lambda: measure(_agreement_request()), id="agreement"),
+    ],
+)
+def test_should_reject_duplicate_measurement_result_json_members(result: object) -> None:
+    # Given a valid family result with a repeated metric member
+    measured = result()
+    payload = measured.model_dump_json(by_alias=True)
+    duplicate = payload.replace('"metric":', '"metric":"PRIVATE_FIRST","metric":', 1)
+
+    # When / Then its public result replay rejects the duplicate before family validation
+    with pytest.raises(AssayError, match=r"^assay\.duplicate_field$") as caught:
+        type(measured).model_validate_json(duplicate)
+    assert "PRIVATE" not in repr(caught.value)
 
 
 def test_should_execute_library_measurement_from_metrics_only_wheel(

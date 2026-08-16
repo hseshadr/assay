@@ -204,6 +204,67 @@ def test_should_redact_malformed_json_and_utf8(
     assert "Traceback" not in completed.stderr
 
 
+def test_should_redact_finite_integer_overflow_from_installed_cli(
+    installed_cli: Path, tmp_path: Path
+) -> None:
+    # Given valid sub-megabyte measurement JSON containing a private 1,000-digit integer
+    huge = "9" * 1_000
+    request = tmp_path / "PRIVATE_OVERFLOW.json"
+    request.write_text(
+        '{"metric":"binary","metric_version":"classification.2026-08",'
+        f'"y_true":[0,1],"y_score":[0.1,{huge}]}}',
+        encoding="utf-8",
+    )
+
+    # When the real CLI-only wheel parses the family contract
+    completed = _invoke(installed_cli, tmp_path, "measure", "--request", str(request))
+
+    # Then no numeric value, exception context, or traceback crosses the CLI boundary
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == "FAIL: assay.invalid_request\n"
+    assert "PRIVATE" not in completed.stderr
+    assert "OverflowError" not in completed.stderr
+    assert "Traceback" not in completed.stderr
+
+
+def test_should_reject_duplicate_json_members_from_every_installed_command(
+    installed_cli: Path, tmp_path: Path
+) -> None:
+    # Given duplicate-bearing composition, measurement, and result wires
+    compose_request = tmp_path / "PRIVATE_COMPOSE.json"
+    measure_request = tmp_path / "PRIVATE_MEASURE.json"
+    result = tmp_path / "PRIVATE_RESULT.json"
+    compose_payload = _request_payload().replace(
+        '"method": "weighted_mean"', '"method":"PRIVATE_FIRST","method":"weighted_mean"', 1
+    )
+    measure_payload = (
+        '{"metric":"PRIVATE_FIRST","metric":"binary",'
+        '"metric_version":"classification.2026-08","y_true":[0,1],"y_score":[0.1,0.9]}'
+    )
+    valid_request = tmp_path / "valid-request.json"
+    valid_request.write_text(_request_payload(), encoding="utf-8")
+    composed = _invoke(installed_cli, tmp_path, "compose", "--request", str(valid_request))
+    duplicate_result = composed.stdout.replace('"score":', '"score":0.0,"score":', 1)
+    compose_request.write_text(compose_payload, encoding="utf-8")
+    measure_request.write_text(measure_payload, encoding="utf-8")
+    result.write_text(duplicate_result, encoding="utf-8")
+
+    # When each installed command parses its public JSON boundary
+    completed = (
+        _invoke(installed_cli, tmp_path, "compose", "--request", str(compose_request)),
+        _invoke(installed_cli, tmp_path, "measure", "--request", str(measure_request)),
+        _invoke(installed_cli, tmp_path, "explain", "--result", str(result)),
+    )
+
+    # Then all reject before last-wins collapse with one redacted deterministic code
+    assert all(call.returncode == 2 for call in completed)
+    assert all(call.stdout == "" for call in completed)
+    assert all(call.stderr == "FAIL: assay.duplicate_field\n" for call in completed)
+    assert all("PRIVATE" not in call.stderr for call in completed)
+    assert all("Traceback" not in call.stderr for call in completed)
+
+
 def test_should_reject_oversized_or_nonregular_input_without_path_echo(
     installed_cli: Path, tmp_path: Path
 ) -> None:

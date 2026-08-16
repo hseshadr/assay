@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import math
 import re
 from collections.abc import Mapping
-from typing import Annotated, ClassVar, Literal, Self, cast, overload
+from typing import Annotated, ClassVar, Final, Literal, Self, cast, overload
 
 from pydantic import (
     BaseModel,
@@ -20,6 +19,7 @@ from pydantic import (
 )
 from pydantic.config import ExtraValues
 
+from assay._json import decode_json
 from assay.agreement import AgreementReport, agreement_report
 from assay.calibration import CalibrationReport, calibration_report
 from assay.errors import (
@@ -81,6 +81,24 @@ _MIN_SCALE_LEVELS = 2
 _BINARY_CLASS_COUNT = 2
 _SURROGATE_MIN = 0xD800
 _SURROGATE_MAX = 0xDFFF
+_SUMMARY_ULPS: Final[int] = 32
+_SUMMARY_TOLERANCE: Final[float] = _SUMMARY_ULPS * math.ulp(1.0)
+_RANKING_SUMMARY_FIELDS: Final[tuple[str, ...]] = (
+    "precision_at_k",
+    "recall_at_k",
+    "f1_at_k",
+    "ndcg_at_k",
+    "reciprocal_rank",
+    "average_precision",
+)
+_RANKING_REPORT_FIELDS: Final[tuple[str, ...]] = (
+    "mean_precision_at_k",
+    "mean_recall_at_k",
+    "mean_f1_at_k",
+    "mean_ndcg_at_k",
+    "mrr",
+    "mean_average_precision",
+)
 _OptionalBool = bool | None
 _OptionalExtra = ExtraValues | None
 _PythonValidationOptions = tuple[
@@ -96,10 +114,19 @@ _JsonValidationOptions = tuple[
 ]
 
 
+def _converted_float(value: int | float, error: type[Exception]) -> float:
+    try:
+        return float(value)
+    except OverflowError:
+        raise error from None
+
+
 def _finite(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool):
         raise InvalidScoreRequest
-    number = float(value)
+    if not isinstance(value, (int, float)):
+        raise InvalidScoreRequest
+    number = _converted_float(value, InvalidScoreRequest)
     if not math.isfinite(number):
         raise InvalidScoreRequest
     return 0.0 if number == 0.0 else number
@@ -184,6 +211,11 @@ def _require_workload(sample_count: int, resamples: int) -> None:
         raise InvalidSettings
 
 
+def _require_result_workload(sample_count: int, resamples: int, error: type[AssayError]) -> None:
+    if sample_count * resamples > MAX_BOOTSTRAP_WORK_CELLS:
+        raise error
+
+
 type _Probability = Annotated[float, BeforeValidator(_probability)]
 type _Finite = Annotated[float, BeforeValidator(_finite)]
 type _BinaryLabel = Annotated[int, BeforeValidator(_binary_label)]
@@ -195,10 +227,7 @@ type _SafeText = Annotated[str, BeforeValidator(_safe_text)]
 
 
 def _result_json(data: str | bytes | bytearray, error: type[AssayError]) -> Mapping[str, object]:
-    try:
-        decoded = json.loads(data)
-    except (ValueError, UnicodeDecodeError, TypeError, RecursionError):
-        raise error from None
+    decoded = decode_json(data, error)
     if not isinstance(decoded, Mapping):
         raise error
     return cast(Mapping[str, object], decoded)
@@ -211,7 +240,7 @@ class _MeasurementModel(BaseModel):
     def __init__(self, **data: object) -> None:
         try:
             super().__init__(**data)
-        except ValidationError:
+        except (ValidationError, OverflowError):
             raise self._error from None
 
     @classmethod
@@ -242,7 +271,7 @@ class _MeasurementModel(BaseModel):
                 by_alias=by_alias,
                 by_name=by_name,
             )
-        except ValidationError:
+        except (ValidationError, OverflowError):
             raise cls._error from None
 
     @classmethod
@@ -421,9 +450,11 @@ type MeasurementRequest = Annotated[
 
 
 def _proof_float(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool):
         raise ValueError
-    number = float(value)
+    if not isinstance(value, (int, float)):
+        raise ValueError
+    number = _converted_float(value, ValueError)
     if not math.isfinite(number):
         raise ValueError
     return 0.0 if number == 0.0 else number
@@ -511,6 +542,23 @@ def _count_total(counts: _CountsProof) -> int:
     )
 
 
+def _ratio(numerator: int, denominator: int) -> float:
+    return 0.0 if denominator == 0 else numerator / denominator
+
+
+def _harmonic(precision: float, recall: float) -> float:
+    return 0.0 if precision + recall == 0.0 else 2.0 * precision * recall / (precision + recall)
+
+
+def _classification_expected(counts: _CountsProof) -> tuple[float, ...]:
+    precision = _ratio(counts.true_positives, counts.true_positives + counts.false_positives)
+    recall = _ratio(counts.true_positives, counts.true_positives + counts.false_negatives)
+    accuracy = (counts.true_positives + counts.true_negatives) / _count_total(counts)
+    actual_positives = counts.true_positives + counts.false_negatives
+    false_negative_rate = _ratio(counts.false_negatives, actual_positives)
+    return accuracy, precision, recall, _harmonic(precision, recall), false_negative_rate
+
+
 class _ClassificationProof(_ProofModel):
     accuracy: _ProofProbability
     precision: _ProofProbability
@@ -523,11 +571,8 @@ class _ClassificationProof(_ProofModel):
 
     @model_validator(mode="after")
     def _require_count_rates(self) -> Self:
-        counts = self.counts
-        if self.accuracy != (counts.true_positives + counts.true_negatives) / _count_total(counts):
-            raise ValueError
-        positives = counts.true_positives + counts.false_negatives
-        if positives == 0 or self.false_negative_rate != counts.false_negatives / positives:
+        observed = (self.accuracy, self.precision, self.recall, self.f1, self.false_negative_rate)
+        if not _summaries_match(observed, _classification_expected(self.counts)):
             raise ValueError
         return self
 
@@ -546,6 +591,43 @@ class _CalibrationProof(_ProofModel):
     ]
 
 
+def _expected_ece(calibration: _CalibrationProof, total: int) -> float:
+    return sum(
+        row.count / total * abs(row.mean_predicted - row.fraction_positive)
+        for row in calibration.bins
+    )
+
+
+def _summary_matches(actual: float, expected: float) -> bool:
+    return math.isclose(actual, expected, rel_tol=0.0, abs_tol=_SUMMARY_TOLERANCE)
+
+
+def _summaries_match(observed: tuple[float, ...], expected: tuple[float, ...]) -> bool:
+    pairs = zip(observed, expected, strict=True)
+    return all(_summary_matches(actual, wanted) for actual, wanted in pairs)
+
+
+def _positive_population(calibration: _CalibrationProof) -> float:
+    return math.fsum(row.fraction_positive * row.count for row in calibration.bins)
+
+
+def _require_calibration_total(report: _BinaryReportProof, total: int) -> None:
+    if sum(row.count for row in report.calibration.bins) != total:
+        raise ValueError
+
+
+def _require_calibration_positives(report: _BinaryReportProof) -> None:
+    counts = report.classification.counts
+    actual_positives = counts.true_positives + counts.false_negatives
+    if not _summary_matches(_positive_population(report.calibration), actual_positives):
+        raise ValueError
+
+
+def _require_calibration_ece(report: _BinaryReportProof, total: int) -> None:
+    if report.calibration.ece != _expected_ece(report.calibration, total):
+        raise ValueError
+
+
 class _BinaryReportProof(_ProofModel):
     classification: _ClassificationProof
     calibration: _CalibrationProof
@@ -553,9 +635,10 @@ class _BinaryReportProof(_ProofModel):
 
     @model_validator(mode="after")
     def _require_same_population(self) -> Self:
-        observed = sum(row.count for row in self.calibration.bins)
-        if observed != _count_total(self.classification.counts):
-            raise ValueError
+        total = _count_total(self.classification.counts)
+        _require_calibration_total(self, total)
+        _require_calibration_positives(self)
+        _require_calibration_ece(self, total)
         return self
 
 
@@ -567,6 +650,28 @@ class _QueryProof(_ProofModel):
     ndcg_at_k: _ProofProbability
     reciprocal_rank: _ProofProbability
     average_precision: _ProofProbability
+
+    @model_validator(mode="after")
+    def _require_f1_summary(self) -> Self:
+        if not _summary_matches(self.f1_at_k, _harmonic(self.precision_at_k, self.recall_at_k)):
+            raise ValueError
+        return self
+
+
+def _mean(values: tuple[float, ...]) -> float:
+    return math.fsum(values) / len(values)
+
+
+def _query_values(rows: tuple[_QueryProof, ...], field: str) -> tuple[float, ...]:
+    return tuple(cast(float, getattr(row, field)) for row in rows)
+
+
+def _ranking_expected(rows: tuple[_QueryProof, ...]) -> tuple[float, ...]:
+    return tuple(_mean(_query_values(rows, field)) for field in _RANKING_SUMMARY_FIELDS)
+
+
+def _ranking_observed(report: _RankingReportProof) -> tuple[float, ...]:
+    return tuple(cast(float, getattr(report, field)) for field in _RANKING_REPORT_FIELDS)
 
 
 class _RankingReportProof(_ProofModel):
@@ -584,6 +689,8 @@ class _RankingReportProof(_ProofModel):
     @model_validator(mode="after")
     def _require_query_population(self) -> Self:
         if self.n_queries != len(self.per_query):
+            raise ValueError
+        if not _summaries_match(_ranking_observed(self), _ranking_expected(self.per_query)):
             raise ValueError
         return self
 
@@ -621,7 +728,7 @@ def _require_reason_pair(value: float | None, reason: str | None) -> None:
 def _prove(data: object, proof: type[_ProofModel], error: type[AssayError]) -> None:
     try:
         proof.model_validate(data)
-    except ValidationError:
+    except (ValidationError, OverflowError):
         raise error from None
 
 
@@ -725,6 +832,7 @@ class BinaryMeasurementResult(_MeasurementModel):
         )
         if len(self.report.calibration.bins) > self.controls.ece_bins:
             raise InvalidScoreRequest
+        _require_result_workload(count, self.controls.bootstrap_resamples, InvalidScoreRequest)
         return self
 
 
@@ -755,6 +863,9 @@ class RankingMeasurementResult(_MeasurementModel):
             self.report.mean_ndcg_at_k,
             InvalidRankingRequest,
         )
+        _require_result_workload(
+            self.report.n_queries, self.controls.bootstrap_resamples, InvalidRankingRequest
+        )
         return self
 
 
@@ -782,6 +893,9 @@ class AgreementMeasurementResult(_MeasurementModel):
             self.controls.min_samples,
             self.report.weighted_agreement,
             InvalidAgreementRequest,
+        )
+        _require_result_workload(
+            self.report.n_items, self.controls.bootstrap_resamples, InvalidAgreementRequest
         )
         return self
 
@@ -892,6 +1006,7 @@ def measure(request: AgreementMeasurementRequest) -> AgreementMeasurementResult:
 
 def measure(request: MeasurementRequest) -> MeasurementResult:
     """Execute one typed family after proving every optional dependency exists."""
+    request = _revalidate_request(request)
     require_metrics_extra()
     if request.metric == "binary":
         return _measure_binary(request)
@@ -900,11 +1015,16 @@ def measure(request: MeasurementRequest) -> MeasurementResult:
     return _measure_agreement(request)
 
 
+def _revalidate_request(request: MeasurementRequest) -> MeasurementRequest:
+    models = (BinaryMeasurementRequest, RankingMeasurementRequest, AgreementMeasurementRequest)
+    model = type(request)
+    if model not in models:
+        raise ContractValidationError
+    return model.model_validate(request)
+
+
 def _decoded(data: str | bytes | bytearray) -> Mapping[str, object]:
-    try:
-        decoded = json.loads(data)
-    except (ValueError, UnicodeDecodeError, TypeError, RecursionError):
-        raise ContractValidationError from None
+    decoded = decode_json(data, ContractValidationError)
     if not isinstance(decoded, Mapping):
         raise ContractValidationError
     return cast(Mapping[str, object], decoded)

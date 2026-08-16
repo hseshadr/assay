@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 import re
 from collections.abc import Mapping
@@ -23,6 +22,7 @@ from pydantic import (
 from pydantic.config import ExtraValues
 from pydantic.fields import FieldInfo
 
+from assay._json import decode_json
 from assay.errors import ContractCode, ContractValidationError
 
 __all__ = [
@@ -100,12 +100,7 @@ def _fail(code: ContractCode) -> NoReturn:
 
 
 def _decode_json(data: _JsonData) -> object:
-    error: ContractValidationError
-    try:
-        return json.loads(data)
-    except (ValueError, UnicodeDecodeError, TypeError):
-        error = ContractValidationError(ContractCode.INVALID_CONTRACT)
-    raise error from None
+    return decode_json(data, ContractValidationError)
 
 
 def _finite(value: object) -> float:

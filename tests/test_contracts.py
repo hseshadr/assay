@@ -679,6 +679,32 @@ def test_should_reject_alias_and_field_name_duplicates_before_extras() -> None:
     _assert_redacted(caught.value, "assay.duplicate_field")
 
 
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "nested"])
+def test_should_reject_duplicate_json_members_before_contract_validation(nested: bool) -> None:
+    # Given valid request JSON with the same decoded object member declared twice
+    payload = _weighted_request().model_dump_json(by_alias=True)
+    target = '"value":13.0' if nested else '"method":"weighted_mean"'
+    first = '"value":1.0,"value":13.0' if nested else f'"method":"{_SENTINEL}",{target}'
+    duplicate = payload.replace(target, first, 1)
+
+    # When / Then the parser refuses root and nested duplicates before last-wins collapse
+    with pytest.raises(ContractValidationError) as caught:
+        parse_request_json(duplicate)
+    _assert_code_only(caught.value, "assay.duplicate_field")
+    assert _SENTINEL not in repr(caught.value)
+
+
+def test_should_reject_duplicate_json_members_from_score_result_replay() -> None:
+    # Given a valid result wire with two conflicting score members
+    payload = _result().model_dump_json(by_alias=True)
+    duplicate = payload.replace('"score":', '"score":0.0,"score":', 1)
+
+    # When / Then public result replay rejects it before arithmetic validation
+    with pytest.raises(ContractValidationError) as caught:
+        ScoreResult.model_validate_json(duplicate)
+    _assert_code_only(caught.value, "assay.duplicate_field")
+
+
 def test_should_reject_conflicting_alias_validation_paths() -> None:
     # Given
     payload = _result().model_dump()

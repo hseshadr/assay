@@ -135,12 +135,21 @@ def _validate_positive_count(value: int, maximum: int) -> None:
 
 
 def _validate_confidence(value: float) -> None:
-    if isinstance(value, bool) or not math.isfinite(value) or not 0.0 < value < 1.0:
+    if not _is_finite_number(value) or not 0.0 < value < 1.0:
         raise InvalidScoreRequest
 
 
+def _is_finite_number(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _validate_samples(samples: Sequence[float]) -> None:
-    if len(samples) > MAX_ITEMS or not all(math.isfinite(sample) for sample in samples):
+    if len(samples) > MAX_ITEMS or not all(_is_finite_number(sample) for sample in samples):
         raise InvalidScoreRequest
 
 

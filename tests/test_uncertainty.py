@@ -82,3 +82,25 @@ def test_should_refuse_invalid_interval_bounds_with_stable_code(
         )
     # Then the error is stable and contains no caller value
     assert str(caught.value) == "assay.invalid_request"
+
+
+@pytest.mark.parametrize(
+    ("samples", "confidence_level"),
+    [
+        ([0.0, 10**999], 0.95),
+        ([0.0, 1.0], 10**999),
+    ],
+)
+def test_should_redact_finite_integer_overflow_at_uncertainty_boundary(
+    samples: list[float], confidence_level: float
+) -> None:
+    # Given a valid Python integer whose binary64 conversion overflows
+    # When / Then the direct public face returns only its stable family code
+    with pytest.raises(InvalidScoreRequest, match=r"^assay\.invalid_request$"):
+        mean_interval(
+            samples,
+            min_samples=2,
+            n_resamples=9,
+            confidence_level=confidence_level,
+            seed=0,
+        )
