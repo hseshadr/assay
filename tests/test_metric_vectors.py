@@ -2,16 +2,14 @@
 
 ``testdata/vectors/metrics.json`` is replayed here against the Python face and, file
 for file and case for case, by ``ts/src/metricVectors.test.ts`` against
-``@edgeproc/avow``. Python delegates to ``trec_eval`` (through ``ir_measures``) and
+the TypeScript consumer. Python delegates to ``trec_eval`` (through ``ir_measures``) and
 scikit-learn; TypeScript counts the same quantities out against their definitions.
 Two implementations of one rule is exactly the arrangement that drifts, so the two
 are pinned to a single set of hand-computed answers and a divergence fails CI in
 both languages.
 
-Unlike ``canonical.json`` and ``receipts.json``, this file is **not** generated.
-Those hold bytes and signatures nobody could author by hand. Every number here was
-computed from the metric's definition (the ``hand`` field on each case carries the
-arithmetic) and never read back out of the code under test.
+Every number here was computed from the metric's definition (the ``hand`` field on
+each case carries the arithmetic) and never read back out of the code under test.
 
 *How the confusion cells are pinned.* ``assay.metrics`` on this branch returns
 rates, not named cells, so the four cells cannot be asserted against a Python

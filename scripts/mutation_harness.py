@@ -22,27 +22,20 @@ Each mutation runs its named guard tests twice and then restores the file:
 The mutation is read back off disk before the second run, so an edit that silently
 failed to apply can never be reported as a guard that held.
 
-**It breaks TypeScript too.** Half the guards below live in ``ts/src``, because half
-the claims do: ``@edgeproc/avow`` ships the same metrics as the Python face and is
-pinned to it by shared golden vectors. A guard that only Python can break is a guard
-that only defends Python. Vitest's verdict is read from the JSON reporter's
-pass/fail counts rather than its exit code, and that is not a stylistic choice —
-``vitest run -t 'no-such-test'`` **exits 0**, reporting every test in the file as
-"total" while running none of them. An exit-code reading of that is a green baseline
-for a guard that does not exist. ``numPassedTests`` is the only field that says
-something ran. If the reporter writes no file at all — which is what a misspelled
-reporter name does — that is a harness error, never a verdict.
+The active release set covers the complete Assay Python and TypeScript scoring
+surfaces plus the dependency-quarantine policy.
 
 Run it::
 
     uv run poe mutants
 
 It edits tracked files in place, so it refuses to start unless every file it will touch
-is clean in git. The TypeScript half needs ``ts/node_modules`` installed.
+is clean in git.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -64,20 +57,35 @@ _NOTHING_COLLECTED = 5
 _PYTEST = "pytest"
 _VITEST = "vitest"
 
-# A one-item file has nothing to drop, so the vector-count mutation could not apply.
 _MIN_VECTORS_TO_DROP_ONE = 2
+_GENERATED_ROOTS = ("dist/publish-tools", "dist/release", "publish-tools", "release")
 
 _RANKING = "src/assay/ranking.py"
 _AGREEMENT = "src/assay/agreement.py"
 _METRICS = "src/assay/metrics.py"
-_ENVELOPE = "src/avow/envelope.py"
-_LEDGER = "src/avow/ledger.py"
+_CALIBRATION = "src/assay/calibration.py"
+_UNCERTAINTY = "src/assay/uncertainty.py"
+_OPTIONAL = "src/assay/_optional.py"
 _SETTINGS = "src/assay/settings.py"
-_VECTORS = "testdata/vectors/canonical.json"
 _METRIC_VECTORS = "testdata/vectors/metrics.json"
+_COMPOSITION_VECTORS = "testdata/vectors/composition.json"
 _PNPM_WORKSPACE = "ts/pnpm-workspace.yaml"
 _TS_RANKING = "ts/src/ranking.ts"
 _TS_METRICS = "ts/src/metrics.ts"
+_TS_NORMALIZE = "ts/src/normalize.ts"
+_TS_ADDITIVE = "ts/src/additive.ts"
+_TS_MINIMUM = "ts/src/minimum.ts"
+_TS_REQUEST_HASH = "ts/src/requestHash.ts"
+_TS_CONTRACTS = "ts/src/contracts.ts"
+
+_NODE_VERSION = "v22.13.0"
+_PNPM_VERSION = "11.5.0"
+_TS_ADDITIVE_ORDER_GUARD = (
+    "src/additive.test.ts::adds and subtracts left to right before applying the final policy"
+)
+_TS_VECTOR_REPLAY_GUARD = (
+    "src/compositionVectors.test.ts::executes every named vector with byte-equivalent result JSON"
+)
 
 
 class MutationNotAppliedError(RuntimeError):
@@ -118,14 +126,6 @@ def _replace_once(old: str, new: str) -> Callable[[str], str]:
     return edit
 
 
-def _drop_last_vector(text: str) -> str:
-    """Delete one golden vector, so a count the README states out loud stops being true."""
-    vectors = json.loads(text)
-    if len(vectors) < _MIN_VECTORS_TO_DROP_ONE:
-        raise MutationNotAppliedError("fewer than two vectors; nothing to drop")
-    return json.dumps(vectors[:-1], indent=2) + "\n"
-
-
 def _drop_last_metric_vector(text: str) -> str:
     """Delete one shared metric case, so the count the README promises stops being true."""
     vectors = json.loads(text)
@@ -135,6 +135,11 @@ def _drop_last_metric_vector(text: str) -> str:
     return json.dumps(vectors, indent=2) + "\n"
 
 
+def _zero_composition_vectors(_text: str) -> str:
+    """Remove every composition oracle so non-vacuous replay must fail."""
+    return "[]\n"
+
+
 def _delete_throw(statement: str) -> Callable[[str], str]:
     """Remove a refusal, leaving its ``if`` block empty but syntactically valid.
 
@@ -142,7 +147,7 @@ def _delete_throw(statement: str) -> Callable[[str], str]:
     return _replace_once(statement, "      // mutated: this refusal was deleted")
 
 
-MUTATIONS: tuple[Mutation, ...] = (
+_MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
     # ----------------------------------------------------------------------------------
     # The ranking metrics are trec_eval's arithmetic, reached through ir_measures.
     # Every mutation below breaks the WIRING to that engine, not assay's own maths.
@@ -170,8 +175,8 @@ MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_ranking.py::test_should_charge_for_the_empty_positions_when_k_exceeds_the_list",
         ),
         edit=_replace_once(
-            "    return _score(relevant, ranked, P @ k)",
-            "    return _score(relevant, ranked, P @ 1)",
+            '    return _score(relevant, ranked, _cut("P", k))',
+            '    return _score(relevant, ranked, _cut("P", 1))',
         ),
     ),
     Mutation(
@@ -183,8 +188,8 @@ MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_ranking.py::test_should_separate_precision_from_recall_when_relevant_set_is_larger_than_k",
         ),
         edit=_replace_once(
-            "    return _score(relevant, ranked, R @ k)",
-            "    return _score(relevant, ranked, P @ k)",
+            '    return _score(relevant, ranked, _cut("R", k))',
+            '    return _score(relevant, ranked, _cut("P", k))',
         ),
     ),
     Mutation(
@@ -209,8 +214,8 @@ MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_ranking.py::test_should_divide_average_precision_by_the_full_relevant_set",
         ),
         edit=_replace_once(
-            "    return _score(relevant, ranked, AP)",
-            "    return _score(relevant, ranked, RR)",
+            '    return _score(relevant, ranked, load_object("ir_measures", "AP"))',
+            '    return _score(relevant, ranked, load_object("ir_measures", "RR"))',
         ),
     ),
     Mutation(
@@ -221,6 +226,16 @@ MUTATIONS: tuple[Mutation, ...] = (
         edit=_replace_once(
             "    return 2 * precision * recall / (precision + recall)",
             "    return (precision + recall) / 2",
+        ),
+    ),
+    Mutation(
+        name="ranking-means-preserve-numpy-rounding",
+        claim="ranking aggregates preserve their published binary64 bit patterns",
+        target=_RANKING,
+        guard=("tests/test_ranking.py::test_should_preserve_numpy_map_rounding_bit_for_bit",),
+        edit=_replace_once(
+            '    raw = call_dependency(load_callable("numpy", "mean"), values)',
+            '    raw = __import__("statistics").fmean(values)',
         ),
     ),
     # ----------------------------------------------------------------------------------
@@ -243,9 +258,22 @@ MUTATIONS: tuple[Mutation, ...] = (
         target=_RANKING,
         guard=("tests/test_ranking.py::test_should_refuse_a_fractional_relevance_gain",),
         edit=_replace_once(
-            "            raise InvalidRankingRequest("
-            'f"relevance gain for {doc!r} is not whole: {gain}")',
-            "            pass",
+            "    if gain != int(gain):\n        raise InvalidRankingRequest",
+            "    if gain != int(gain):\n        pass",
+        ),
+    ),
+    Mutation(
+        name="ranking-refuses-a-nonfinite-gain",
+        claim="a non-finite relevance grade is refused before it reaches trec_eval",
+        target=_RANKING,
+        guard=(
+            "tests/test_ranking.py::test_should_refuse_nonfinite_relevance_gain_without_echoing_id",
+        ),
+        edit=_replace_once(
+            "    if not math.isfinite(gain):\n        raise InvalidRankingRequest\n"
+            "    if not 0 <= gain <= MAX_RELEVANCE_GAIN:\n        raise InvalidRankingRequest",
+            "    if not math.isfinite(gain):\n        pass\n"
+            "    if not 0 <= gain <= MAX_RELEVANCE_GAIN:\n        pass",
         ),
     ),
     Mutation(
@@ -278,9 +306,8 @@ MUTATIONS: tuple[Mutation, ...] = (
         # complain: it sorts the band names instead, so weak/moderate/strong silently
         # becomes moderate < strong < weak and the SAME ratings score +2/3 instead of -1/3.
         edit=_replace_once(
-            "    return float(cohen_kappa_score(rater_a, rater_b, "
-            'labels=list(scale), weights="quadratic"))',
-            '    return float(cohen_kappa_score(rater_a, rater_b, weights="quadratic"))',
+            '            labels=list(scale),\n            weights="quadratic",',
+            '            weights="quadratic",',
         ),
     ),
     Mutation(
@@ -294,8 +321,8 @@ MUTATIONS: tuple[Mutation, ...] = (
         # Unweighted kappa scores the two rater pairs in that first test IDENTICALLY
         # (1/3 each), which is precisely the blindness the weighting exists to remove.
         edit=_replace_once(
-            'labels=list(scale), weights="quadratic"))',
-            "labels=list(scale)))",
+            '            weights="quadratic",',
+            "            weights=None,",
         ),
     ),
     Mutation(
@@ -306,8 +333,8 @@ MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_agreement.py::test_should_correct_tau_for_ties_the_three_band_scale_forces",
         ),
         edit=_replace_once(
-            'kendalltau(ordinals_a, ordinals_b, variant="b")',
-            'kendalltau(ordinals_a, ordinals_b, variant="c")',
+            'raw = _call("scipy.stats", "kendalltau", ordinals_a, ordinals_b, variant="b")',
+            'raw = _call("scipy.stats", "kendalltau", ordinals_a, ordinals_b, variant="c")',
         ),
     ),
     Mutation(
@@ -348,6 +375,18 @@ MUTATIONS: tuple[Mutation, ...] = (
             "    if len(set(rater_a) | set(rater_b)) < _MIN_LEVELS:\n        return 1.0",
         ),
     ),
+    Mutation(
+        name="agreement-means-preserve-numpy-rounding",
+        claim="agreement aggregates preserve their published binary64 bit patterns",
+        target=_AGREEMENT,
+        guard=(
+            "tests/test_agreement.py::test_should_preserve_numpy_weighted_mean_rounding_bit_for_bit",
+        ),
+        edit=_replace_once(
+            '    return _finite_float(_call("numpy", "mean", values))',
+            '    return __import__("statistics").fmean(values)',
+        ),
+    ),
     # ----------------------------------------------------------------------------------
     # The confusion counts. A rate hides which way a system fails; these are the four
     # numbers that say, and two of them are trivially swappable without any total moving.
@@ -360,10 +399,34 @@ MUTATIONS: tuple[Mutation, ...] = (
         # sklearn ravels the matrix as tn, fp, fn, tp. Swapping the middle pair keeps
         # every total identical and inverts what the system is failing at.
         edit=_replace_once(
-            "    true_negatives, false_positives, false_negatives, "
-            "true_positives = confusion_matrix(",
-            "    true_negatives, false_negatives, false_positives, "
-            "true_positives = confusion_matrix(",
+            "    true_negatives, false_positives, false_negatives, true_positives = cast(\n",
+            "    true_negatives, false_negatives, false_positives, true_positives = cast(\n",
+        ),
+    ),
+    Mutation(
+        name="metrics-confusion-fields-keep-public-order",
+        claim="the public confusion tuple stays tp, fp, tn, fn",
+        target=_METRICS,
+        guard=(
+            "tests/test_metrics.py::"
+            "test_should_preserve_the_published_confusion_count_value_contract",
+        ),
+        edit=_replace_once(
+            "    true_positives: int\n    false_positives: int\n    true_negatives: int",
+            "    true_negatives: int\n    false_positives: int\n    true_positives: int",
+        ),
+    ),
+    Mutation(
+        name="metrics-threshold-equality-is-positive",
+        claim="a score equal to the threshold is classified as positive",
+        target=_METRICS,
+        guard=(
+            "tests/test_metric_vectors.py::"
+            "test_classification_vector_replays_to_the_hand_computed_rates",
+        ),
+        edit=_replace_once(
+            "    return [1 if s >= threshold else 0 for s in y_score]",
+            "    return [1 if s > threshold else 0 for s in y_score]",
         ),
     ),
     Mutation(
@@ -375,7 +438,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_metrics.py::test_should_make_the_false_negative_rate_the_exact_complement_of_recall",
         ),
         edit=_replace_once(
-            "    return counts.false_negatives / (counts.false_negatives + counts.true_positives)",
+            "    return counts.false_negatives / positives",
             "    return counts.false_positives / (counts.false_positives + counts.true_negatives)",
         ),
     ),
@@ -385,79 +448,89 @@ MUTATIONS: tuple[Mutation, ...] = (
         target=_METRICS,
         guard=("tests/test_metrics.py::test_should_refuse_a_label_outside_zero_and_one",),
         edit=_replace_once(
-            '        raise InvalidScoreRequest(f"labels must be 0 or 1; got {outside}")',
-            "        pass",
+            "    if outside:\n        raise InvalidScoreRequest",
+            "    if outside:\n        pass",
         ),
     ),
-    # ----------------------------------------------------------------------------------
-    # The envelope: what a receipt actually proves.
-    # ----------------------------------------------------------------------------------
     Mutation(
-        name="envelope-recomputes-the-payload-hash",
-        claim="verification re-derives the payload hash instead of believing the field",
-        target=_ENVELOPE,
+        name="metrics-missing-extra-has-a-stable-code",
+        claim="a base install never leaks the missing module name from an optional face",
+        target=_OPTIONAL,
         guard=(
-            "tests/test_receipt.py::test_should_raise_payload_hash_mismatch_when_hash_is_tampered",
+            "tests/test_optional_metrics_boundary.py::"
+            "test_should_raise_only_stable_redacted_code_when_metrics_extra_is_missing",
         ),
         edit=_replace_once(
-            '        raise PayloadHashMismatch("payload hash does not match payload content")',
-            "        pass",
+            "    try:\n        return import_module(name)\n"
+            "    except Exception:\n        return None",
+            "    try:\n        return import_module(name)\n    except Exception:\n        raise",
         ),
     ),
     Mutation(
-        name="envelope-pins-the-signer",
-        claim="a receipt carrying a key the caller did not pin is rejected before any maths",
-        target=_ENVELOPE,
+        name="metrics-successful-optional-imports-are-cached",
+        claim="a recovered optional callable stays usable after its package disappears",
+        target=_OPTIONAL,
         guard=(
-            "tests/test_verify.py::test_should_code_a_pinned_key_mismatch_as_a_signer_mismatch",
+            "tests/test_optional_metrics_boundary.py::"
+            "test_should_cache_a_successfully_loaded_exact_callable",
         ),
         edit=_replace_once(
-            '        raise SignerMismatch("receipt public key is not the expected signer")',
-            "        pass",
-        ),
-    ),
-    # ----------------------------------------------------------------------------------
-    # The ledger: append-only means chained, counted and signed — three separate checks.
-    # ----------------------------------------------------------------------------------
-    Mutation(
-        name="ledger-chains-each-entry-to-the-one-before",
-        claim="the chain is walked link by link, not inferred from the last line",
-        target=_LEDGER,
-        # NOT the splice test, which this harness found survives with the link check
-        # deleted: a spliced entry also breaks the count, so the head pin catches it
-        # first. Only a rewritten interior prev_hash isolates the chain walk.
-        guard=("tests/test_ledger.py::test_should_reject_a_ledger_whose_chain_link_was_rewritten",),
-        edit=_replace_once(
-            "        raise LedgerIntegrityError("
-            'f"ledger entry {position} does not chain to the entry before it")',
-            "        pass",
+            "@cache\ndef load_callable(module_name: str, name: str) -> OptionalCallable:",
+            "def load_callable(module_name: str, name: str) -> OptionalCallable:",
         ),
     ),
     Mutation(
-        name="ledger-requires-the-pinned-head",
-        claim="a self-consistent but truncated ledger is refused against the pinned head",
-        target=_LEDGER,
-        guard=("tests/test_ledger.py::test_should_reject_a_ledger_truncated_at_the_end",),
-        edit=_replace_once(
-            "        raise LedgerIntegrityError(\n"
-            '            f"ledger ends at {head.count} entries / {head.head_hash}, "\n'
-            '            f"but the pinned head is {expected_head.count} entries / '
-            '{expected_head.head_hash}"\n'
-            "        )",
-            "        pass",
-        ),
-    ),
-    Mutation(
-        name="ledger-verifies-every-entry-signature",
-        claim="a re-hashed forgery cannot launder itself past the pinned key",
-        target=_LEDGER,
+        name="calibration-ece-is-population-weighted",
+        claim="ECE weights each non-empty bin by its sample population",
+        target=_CALIBRATION,
         guard=(
-            "tests/test_ledger.py::test_should_reject_a_rehashed_tampered_entry_without_the_signing_key",
+            "tests/test_calibration.py::"
+            "test_should_not_average_reliability_gaps_as_equal_sized_bins",
         ),
         edit=_replace_once(
-            '        raise LedgerIntegrityError(f"tampered ledger entry: '
-            '{receipt.payload_hash}") from exc',
-            "        pass",
+            "    result = sum(b.count / total * abs(b.mean_predicted - b.fraction_positive) "
+            "for b in bins)",
+            "    result = sum(abs(b.mean_predicted - b.fraction_positive) for b in bins) "
+            "/ len(bins)",
+        ),
+    ),
+    Mutation(
+        name="calibration-validates-before-sklearn",
+        claim="invalid calibration inputs produce Assay's stable value-free code",
+        target=_CALIBRATION,
+        guard=(
+            "tests/test_metric_resource_boundaries.py::"
+            "test_should_reject_calibration_bounds_before_calling_sklearn",
+        ),
+        edit=_replace_once(
+            "    _validate(y_true, y_score, n_bins)",
+            "    pass",
+        ),
+    ),
+    Mutation(
+        name="uncertainty-validates-before-scipy",
+        claim="invalid bootstrap bounds produce Assay's stable value-free code",
+        target=_UNCERTAINTY,
+        guard=(
+            "tests/test_uncertainty.py::"
+            "test_should_refuse_invalid_interval_bounds_with_stable_code",
+        ),
+        edit=_replace_once(
+            "    _validate(samples, settings)",
+            "    pass",
+        ),
+    ),
+    Mutation(
+        name="uncertainty-suppresses-dependency-runtime-warnings",
+        claim="a rejected huge finite bootstrap emits only Assay's stable error",
+        target=_UNCERTAINTY,
+        guard=(
+            "tests/test_metric_resource_boundaries.py::"
+            "test_should_suppress_dependency_warnings_for_a_rejected_bootstrap",
+        ),
+        edit=_replace_once(
+            '        warnings.simplefilter("ignore", RuntimeWarning)',
+            '        warnings.simplefilter("always", RuntimeWarning)',
         ),
     ),
     # ----------------------------------------------------------------------------------
@@ -469,7 +542,9 @@ MUTATIONS: tuple[Mutation, ...] = (
         claim="the README's honesty floor of 30 samples is the shipped default",
         target=_SETTINGS,
         guard=("tests/test_settings.py::test_should_use_documented_defaults_when_no_env",),
-        edit=_replace_once("    min_samples: int = 30", "    min_samples: int = 3"),
+        edit=_replace_once(
+            "    min_samples: _SampleCount = 30", "    min_samples: _SampleCount = 3"
+        ),
     ),
     Mutation(
         name="documented-confidence-level-is-95pc",
@@ -477,7 +552,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         target=_SETTINGS,
         guard=("tests/test_settings.py::test_should_use_documented_defaults_when_no_env",),
         edit=_replace_once(
-            "    confidence_level: float = 0.95", "    confidence_level: float = 0.5"
+            "    confidence_level: _Confidence = 0.95", "    confidence_level: _Confidence = 0.5"
         ),
     ),
     Mutation(
@@ -485,18 +560,9 @@ MUTATIONS: tuple[Mutation, ...] = (
         claim="the documented first-page depth of 10 is the shipped default k",
         target=_SETTINGS,
         guard=(
-            "tests/test_documented_constants.py::test_the_default_ranking_cutoff_the_docs_promise",
+            "tests/test_documented_constants.py::test_should_match_documented_default_ranking_cutoff",
         ),
-        edit=_replace_once("    ranking_k: int = 10", "    ranking_k: int = 4"),
-    ),
-    Mutation(
-        name="documented-golden-vector-count-is-12",
-        claim="the README's 9 canonicalization vectors + 3 receipts are all still shipped",
-        target=_VECTORS,
-        guard=(
-            "tests/test_documented_constants.py::test_the_golden_vector_counts_the_readme_promises",
-        ),
-        edit=_drop_last_vector,
+        edit=_replace_once("    ranking_k: _RankingK = 10", "    ranking_k: _RankingK = 4"),
     ),
     # ----------------------------------------------------------------------------------
     # Not a claim about assay's maths — a claim about what assay will install. The
@@ -514,7 +580,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         edit=_replace_once("minimumReleaseAge: 1440", "minimumReleaseAge: 0"),
     ),
     # ----------------------------------------------------------------------------------
-    # `@edgeproc/avow`'s metrics face. These run under VITEST, not pytest. The claims
+    # The TypeScript metrics face. These run under VITEST, not pytest. The claims
     # are the same claims the Python block above makes, because the two faces are
     # pinned to one another — so the guards have to be able to fail in both languages.
     # The verdict comes from vitest's JSON pass/fail counts; see the module docstring
@@ -727,10 +793,863 @@ MUTATIONS: tuple[Mutation, ...] = (
         "classification-refusal shared metric cases are all still shipped",
         target=_METRIC_VECTORS,
         guard=(
-            "tests/test_documented_constants.py::test_the_metric_vector_counts_the_readme_promises",
+            "tests/test_documented_constants.py::test_should_match_documented_metric_vector_counts",
         ),
         edit=_drop_last_metric_vector,
     ),
+)
+
+
+_COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
+    Mutation(
+        name="request-interval-contains-declared-point",
+        claim="every accepted request interval contains its declared point value",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_contracts.py::"
+            "test_should_require_request_intervals_to_contain_their_point_at_every_boundary",
+        ),
+        edit=_replace_once(
+            "    if interval is not None and not interval.low <= value <= interval.high:",
+            "    if False:",
+        ),
+    ),
+    Mutation(
+        name="composition-honors-normalization-direction",
+        claim="lower-is-better endpoints reverse before weighted composition",
+        target="src/assay/normalize.py",
+        guard=(
+            "tests/test_weighted_mean.py::test_should_propagate_weighted_interval_endpoints_in_declared_direction",
+        ),
+        edit=_replace_once(
+            "    if scale.direction is Direction.LOWER_IS_BETTER:",
+            "    if scale.direction is Direction.HIGHER_IS_BETTER:",
+        ),
+    ),
+    Mutation(
+        name="weighted-mean-divides-by-total-weight",
+        claim="each declared weight is divided by the total positive weight",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::test_should_normalize_before_dividing_by_total_weight",
+        ),
+        edit=_replace_once(
+            "    return tuple(finite_output(_weight(component) / total) "
+            "for component in request.components)",
+            "    return tuple(finite_output(_weight(component)) "
+            "for component in request.components)",
+        ),
+    ),
+    Mutation(
+        name="weighted-interval-reuses-effective-coefficient",
+        claim="point and interval endpoints multiply by the same precomputed coefficient",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::"
+            "test_should_reuse_effective_coefficient_for_point_and_interval_endpoints",
+        ),
+        edit=_replace_once(
+            "    return interval_or_none(finite_output(low * coefficient), "
+            "finite_output(high * coefficient))",
+            "    total = _total_weight(request)\n"
+            "    return interval_or_none(finite_output(low * _weight(component) / total), "
+            "finite_output(high * _weight(component) / total))",
+        ),
+    ),
+    Mutation(
+        name="weighted-aggregate-interval-collapses-after-summation",
+        claim="equal aggregate binary64 bounds serialize as a deterministic null interval",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::"
+            "test_should_collapse_distinct_row_bounds_after_ordered_summation",
+        ),
+        edit=_replace_once(
+            "    return interval_or_none(low, high)",
+            "    return Interval(low=low, high=high)",
+        ),
+    ),
+    Mutation(
+        name="weighted-result-requires-total-weight",
+        claim="the weighted result wire requires the declared total used for replay",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_require_weight_total_on_weighted_result_json",
+        ),
+        edit=_replace_once(
+            "    weight_total: _PositiveWeight | None",
+            "    weight_total: _PositiveWeight | None = None",
+        ),
+    ),
+    Mutation(
+        name="weighted-result-keeps-declared-row-weight",
+        claim="every weighted explanation exposes its original positive request weight",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::"
+            "test_should_compose_when_a_positive_effective_weight_underflows_to_zero",
+        ),
+        edit=_replace_once(
+            "        declared_weight=_weight(component),", "        declared_weight=1.0,"
+        ),
+    ),
+    Mutation(
+        name="weighted-result-keeps-total-weight",
+        claim="the weighted result exposes the exact declared-order total",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::test_should_normalize_before_dividing_by_total_weight",
+        ),
+        edit=_replace_once("        weight_total=total,", "        weight_total=1.0,"),
+    ),
+    Mutation(
+        name="weighted-result-rederives-effective-coefficient",
+        claim="a weighted coefficient must equal declared weight divided by total weight",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_forged_one_component_weighted_coefficient",
+        ),
+        edit=_replace_once(
+            "    return row.operation is Operation.ADD and row.coefficient "
+            "== _result_number(weight / total)",
+            "    return row.operation is Operation.ADD and 0.0 <= row.coefficient <= 1.0",
+        ),
+    ),
+    Mutation(
+        name="weighted-result-allows-representable-coefficient-underflow",
+        claim="a positive declared weight may produce canonical zero after binary64 division",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_weighted_mean.py::"
+            "test_should_compose_when_a_positive_effective_weight_underflows_to_zero",
+        ),
+        edit=_replace_once(
+            "    return row.operation is Operation.ADD and row.coefficient "
+            "== _result_number(weight / total)",
+            "    return row.operation is Operation.ADD and 0.0 < row.coefficient "
+            "== _result_number(weight / total)",
+        ),
+    ),
+    Mutation(
+        name="weighted-result-checks-declared-total",
+        claim="weight total must equal the declared-order sum of row weights",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::test_should_reject_inconsistent_weight_total_on_copy",
+        ),
+        edit=_replace_once(
+            "    _require_result(total == _result_add(_declared_weights(rows)))",
+            "    _require_result(total > 0.0)",
+        ),
+    ),
+    Mutation(
+        name="additive-result-rejects-weight-total",
+        claim="additive results cannot claim weighted-mean total metadata",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_weight_total_on_nonweighted_results[_additive]",
+        ),
+        edit=_replace_once(
+            "        and result.weight_total is None\n    )\n\n\ndef _minimum_row",
+            "    )\n\n\ndef _minimum_row",
+        ),
+    ),
+    Mutation(
+        name="additive-row-rejects-declared-weight",
+        claim="additive explanation rows cannot claim weighted-mean request weights",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_declared_row_weight_on_nonweighted_results[_additive]",
+        ),
+        edit=_replace_once(
+            "        row.normalized is None\n"
+            "        and row.declared_weight is None\n"
+            "        and row.contribution == contribution",
+            "        row.normalized is None\n        and row.contribution == contribution",
+        ),
+    ),
+    Mutation(
+        name="minimum-result-rejects-weight-total",
+        claim="minimum results cannot claim weighted-mean total metadata",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_weight_total_on_nonweighted_results[_minimum]",
+        ),
+        edit=_replace_once(
+            "    return result.clamp is not None and result.intercept is None "
+            "and result.weight_total is None",
+            "    return result.clamp is not None and result.intercept is None",
+        ),
+    ),
+    Mutation(
+        name="minimum-row-rejects-declared-weight",
+        claim="minimum candidate rows cannot claim weighted-mean request weights",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_declared_row_weight_on_nonweighted_results[_minimum]",
+        ),
+        edit=_replace_once(
+            "    return row.operation is Operation.ADD and row.coefficient == 1.0 "
+            "and row.declared_weight is None",
+            "    return row.operation is Operation.ADD and row.coefficient == 1.0",
+        ),
+    ),
+    Mutation(
+        name="additive-subtraction-keeps-its-sign",
+        claim="a subtract term lowers the running total",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_preserve_unbounded_negative_consumer_score_when_policy_is_null",
+        ),
+        edit=_replace_once(
+            "    return finite_output(total - contribution)",
+            "    return finite_output(total + contribution)",
+        ),
+    ),
+    Mutation(
+        name="additive-terms-run-in-declared-order",
+        claim="direct IEEE-754 evaluation never reorders additive terms",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_apply_intercept_and_terms_strictly_left_to_right_without_division",
+        ),
+        edit=_replace_once("    for row in rows:", "    for row in reversed(rows):"),
+    ),
+    Mutation(
+        name="additive-clamps-only-the-final-score",
+        claim="an intermediate overshoot is not clamped before later terms run",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_clamp_only_after_all_terms_and_preserve_explanations",
+        ),
+        edit=_replace_once(
+            "        total = _apply(total, row.contribution, row.operation)",
+            "        total = _final(_apply(total, row.contribution, row.operation), request.clamp)",
+        ),
+    ),
+    Mutation(
+        name="minimum-is-not-maximum",
+        claim="the limiting candidate is the lowest normalized value",
+        target="src/assay/minimum.py",
+        guard=(
+            "tests/test_minimum.py::test_should_select_lowest_normalized_component_and_explain_every_candidate",
+        ),
+        edit=_replace_once(
+            "    selected = min(rows, key=lambda row: row.contribution)",
+            "    selected = max(rows, key=lambda row: row.contribution)",
+        ),
+    ),
+    Mutation(
+        name="minimum-ties-keep-first-declared-component",
+        claim="equal minima never sort by identifier before selection",
+        target="src/assay/minimum.py",
+        guard=(
+            "tests/test_minimum.py::test_should_choose_first_tied_component_without_sorting_identifiers",
+        ),
+        edit=_replace_once(
+            "    selected = min(rows, key=lambda row: row.contribution)",
+            "    selected = min(sorted(rows, key=lambda row: row.id), "
+            "key=lambda row: row.contribution)",
+        ),
+    ),
+    Mutation(
+        name="weighted-explanation-keeps-raw-value",
+        claim="weighted explanations report the original native value",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::test_should_normalize_before_dividing_by_total_weight",
+        ),
+        edit=_replace_once("        raw=component.value,", "        raw=normalized,"),
+    ),
+    Mutation(
+        name="additive-explanation-keeps-exact-contribution",
+        claim="additive explanations report raw times coefficient",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_preserve_unbounded_negative_consumer_score_when_policy_is_null",
+        ),
+        edit=_replace_once(
+            "        contribution=_contribution(term),",
+            "        contribution=term.value,",
+        ),
+    ),
+    Mutation(
+        name="subtract-interval-reverses-term-endpoints",
+        claim="subtract uses term high for result low and term low for result high",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_propagate_add_and_subtract_interval_endpoints",
+        ),
+        edit=_replace_once(
+            "    return finite_output(low - term_high), finite_output(high - term_low)",
+            "    return finite_output(low - term_low), finite_output(high - term_high)",
+        ),
+    ),
+    Mutation(
+        name="additive-interval-keeps-declared-order",
+        claim="interval endpoint arithmetic advances in declared IEEE-754 term order",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_propagate_interval_terms_in_declared_ieee_order",
+        ),
+        edit=_replace_once(
+            "    for term in request.terms:",
+            "    for term in reversed(request.terms):",
+        ),
+    ),
+    Mutation(
+        name="result-wire-keeps-additive-intercept",
+        claim="the additive result exposes the exact intercept required for standalone replay",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_result_replay.py::"
+            "test_should_replay_additive_point_and_interval_from_result_wire_alone",
+        ),
+        edit=_replace_once("        intercept=validated.intercept,", "        intercept=0.0,"),
+    ),
+    Mutation(
+        name="result-wire-keeps-additive-clamp-policy",
+        claim="the additive result exposes its exact final clamp or unbounded policy",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_result_replay.py::"
+            "test_should_replay_additive_point_and_interval_from_result_wire_alone",
+        ),
+        edit=_replace_once("        clamp=validated.clamp,", "        clamp=None,"),
+    ),
+    Mutation(
+        name="result-wire-keeps-contribution-intervals",
+        claim="each uncertain additive row exposes the bounds needed for standalone replay",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_result_replay.py::"
+            "test_should_replay_additive_point_and_interval_from_result_wire_alone",
+        ),
+        edit=_replace_once(
+            "        contribution_interval=interval_or_none(*_term_bounds(term)),",
+            "        contribution_interval=None,",
+        ),
+    ),
+    Mutation(
+        name="score-result-invariants-run-at-the-boundary",
+        claim="every ScoreResult construction and parse enforces method-specific replay",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_replay_additive_score_from_intercept_policy_and_signed_rows",
+        ),
+        edit=_replace_once(
+            "        _require_result_invariants(self)",
+            "        _require_result(True)",
+        ),
+    ),
+    Mutation(
+        name="weighted-result-interval-contains-point",
+        claim="every weighted contribution lies inside its reported contribution interval",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_point_outside_contribution_interval_from_direct_input"
+            "[weighted_mean]",
+        ),
+        edit=_replace_once(
+            "        0.0 <= interval.low <= row.contribution <= interval.high <= maximum\n"
+            "        and interval.low < interval.high",
+            "        0.0 <= interval.low < interval.high <= maximum",
+        ),
+    ),
+    Mutation(
+        name="additive-result-interval-contains-point",
+        claim="every additive contribution lies inside its reported contribution interval",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_point_outside_contribution_interval_from_direct_input[additive]",
+        ),
+        edit=_replace_once(
+            "    return interval is None or interval.low <= row.contribution <= interval.high",
+            "    return True",
+        ),
+    ),
+    Mutation(
+        name="minimum-result-interval-contains-point",
+        claim="every minimum candidate lies inside its reported contribution interval",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_point_outside_contribution_interval_from_direct_input[minimum]",
+        ),
+        edit=_replace_once(
+            "        0.0 <= interval.low <= row.contribution <= interval.high <= maximum\n"
+            "        and interval.low < interval.high",
+            "        0.0 <= interval.low < interval.high <= maximum",
+        ),
+    ),
+    Mutation(
+        name="minimum-result-selects-first-actual-minimum",
+        claim="minimum result validation requires the selected ID to be the first minimum row",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_require_minimum_to_select_first_declared_lowest_row",
+        ),
+        edit=_replace_once(
+            "    _require_result(result.selected_component_id == selected.id)",
+            "    _require_result(result.selected_component_id is not None)",
+        ),
+    ),
+    Mutation(
+        name="public-contract-zero-has-positive-sign-bit",
+        claim="all accepted numeric zeros canonicalize before JSON and request hashing",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_contracts.py::"
+            "test_should_canonicalize_all_contract_zeros_before_json_and_request_hashing",
+        ),
+        edit=_replace_once(
+            "def _canonical_zero(value: float) -> float:\n"
+            "    return 0.0 if value == 0.0 else value",
+            "def _canonical_zero(value: float) -> float:\n    return value",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-request-method",
+        claim="the closed request method discriminator changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            "        request.method,",
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            '        "minimum",',
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-method-version",
+        claim="the caller-declared method version changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            "        request.method,\n"
+            "        request.method_version,",
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            "        request.method,\n"
+            '        "northstar-v2",',
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-weighted-clamp-policy",
+        claim="the explicit normalization clamp policy changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            "        request.method,\n"
+            "        request.method_version,\n"
+            "        request.clamp.value,",
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            "        request.method,\n"
+            "        request.method_version,\n"
+            '        "reject",',
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-id",
+        claim="a component's stable identity changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once("        component.id,", '        "quality",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-label",
+        claim="display-label changes alter the complete request digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once("        component.label,", '        "Quality",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-value",
+        claim="a component's native value changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "        _float_token(component.value),",
+            "        _float_token(0.25),",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-scale-minimum",
+        claim="a native scale minimum changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "(_float_token(scale.minimum), _float_token(scale.maximum), scale.direction.value)",
+            "(_float_token(0.0), _float_token(scale.maximum), scale.direction.value)",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-scale-maximum",
+        claim="a native scale maximum changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "(_float_token(scale.minimum), _float_token(scale.maximum), scale.direction.value)",
+            "(_float_token(scale.minimum), _float_token(1.0), scale.direction.value)",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-scale-direction",
+        claim="a native scale direction changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "(_float_token(scale.minimum), _float_token(scale.maximum), scale.direction.value)",
+            '(_float_token(scale.minimum), _float_token(scale.maximum), "higher_is_better")',
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-interval",
+        claim="a component uncertainty interval changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once("        _interval_token(component.interval),", "        None,"),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-weight",
+        claim="a component weight changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once("        weight,", "        _float_token(1.0),"),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-order",
+        claim="component declaration order changes the complete digest",
+        target="src/assay/composite.py",
+        guard=(
+            "tests/test_consumer_conformance.py::test_should_replay_every_literal_consumer_result_exactly",
+        ),
+        edit=_replace_once(
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)",
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) "
+            "for item in reversed(request.components))",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-additive-policy",
+        claim="an additive final clamp or unbounded policy changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once(
+            "    policy = None if request.clamp is None else request.clamp.value",
+            "    policy = None",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-additive-intercept",
+        claim="the additive intercept changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once(
+            "        _float_token(request.intercept),",
+            "        _float_token(0.0),",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-id",
+        claim="an additive term's stable identity changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once("        term.id,", '        "signal",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-label",
+        claim="an additive term's display label changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once("        term.label,", '        "Signal",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-value",
+        claim="an additive term's raw value changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once("        _float_token(term.value),", "        _float_token(0.25),"),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-coefficient",
+        claim="an additive term's coefficient changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once(
+            "        _float_token(term.coefficient),",
+            "        _float_token(0.5),",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-operation",
+        claim="add versus subtract changes the complete additive request digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once("        term.operation.value,", '        "add",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-interval",
+        claim="an additive term uncertainty interval changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once("        _interval_token(term.interval),", "        None,"),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-order",
+        claim="additive term declaration order changes the complete digest",
+        target="src/assay/composite.py",
+        guard=(
+            "tests/test_consumer_conformance.py::test_should_replay_every_literal_consumer_result_exactly",
+        ),
+        edit=_replace_once(
+            "    terms = tuple(_term_token(item) for item in request.terms)",
+            "    terms = tuple(_term_token(item) for item in reversed(request.terms))",
+        ),
+    ),
+    Mutation(
+        name="composition-vectors-are-non-vacuous",
+        claim="an empty composition vector file cannot report successful replay",
+        target=_COMPOSITION_VECTORS,
+        guard=(
+            "tests/test_consumer_conformance.py::test_should_ship_every_named_consumer_oracle_without_personal_data",
+        ),
+        edit=_zero_composition_vectors,
+    ),
+)
+
+
+_TS_COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
+    Mutation(
+        name="ts-composition-honors-normalization-direction",
+        claim="lower-is-better normalization reverses the native scale",
+        target=_TS_NORMALIZE,
+        runner=_VITEST,
+        guard=("src/normalize.test.ts::executes every shared Python normalization vector",),
+        edit=_replace_once(
+            'scale.direction === "lower_is_better"',
+            'scale.direction === "higher_is_better"',
+        ),
+    ),
+    Mutation(
+        name="ts-additive-add-is-not-subtract",
+        claim="add and subtract terms use distinct ordered arithmetic",
+        target=_TS_ADDITIVE,
+        runner=_VITEST,
+        guard=(_TS_ADDITIVE_ORDER_GUARD,),
+        edit=_replace_once(
+            'operation === "add" ? total + amount : total - amount',
+            'operation === "add" ? total - amount : total + amount',
+        ),
+    ),
+    Mutation(
+        name="ts-additive-keeps-declaration-order",
+        claim="additive binary64 arithmetic follows declaration order",
+        target=_TS_ADDITIVE,
+        runner=_VITEST,
+        guard=(_TS_ADDITIVE_ORDER_GUARD,),
+        edit=_replace_once(
+            "  for (const item of rows)\n"
+            "    total = apply(total, item.contribution, item.operation);",
+            "  for (const item of [...rows].reverse())\n"
+            "    total = apply(total, item.contribution, item.operation);",
+        ),
+    ),
+    Mutation(
+        name="ts-additive-clamps-only-after-all-terms",
+        claim="the final clamp is applied after every ordered contribution",
+        target=_TS_ADDITIVE,
+        runner=_VITEST,
+        guard=(
+            "src/compositionVectors.test.ts::clamps additive output only after every "
+            "ordered contribution",
+        ),
+        edit=_replace_once(
+            "    total = apply(total, item.contribution, item.operation);",
+            "    total = final(apply(total, item.contribution, item.operation), request);",
+        ),
+    ),
+    Mutation(
+        name="ts-additive-subtraction-reverses-interval-endpoints",
+        claim="subtraction uses the high endpoint for the low aggregate bound",
+        target=_TS_ADDITIVE,
+        runner=_VITEST,
+        guard=(_TS_ADDITIVE_ORDER_GUARD,),
+        edit=_replace_once(
+            ': [apply(low, termHigh, "subtract"), apply(high, termLow, "subtract")];',
+            ': [apply(low, termLow, "subtract"), apply(high, termHigh, "subtract")];',
+        ),
+    ),
+    Mutation(
+        name="ts-additive-interval-collapses-after-final-clamp",
+        claim="equal final endpoints serialize as a deterministic null interval",
+        target=_TS_ADDITIVE,
+        runner=_VITEST,
+        guard=(
+            "src/additive.test.ts::collapses the final interval only after clamping its endpoints",
+        ),
+        edit=_replace_once(
+            "  return result.low === result.high ? null : result;",
+            "  return result;",
+        ),
+    ),
+    Mutation(
+        name="ts-minimum-ties-select-first-declared",
+        claim="minimum ties keep the first declared component",
+        target=_TS_MINIMUM,
+        runner=_VITEST,
+        guard=(
+            "src/minimum.test.ts::selects the first declared minimum and propagates "
+            "candidate bounds",
+        ),
+        edit=_replace_once(
+            "    if (candidate.contribution < selected.contribution) selected = candidate;",
+            "    if (candidate.contribution <= selected.contribution) selected = candidate;",
+        ),
+    ),
+    Mutation(
+        name="ts-minimum-selected-score-is-candidate-score",
+        claim="minimum score is the selected candidate contribution",
+        target=_TS_MINIMUM,
+        runner=_VITEST,
+        guard=("src/minimum.test.ts::supports mixed deterministic and uncertain candidates",),
+        edit=_replace_once(
+            "    score: selected.contribution,",
+            "    score: rows.at(-1)?.contribution ?? Number.NaN,",
+        ),
+    ),
+    Mutation(
+        name="ts-minimum-150k-selection-is-bounded-arity",
+        claim="minimum selection never spreads untrusted component counts into a call",
+        target=_TS_MINIMUM,
+        runner=_VITEST,
+        guard=(
+            "src/minimum.test.ts::composes a 150k-component accepted request without an "
+            "argument-limit failure",
+        ),
+        edit=_replace_once(
+            "  const selected = firstMinimum(rows);",
+            "  const selectedScore = Math.min(...rows.map((item) => item.contribution));\n"
+            "  const selected = rows.find((item) => item.contribution === selectedScore) "
+            "as ExplainedComponent;",
+        ),
+    ),
+    Mutation(
+        name="ts-request-hash-includes-term-order",
+        claim="additive declaration order changes the request digest",
+        target=_TS_REQUEST_HASH,
+        runner=_VITEST,
+        guard=(_TS_VECTOR_REPLAY_GUARD,),
+        edit=_replace_once(
+            "    request.terms.map(termToken),",
+            "    [...request.terms].reverse().map(termToken),",
+        ),
+    ),
+    Mutation(
+        name="ts-request-hash-includes-component-order",
+        claim="component declaration order changes the request digest",
+        target=_TS_REQUEST_HASH,
+        runner=_VITEST,
+        guard=(_TS_VECTOR_REPLAY_GUARD,),
+        edit=_replace_once(
+            "    request.components.map(componentToken),",
+            "    [...request.components].reverse().map(componentToken),",
+        ),
+    ),
+    Mutation(
+        name="ts-result-requires-selected-minimum-id",
+        claim="minimum replay rejects a forged selected component id",
+        target=_TS_CONTRACTS,
+        runner=_VITEST,
+        guard=("src/contractBoundaries.test.ts::rejects additive and minimum replay mutations",),
+        edit=_replace_once(
+            "    result.selected_component_id !== selected.id ||\n"
+            "    result.score !== selected.contribution",
+            "    result.score !== selected.contribution",
+        ),
+    ),
+    Mutation(
+        name="ts-result-interval-totality-is-checked",
+        claim="result replay requires null exactly when aggregate bounds collapse",
+        target=_TS_CONTRACTS,
+        runner=_VITEST,
+        guard=(
+            "src/contractBoundaries.test.ts::rejects weighted metadata, row, score, and "
+            "interval mutations",
+        ),
+        edit=_replace_once(
+            "  if (expected === null || expected[0] === expected[1]) return actual === null;",
+            "  if (expected === null || expected[0] === expected[1]) return true;",
+        ),
+    ),
+    Mutation(
+        name="ts-minimum-result-replay-scan-is-bounded-arity",
+        claim="minimum result validation scans large component sets without argument spreading",
+        target=_TS_CONTRACTS,
+        runner=_VITEST,
+        guard=(
+            "src/minimum.test.ts::keeps composition and result replay minimum scans bounded-arity",
+        ),
+        edit=_replace_once(
+            "  const selected = firstMinimum(result.components);",
+            "  const score = Math.min(...result.components.map((row) => row.contribution));\n"
+            "  const selected = result.components.find((row) => row.contribution === score) "
+            "as ExplainedComponent;",
+        ),
+    ),
+)
+
+
+def _is_allowed_assay_target(target: str) -> bool:
+    """Admit Assay source plus the two exact Assay-owned vector files."""
+    vector_targets = frozenset((_METRIC_VECTORS, _COMPOSITION_VECTORS))
+    return target.startswith("src/assay/") or target in vector_targets
+
+
+def _is_active_assay_mutation(mutation: Mutation) -> bool:
+    """Keep Assay scoring guards in both runtimes plus the exact quarantine guard."""
+    return (
+        mutation.runner == _VITEST
+        or _is_allowed_assay_target(mutation.target)
+        or mutation.target == _PNPM_WORKSPACE
+    )
+
+
+MUTATIONS = (
+    *filter(_is_active_assay_mutation, _MIXED_PRODUCT_MUTATIONS),
+    *_COMPOSITION_MUTATIONS,
+    *_TS_COMPOSITION_MUTATIONS,
 )
 
 
@@ -771,6 +1690,62 @@ def _pytest(node_ids: Sequence[str]) -> int:
         check=False,
     )
     return completed.returncode
+
+
+def _typescript() -> int:
+    """Run the complete locked TypeScript suite and return its process exit code."""
+    completed = subprocess.run(  # noqa: S603
+        ["pnpm", "--dir", str(_TS), "test"],  # noqa: S607 - exact pinned CLI verified below
+        cwd=_ROOT,
+        check=False,
+    )
+    return completed.returncode
+
+
+def _tool_version(command: str) -> str:
+    completed = subprocess.run(  # noqa: S603
+        [command, "--version"], capture_output=True, text=True, check=False
+    )
+    return completed.stdout.strip() if completed.returncode == 0 else "unavailable"
+
+
+def _require_toolchain() -> bool:
+    node = _tool_version("node")
+    pnpm = _tool_version("pnpm")
+    if (node, pnpm) == (_NODE_VERSION, _PNPM_VERSION):
+        return True
+    print(
+        f"REFUSING: mutations require Node {_NODE_VERSION} / pnpm {_PNPM_VERSION}; "
+        f"got {node} / {pnpm}"
+    )
+    return False
+
+
+def _tree_snapshot() -> str:
+    """Hash the complete tracked diff and untracked-path inventory."""
+    commands = (
+        ["git", "diff", "--binary", "HEAD", "--", "."],
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )
+    digest = hashlib.sha256()
+    for command in commands:
+        completed = subprocess.run(command, cwd=_ROOT, capture_output=True, check=True)  # noqa: S603
+        digest.update(completed.stdout)
+    for relative in _generated_inventory(_ROOT):
+        digest.update(relative.encode())
+        digest.update((_ROOT / relative).read_bytes())
+    return digest.hexdigest()
+
+
+def _generated_inventory(root: Path) -> tuple[str, ...]:
+    """List ignored release products without traversing managed dependencies."""
+    files = (
+        path
+        for relative in _GENERATED_ROOTS
+        for path in (root / relative).rglob("*")
+        if path.is_file()
+    )
+    return tuple(sorted(path.relative_to(root).as_posix() for path in files))
 
 
 def _split_guards(guard: Sequence[str]) -> tuple[list[str], str]:
@@ -914,31 +1889,37 @@ def _report(results: Sequence[Result]) -> None:
     print("=" * 108)
 
 
-def _restore_note(restored: int) -> str:
-    return "green" if restored == _ALL_PASSED else "NOT GREEN"
+def _restore_note(restored: tuple[int, int], tree_clean: bool) -> str:
+    return "green" if restored == (_ALL_PASSED, _ALL_PASSED) and tree_clean else "NOT GREEN"
 
 
-def _summarise(results: Sequence[Result], restored: int) -> int:
+def _summarise(results: Sequence[Result], restored: tuple[int, int], tree_clean: bool) -> int:
     """Exit non-zero if any guard survived its break, or if restore left the suite red."""
     fired = [result for result in results if result.held]
     print(f"\n{len(fired)}/{len(results)} guards fired when their claim was broken.")
-    print(f"whole suite after restore: exit {restored} ({_restore_note(restored)})")
-    if len(fired) < len(results):
+    print(
+        f"complete suites after restore: pytest={restored[0]}, pnpm={restored[1]}; "
+        f"whole-tree exact={tree_clean} ({_restore_note(restored, tree_clean)})"
+    )
+    if len(fired) < len(results) or not tree_clean:
         return _TESTS_FAILED
-    return restored
+    return max(restored)
 
 
 def main() -> int:
-    if not _require_clean_targets():
+    if not _require_toolchain() or not _require_clean_targets():
         return _TESTS_FAILED
-    print("baseline — the whole suite, unmutated")
-    if _pytest(()) != _ALL_PASSED:
-        print("REFUSING: the suite is not green before any mutation is applied.")
+    initial_tree = _tree_snapshot()
+    print("baseline — both complete suites, unmutated")
+    baseline = (_pytest(()), _typescript())
+    if baseline != (_ALL_PASSED, _ALL_PASSED):
+        print(f"REFUSING: baseline suites are not green: pytest={baseline[0]}, pnpm={baseline[1]}")
         return _TESTS_FAILED
     results = [_check(mutation) for mutation in MUTATIONS]
     _report(results)
-    print("\ngreen after restore — the whole suite again")
-    return _summarise(results, _pytest(()))
+    print("\ngreen after restore — both complete suites again")
+    restored = (_pytest(()), _typescript())
+    return _summarise(results, restored, _tree_snapshot() == initial_tree)
 
 
 if __name__ == "__main__":

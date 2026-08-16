@@ -1,15 +1,33 @@
-/**
- * Coded envelope-error catalog — the TypeScript mirror of Python `avow.errors`.
- *
- * Every envelope failure carries a stable string `code` so callers (in any
- * language binding) branch on cause without string-matching messages. These are
- * the same codes the Python kernel raises, so a receipt that fails here fails
- * with the identical `code` it would fail with in CPython.
- */
+export const ContractCode = {
+  DUPLICATE_IDENTIFIER: "assay.duplicate_identifier",
+  EMPTY_COMPONENTS: "assay.empty_components",
+  EMPTY_TERMS: "assay.empty_terms",
+  INVALID_CLAMP_POLICY: "assay.invalid_clamp_policy",
+  INVALID_COEFFICIENT: "assay.invalid_coefficient",
+  INVALID_CONTRACT: "assay.invalid_contract",
+  INVALID_DIRECTION: "assay.invalid_direction",
+  INVALID_IDENTIFIER: "assay.invalid_identifier",
+  INVALID_INPUTS_HASH: "assay.invalid_inputs_hash",
+  INVALID_INTERVAL: "assay.invalid_interval",
+  INVALID_LABEL: "assay.invalid_label",
+  INVALID_METHOD: "assay.invalid_method",
+  INVALID_NUMBER: "assay.invalid_number",
+  INVALID_OBJECT: "assay.invalid_object",
+  INVALID_OPERATION: "assay.invalid_operation",
+  INVALID_RESULT: "assay.invalid_result",
+  INVALID_SCALE: "assay.invalid_scale",
+  INVALID_TEXT: "assay.invalid_text",
+  INVALID_WEIGHT: "assay.invalid_weight",
+  MISSING_FIELD: "assay.missing_field",
+  MISSING_WEIGHT: "assay.missing_weight",
+  OUT_OF_RANGE: "assay.out_of_range",
+  UNKNOWN_FIELD: "assay.unknown_field",
+} as const;
 
-/** Base class for every Avow envelope error. */
-export class AvowError extends Error {
-  public readonly code: string = "avow.error";
+export type ContractCode = (typeof ContractCode)[keyof typeof ContractCode];
+
+export class AssayError extends Error {
+  public readonly code: string = "assay.error";
 
   public constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -17,61 +35,23 @@ export class AvowError extends Error {
   }
 }
 
-/** Payload could not be canonicalized to RFC 8785 JCS bytes. */
-export class CanonicalizationFailed extends AvowError {
-  public override readonly code = "avow.canonicalization_failed";
+export class ContractValidationError extends AssayError {
+  public override readonly code: ContractCode;
+
+  public constructor(code: ContractCode = ContractCode.INVALID_CONTRACT) {
+    super(code);
+    this.code = code;
+  }
 }
 
-/**
- * A receipt failed to verify under the pinned signer.
- *
- * The base of two security-distinct causes below. Catch this to mean "did not
- * verify, for any reason"; catch a subclass to distinguish *who signed it* from
- * *whether the bytes check out*.
- */
-export class SignatureInvalid extends AvowError {
-  public override readonly code: string = "avow.signature_invalid";
+export class InvalidScoreRequest extends AssayError {
+  public override readonly code = "assay.invalid_request";
 }
 
-/**
- * The receipt's embedded key is not the signer the caller pinned.
- *
- * A PROVENANCE failure: someone signed this with a key you do not trust, so the
- * signature is never even checked. Coded distinctly so a caller can alert on
- * "wrong signer" without parsing a message.
- */
-export class SignerMismatch extends SignatureInvalid {
-  public override readonly code = "avow.signer_mismatch";
+export class InvalidRankingRequest extends AssayError {
+  public override readonly code = "assay.invalid_ranking_request";
 }
 
-/**
- * The signer matched, but the Ed25519 check rejected the signature bytes.
- *
- * A TAMPER failure: the payload or the signature was altered. This is the case
- * `avow.signature_invalid` has always named, so it keeps that published code —
- * only the provenance case above gets a new one.
- */
-export class SignatureBytesInvalid extends SignatureInvalid {}
-
-/**
- * Recomputed content-hash does not match the receipt's stored hash.
- *
- * A TAMPER failure: the payload was edited behind an untouched hash field.
- *
- * Deliberately *not* called "replay". This envelope detects no replay at all — a
- * validly-signed receipt presented a second time is byte-identical to its first
- * presentation and verifies exactly as it did then. Naming this error after a
- * property the envelope does not have would be a claim it cannot keep. This
- * browser package ships the envelope only (no ledger), so replay defence is the
- * caller's to hold.
- */
-export class PayloadHashMismatch extends AvowError {
-  public override readonly code = "avow.payload_hash_mismatch";
+export class EmptyRelevantSet extends AssayError {
+  public override readonly code = "assay.empty_relevant_set";
 }
-
-/**
- * @deprecated Renamed to `PayloadHashMismatch` — it never detected replay. Kept
- * for one minor so `instanceof ReplayMismatch` written against 0.2.x keeps
- * working; its `code` is now `avow.payload_hash_mismatch`. Removed in 0.4.0.
- */
-export const ReplayMismatch = PayloadHashMismatch;

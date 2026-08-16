@@ -1,0 +1,74 @@
+[
+  {
+    "value": 0.0,
+    "minimum": 0.0,
+    "maximum": 10.0,
+    "direction": "higher_is_better",
+    "clamp": "reject",
+    "normalized": 0.0
+  },
+  {
+    "value": 5.0,
+    "minimum": 0.0,
+    "maximum": 10.0,
+    "direction": "higher_is_better",
+    "clamp": "reject",
+    "normalized": 0.5
+  },
+  {
+    "value": 10.0,
+    "minimum": 0.0,
+    "maximum": 10.0,
+    "direction": "lower_is_better",
+    "clamp": "reject",
+    "normalized": 0.0
+  },
+  {
+    "value": -7.5,
+    "minimum": -10.0,
+    "maximum": -5.0,
+    "direction": "lower_is_better",
+    "clamp": "reject",
+    "normalized": 0.5
+  },
+  {
+    "value": 0.2,
+    "minimum": 0.1,
+    "maximum": 0.3,
+    "direction": "higher_is_better",
+    "clamp": "reject",
+    "normalized": 0.5000000000000001
+  },
+  {
+    "value": 0.9999999999999999,
+    "minimum": 0.0,
+    "maximum": 1.0,
+    "direction": "higher_is_better",
+    "clamp": "reject",
+    "normalized": 0.9999999999999999
+  },
+  {
+    "value": -1e-15,
+    "minimum": 0.0,
+    "maximum": 1.0,
+    "direction": "higher_is_better",
+    "clamp": "clamp",
+    "normalized": 0.0
+  },
+  {
+    "value": 1.0000000000000002,
+    "minimum": 0.0,
+    "maximum": 1.0,
+    "direction": "lower_is_better",
+    "clamp": "clamp",
+    "normalized": 0.0
+  },
+  {
+    "value": -0.0,
+    "minimum": 0.0,
+    "maximum": 1.0,
+    "direction": "higher_is_better",
+    "clamp": "reject",
+    "normalized": 0.0
+  }
+]

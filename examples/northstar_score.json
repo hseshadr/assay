@@ -1,0 +1,91 @@
+{
+  "method": "weighted_mean",
+  "method_version": "northstar.2026-08-12",
+  "components": [
+    {
+      "id": "security",
+      "label": "Security",
+      "value": 19.0,
+      "scale": {
+        "minimum": 0.0,
+        "maximum": 20.0,
+        "direction": "higher_is_better"
+      },
+      "interval": null,
+      "weight": 20.0
+    },
+    {
+      "id": "privacy",
+      "label": "Privacy",
+      "value": 15.0,
+      "scale": {
+        "minimum": 0.0,
+        "maximum": 15.0,
+        "direction": "higher_is_better"
+      },
+      "interval": null,
+      "weight": 15.0
+    },
+    {
+      "id": "reliability",
+      "label": "Reliability",
+      "value": 15.0,
+      "scale": {
+        "minimum": 0.0,
+        "maximum": 15.0,
+        "direction": "higher_is_better"
+      },
+      "interval": null,
+      "weight": 15.0
+    },
+    {
+      "id": "performance",
+      "label": "Performance",
+      "value": 12.0,
+      "scale": {
+        "minimum": 0.0,
+        "maximum": 15.0,
+        "direction": "higher_is_better"
+      },
+      "interval": null,
+      "weight": 15.0
+    },
+    {
+      "id": "correctness",
+      "label": "Correctness",
+      "value": 15.0,
+      "scale": {
+        "minimum": 0.0,
+        "maximum": 15.0,
+        "direction": "higher_is_better"
+      },
+      "interval": null,
+      "weight": 15.0
+    },
+    {
+      "id": "clarity",
+      "label": "Clarity",
+      "value": 14.0,
+      "scale": {
+        "minimum": 0.0,
+        "maximum": 15.0,
+        "direction": "higher_is_better"
+      },
+      "interval": null,
+      "weight": 15.0
+    },
+    {
+      "id": "production",
+      "label": "Production truth",
+      "value": 2.0,
+      "scale": {
+        "minimum": 0.0,
+        "maximum": 5.0,
+        "direction": "higher_is_better"
+      },
+      "interval": null,
+      "weight": 5.0
+    }
+  ],
+  "clamp": "reject"
+}

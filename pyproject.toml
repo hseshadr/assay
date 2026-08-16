@@ -1,11 +1,11 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "avow"
+name = "assay-engine"
 dynamic = ["version"]
-description = "The trust kernel: one signed, offline-verifiable receipt envelope (avow) with a scoring face (assay) and an effect-gate face (writ)."
+description = "Explainable composition of measurements recorded on heterogeneous scales."
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
@@ -19,19 +19,13 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-# Base deps = the trust ENVELOPE only (avow + writ). Kept deliberately light so
-# `pip install avow` — and micropip in Pyodide — never pull the scientific stack.
-# Every primitive is REUSED from these pinned, maintained libraries, never reimplemented.
 dependencies = [
-    "pydantic>=2.11",           # typed SignedReceipt model at the I/O boundary
-    "pydantic-settings>=2.11",  # env-driven tunables (no hardcoded thresholds/paths)
-    "pynacl>=1.6",              # Ed25519 detached sign / verify
-    "rfc8785>=0.1.4",           # RFC 8785 JCS canonical JSON for content-addressed identity
+    "pydantic>=2.11",
 ]
 
 [project.optional-dependencies]
-# The scoring face (`import assay`) needs the scientific stack; install `avow[assay]`.
-assay = [
+metrics = [
+    "pydantic-settings>=2.11",
     "scikit-learn>=1.9",  # precision/recall/F1, PR-AUC, ROC-AUC, Brier
     "scipy>=1.18",        # scipy.stats.bootstrap confidence intervals
     "numpy>=2.5",         # array math shared by sklearn + scipy
@@ -40,15 +34,13 @@ assay = [
     # implementation — whose own deps are numpy + scipy, already pinned right above.
     "ir-measures>=0.4.3",
 ]
-# The Typer CLI is optional; install `avow[cli]` (implies [assay]). The distribution
-# is `avow` but the console script it installs is `assay` — see [project.scripts].
 cli = [
     "typer>=0.27",
-    "avow[assay]",
 ]
 
 [dependency-groups]
 dev = [
+    "hatchling==1.27.0",
     "pytest>=9.1.1",
     "pytest-cov>=6.0",
     "mypy>=2.2.0",
@@ -56,6 +48,7 @@ dev = [
     "xenon>=0.9",
     "radon>=6.0",
     "poethepoet>=0.48.0",
+    "pyyaml>=6.0.2,<7",
 ]
 
 [project.scripts]
@@ -66,27 +59,21 @@ Homepage = "https://github.com/hseshadr/assay"
 Repository = "https://github.com/hseshadr/assay"
 Issues = "https://github.com/hseshadr/assay/issues"
 
-# Version is single-sourced from src/avow/_version.py — hatchling reads it at
-# build time, so installed metadata and avow.__version__ can never drift.
+# Hatchling and ``assay.__version__`` read the same source.
 [tool.hatch.version]
-path = "src/avow/_version.py"
+path = "src/assay/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/avow", "src/assay", "src/writ"]
+packages = ["src/assay"]
 
 [tool.hatch.build.targets.sdist]
-# Python-distribution sources only; the TypeScript package ships separately as @edgeproc/avow on npm.
-only-include = [
-  "src",
-  "tests",
-  "testdata",
-  "demo",
-  "README.md",
-  "QUICKSTART.md",
-  "CHANGELOG.md",
-  "docs",
-  "LICENSE",
+include = [
+  "/LICENSE",
+  "/README.md",
+  "/pyproject.toml",
+  "/src/assay",
 ]
+exclude = ["/.gitignore"]
 
 [tool.ruff]
 target-version = "py313"
@@ -100,19 +87,23 @@ ignore = ["S101", "PLR0913"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "PLR2004", "C901", "PLR0911", "PLR0912"]
-# The domain-error catalog deliberately uses semantic names (SignatureInvalid,
-# PayloadHashMismatch, ...) that read as the failure condition, not Error-suffixed
-# names. These are the stable, coded public interface consumed across the API,
-# CLI and tests, so N818 (Error suffix) is scoped-off for this one module only.
+"tests/test_cli.py" = ["S603", "S607"]
+"tests/test_cli_migration.py" = ["S603", "S607"]
+"tests/test_cli_privacy.py" = ["S603", "S607"]
+"tests/test_measurement.py" = ["S603", "S607"]
+"tests/test_release_contract.py" = ["S603", "S607"]
+"tests/test_workflow_contract.py" = ["S603", "S607"]
+# Domain errors use semantic names such as InvalidRankingRequest. They are the stable,
+# coded interface consumed across Assay's calculators, CLI, and tests.
 "src/assay/errors.py" = ["N818"]
-# The envelope error catalog uses the same semantic (non-Error-suffixed) names.
-"src/avow/errors.py" = ["N818"]
+# ir-measures intentionally exports its standard measure as ``nDCG``.
+"src/assay/ranking.py" = ["N816"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 5
 
 [tool.ruff.lint.isort]
-known-first-party = ["assay", "avow", "writ"]
+known-first-party = ["assay"]
 extra-standard-library = ["fcntl"]
 
 [tool.mypy]
@@ -127,7 +118,7 @@ mypy_path = "src"
 # These third-party libraries ship no type stubs; assay wraps them behind its
 # own typed contracts, so import-time Any is contained at the boundary.
 [[tool.mypy.overrides]]
-module = ["sklearn.*", "scipy.*", "nacl.*", "rfc8785.*"]
+module = ["sklearn.*", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -136,14 +127,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = [
     "--strict-markers",
-    "--cov=avow",
-    "--cov=assay",
-    "--cov=writ",
-    # Branch coverage, not just statement coverage: a line can be executed while one
-    # side of its condition never is, and an integrity tool cannot afford that blind spot.
-    "--cov-branch",
-    "--cov-report=term-missing",
-    "--cov-fail-under=90",
     "-v",
 ]
 
@@ -158,44 +141,33 @@ exclude_lines = [
     "@abstractmethod",
     # Anchored to a bare `...` stub body ONLY. The unanchored `\.\.\.` this
     # replaces also matched the ellipsis inside `tuple[X, ...]` annotations, which
-    # silently excluded every function whose signature carried one — including the
-    # ledger's own read_all/verify_integrity. Coverage must not be able to hide code.
+    # silently excluded every function whose annotation carried one. Coverage must not
+    # be able to hide code based on an annotation.
     "^\\s*\\.\\.\\.$",
 ]
 fail_under = 90.0
 
-[tool.coverage.run]
-# Benchmarks enforce their own latency, RSS, count, and integrity assertions in clean
-# subprocesses; unit coverage cannot merge those isolated workers without perturbing the
-# memory numbers the contract exists to measure. The runtime kernel remains fully counted.
-omit = ["src/avow/benchmarks/*"]
-
 [tool.poe.tasks]
 # scripts/ is held to the same bar as src/ and tests/: the mutation harness is the thing
 # that proves the guards can fail, so it is not exempt from the gate that guards them.
-lint = "ruff check src/ tests/ scripts/"
-fmt-check = "ruff format --check src/ tests/ scripts/"
-fmt = "ruff format src/ tests/ scripts/"
-complexity = "xenon --max-absolute A --max-modules A --max-average A src/avow src/assay src/writ scripts"
-test = "pytest"
-benchmark = "python -m avow.benchmarks.release"
-# `gate` mirrors the CI `gate` job exactly: lint + format-check + typecheck +
-# complexity + test. It is PYTHON ONLY — the TypeScript package has its own gate,
-# mirroring the separate CI `ts-gate` job. `gate-all` runs both, as CI does.
+lint = "ruff check src/ tests/ scripts/ benchmarks/"
+fmt-check = "ruff format --check src/ tests/ scripts/ benchmarks/"
+fmt = "ruff format src/ tests/ scripts/ benchmarks/"
+complexity = "xenon --max-absolute A --max-modules A --max-average A src/assay scripts benchmarks"
+test = "pytest --cov=assay --cov-branch --cov-report=term-missing --cov-fail-under=90"
 gate = ["lint", "fmt-check", "typecheck", "complexity", "test"]
-gate-all = ["gate", "gate-ts"]
 
-# `mutants` mirrors the CI `mutation-gate` job. Deliberately NOT part of `gate`: `gate`
-# asks whether the tests pass, this asks whether they can fail. It breaks one named
-# guard at a time, requires the suite to go red, restores the file, and reads its
-# verdict from pytest's exit code only. Takes about a minute; run it on a clean tree.
 mutants = "python scripts/mutation_harness.py"
-
-# Mirrors the CI `ts-gate` job (biome -> tsc --noEmit -> vitest -> build).
-# Needs pnpm; the Python gate above does not.
-[tool.poe.tasks.gate-ts]
-cmd = "pnpm gate"
-cwd = "ts"
+benchmark = "python -m benchmarks.release"
+workflow-contract = "pytest tests/test_workflow_contract.py tests/test_release_contract.py -q"
+workflow-lint = "actionlint"
+workflow-security = "uvx zizmor==1.29.0 --persona=pedantic --min-severity=low --offline --strict-collection .github"
+secrets = { shell = "gitleaks git --redact --no-banner --log-opts=--all . && gitleaks dir --redact --no-banner ." }
+audit-python = { shell = "uv export --frozen --all-groups --all-extras --no-emit-project --format requirements.txt --output-file /tmp/assay-audit-requirements.txt >/dev/null && uvx --from pip-audit==2.10.1 pip-audit --requirement /tmp/assay-audit-requirements.txt --require-hashes --strict --disable-pip --progress-spinner off" }
+audit-typescript = { shell = "pnpm --dir ts install --frozen-lockfile --ignore-scripts && pnpm --dir ts audit --audit-level high" }
+audit = ["audit-python", "audit-typescript"]
+artifacts = "bash scripts/build_release_artifacts.sh dist/release"
+release-candidate = "bash scripts/verify_release_candidate.sh"
 
 [tool.poe.tasks.typecheck]
-cmd = "mypy --strict src/avow src/assay src/writ scripts"
+cmd = "mypy --strict src/assay scripts benchmarks"

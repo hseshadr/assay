@@ -1,0 +1,191 @@
+[
+  {
+    "id": "northstar_uncapped_weighted",
+    "consumer": "Northstar",
+    "source": "hseshadr/project-ideas:SUPER-NORTHSTAR-CLOSEOUT-2026-08-12.md:33-42 and portfolio.json:223-229",
+    "scope": "uncapped arithmetic only; hard caps and evidence grading stay external",
+    "native_score": 92,
+    "request": {
+      "method": "weighted_mean",
+      "method_version": "northstar.2026-08-12",
+      "components": [
+        {"id": "security", "label": "Security", "value": 19.0, "scale": {"minimum": 0.0, "maximum": 20.0, "direction": "higher_is_better"}, "interval": null, "weight": 20.0},
+        {"id": "privacy", "label": "Privacy", "value": 15.0, "scale": {"minimum": 0.0, "maximum": 15.0, "direction": "higher_is_better"}, "interval": null, "weight": 15.0},
+        {"id": "reliability", "label": "Reliability", "value": 15.0, "scale": {"minimum": 0.0, "maximum": 15.0, "direction": "higher_is_better"}, "interval": null, "weight": 15.0},
+        {"id": "performance", "label": "Performance", "value": 12.0, "scale": {"minimum": 0.0, "maximum": 15.0, "direction": "higher_is_better"}, "interval": null, "weight": 15.0},
+        {"id": "correctness", "label": "Correctness", "value": 15.0, "scale": {"minimum": 0.0, "maximum": 15.0, "direction": "higher_is_better"}, "interval": null, "weight": 15.0},
+        {"id": "clarity", "label": "Clarity", "value": 14.0, "scale": {"minimum": 0.0, "maximum": 15.0, "direction": "higher_is_better"}, "interval": null, "weight": 15.0},
+        {"id": "production", "label": "Production truth", "value": 2.0, "scale": {"minimum": 0.0, "maximum": 5.0, "direction": "higher_is_better"}, "interval": null, "weight": 5.0}
+      ],
+      "clamp": "reject"
+    },
+    "expected": {
+      "schema": "assay.result/v1",
+      "method": {"id": "weighted_mean", "version": "northstar.2026-08-12"},
+      "score": 0.92,
+      "interval": null,
+      "clamp": "reject",
+      "intercept": null,
+      "weight_total": 100.0,
+      "components": [
+        {"id": "security", "raw": 19.0, "normalized": 0.95, "declared_weight": 20.0, "operation": "add", "coefficient": 0.2, "contribution": 0.19, "contribution_interval": null},
+        {"id": "privacy", "raw": 15.0, "normalized": 1.0, "declared_weight": 15.0, "operation": "add", "coefficient": 0.15, "contribution": 0.15, "contribution_interval": null},
+        {"id": "reliability", "raw": 15.0, "normalized": 1.0, "declared_weight": 15.0, "operation": "add", "coefficient": 0.15, "contribution": 0.15, "contribution_interval": null},
+        {"id": "performance", "raw": 12.0, "normalized": 0.8, "declared_weight": 15.0, "operation": "add", "coefficient": 0.15, "contribution": 0.12, "contribution_interval": null},
+        {"id": "correctness", "raw": 15.0, "normalized": 1.0, "declared_weight": 15.0, "operation": "add", "coefficient": 0.15, "contribution": 0.15, "contribution_interval": null},
+        {"id": "clarity", "raw": 14.0, "normalized": 0.9333333333333333, "declared_weight": 15.0, "operation": "add", "coefficient": 0.15, "contribution": 0.13999999999999999, "contribution_interval": null},
+        {"id": "production", "raw": 2.0, "normalized": 0.4, "declared_weight": 5.0, "operation": "add", "coefficient": 0.05, "contribution": 0.020000000000000004, "contribution_interval": null}
+      ],
+      "inputs_hash": "sha256:0266b1c59c97bacf85dc945685c55bb4386856b525249c7d5663a8edf020ba06",
+      "selected_component_id": null
+    }
+  },
+  {
+    "id": "edgereco_recommendation",
+    "consumer": "EdgeReco",
+    "source": "hseshadr/edge-reco:backend/src/edgereco/reco/scorer.py:30-64 and ranking_config.py:112-119",
+    "scope": "ordered recommendation contributions; ranking and tie policy stay external",
+    "normalized_weighted_mean_counterexample": 0.3,
+    "request": {
+      "method": "additive",
+      "method_version": "edgereco.recommendation-v3",
+      "terms": [
+        {"id": "retrieval", "label": "Retrieval", "value": 0.0, "coefficient": 1.0, "operation": "add", "interval": null},
+        {"id": "popularity", "label": "Popularity", "value": 0.7, "coefficient": 0.4, "operation": "add", "interval": null},
+        {"id": "category_match", "label": "Category match", "value": 0.6, "coefficient": 0.2, "operation": "add", "interval": null},
+        {"id": "tag_match", "label": "Tag match", "value": 0.8, "coefficient": 0.15, "operation": "add", "interval": null},
+        {"id": "brand_match", "label": "Brand match", "value": 0.5, "coefficient": 0.1, "operation": "add", "interval": null},
+        {"id": "freshness", "label": "Freshness", "value": 0.4, "coefficient": 0.1, "operation": "add", "interval": null},
+        {"id": "similarity", "label": "Similarity", "value": 0.0, "coefficient": 0.0, "operation": "add", "interval": null},
+        {"id": "cooccurrence", "label": "Cooccurrence", "value": 0.0, "coefficient": 0.0, "operation": "add", "interval": null},
+        {"id": "repetition_penalty", "label": "Repetition penalty", "value": 1.0, "coefficient": 0.25, "operation": "subtract", "interval": null}
+      ],
+      "clamp": null,
+      "intercept": 0.0
+    },
+    "expected": {
+      "schema": "assay.result/v1",
+      "method": {"id": "additive", "version": "edgereco.recommendation-v3"},
+      "score": 0.3600000000000001,
+      "interval": null,
+      "clamp": null,
+      "intercept": 0.0,
+      "weight_total": null,
+      "components": [
+        {"id": "retrieval", "raw": 0.0, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 1.0, "contribution": 0.0, "contribution_interval": null},
+        {"id": "popularity", "raw": 0.7, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.4, "contribution": 0.27999999999999997, "contribution_interval": null},
+        {"id": "category_match", "raw": 0.6, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.2, "contribution": 0.12, "contribution_interval": null},
+        {"id": "tag_match", "raw": 0.8, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.15, "contribution": 0.12, "contribution_interval": null},
+        {"id": "brand_match", "raw": 0.5, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.1, "contribution": 0.05, "contribution_interval": null},
+        {"id": "freshness", "raw": 0.4, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.1, "contribution": 0.04000000000000001, "contribution_interval": null},
+        {"id": "similarity", "raw": 0.0, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.0, "contribution": 0.0, "contribution_interval": null},
+        {"id": "cooccurrence", "raw": 0.0, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.0, "contribution": 0.0, "contribution_interval": null},
+        {"id": "repetition_penalty", "raw": 1.0, "normalized": null, "declared_weight": null, "operation": "subtract", "coefficient": 0.25, "contribution": 0.25, "contribution_interval": null}
+      ],
+      "inputs_hash": "sha256:df9b86d02e3cabea42e98ef18df165f6f8a227f8f144ae430496a43b5fcdc5fb",
+      "selected_component_id": null
+    }
+  },
+  {
+    "id": "amlfilter_match_confidence",
+    "consumer": "AML Filter",
+    "source": "hseshadr/aml-filter:frontend/packages/amlfilter-browser/src/engine/scoring.ts:62-93,174-191,341-437",
+    "scope": "numeric match confidence only",
+    "excluded_concerns": ["source_category_risk", "analyst_kyc_risk"],
+    "request": {
+      "method": "additive",
+      "method_version": "amlfilter.balanced-2026-08",
+      "terms": [
+        {"id": "name_vector", "label": "Name vector", "value": 1.0, "coefficient": 0.55, "operation": "add", "interval": null},
+        {"id": "name_trigram", "label": "Name trigram", "value": 0.5, "coefficient": 0.2, "operation": "add", "interval": null},
+        {"id": "alias_match", "label": "Alias match", "value": 1.0, "coefficient": 0.35, "operation": "add", "interval": null},
+        {"id": "dob_match", "label": "DOB match", "value": 0.5, "coefficient": 0.1, "operation": "add", "interval": null},
+        {"id": "country_match", "label": "Country match", "value": 1.0, "coefficient": 0.05, "operation": "add", "interval": null},
+        {"id": "entity_type_match", "label": "Entity type match", "value": 1.0, "coefficient": 0.0, "operation": "add", "interval": null}
+      ],
+      "clamp": "clamp",
+      "intercept": 0.0
+    },
+    "expected": {
+      "schema": "assay.result/v1",
+      "method": {"id": "additive", "version": "amlfilter.balanced-2026-08"},
+      "score": 1.0,
+      "interval": null,
+      "clamp": "clamp",
+      "intercept": 0.0,
+      "weight_total": null,
+      "components": [
+        {"id": "name_vector", "raw": 1.0, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.55, "contribution": 0.55, "contribution_interval": null},
+        {"id": "name_trigram", "raw": 0.5, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.2, "contribution": 0.1, "contribution_interval": null},
+        {"id": "alias_match", "raw": 1.0, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.35, "contribution": 0.35, "contribution_interval": null},
+        {"id": "dob_match", "raw": 0.5, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.1, "contribution": 0.05, "contribution_interval": null},
+        {"id": "country_match", "raw": 1.0, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.05, "contribution": 0.05, "contribution_interval": null},
+        {"id": "entity_type_match", "raw": 1.0, "normalized": null, "declared_weight": null, "operation": "add", "coefficient": 0.0, "contribution": 0.0, "contribution_interval": null}
+      ],
+      "inputs_hash": "sha256:64cecab703da9d0f2a473ad4a14c4ccb96b683d9b20169d1dcd650892eba0ff6",
+      "selected_component_id": null
+    }
+  },
+  {
+    "id": "almamesh_domain_strength_forward_tie",
+    "consumer": "AlmaMesh",
+    "source": "hseshadr/almamesh:backend/src/almamesh/domains/strength_summary.py:75-115",
+    "scope": "minimum of precomputed Shadbala and SAV percentages; calibration and bands stay external",
+    "native_score": 60,
+    "request": {
+      "method": "minimum",
+      "method_version": "almamesh.domain-strength-v1",
+      "components": [
+        {"id": "shadbala_pct", "label": "Shadbala percent", "value": 60.0, "scale": {"minimum": 0.0, "maximum": 100.0, "direction": "higher_is_better"}, "interval": null, "weight": null},
+        {"id": "sav_pct", "label": "SAV percent", "value": 60.0, "scale": {"minimum": 0.0, "maximum": 100.0, "direction": "higher_is_better"}, "interval": null, "weight": null}
+      ],
+      "clamp": "reject"
+    },
+    "expected": {
+      "schema": "assay.result/v1",
+      "method": {"id": "minimum", "version": "almamesh.domain-strength-v1"},
+      "score": 0.6,
+      "interval": null,
+      "clamp": "reject",
+      "intercept": null,
+      "weight_total": null,
+      "components": [
+        {"id": "shadbala_pct", "raw": 60.0, "normalized": 0.6, "declared_weight": null, "operation": "add", "coefficient": 1.0, "contribution": 0.6, "contribution_interval": null},
+        {"id": "sav_pct", "raw": 60.0, "normalized": 0.6, "declared_weight": null, "operation": "add", "coefficient": 1.0, "contribution": 0.6, "contribution_interval": null}
+      ],
+      "inputs_hash": "sha256:c1dd2da5ebd54dfcc6f3b250f118ce1fc6ce7f3dfc7d249cf7a5f7216d4eaa5e",
+      "selected_component_id": "shadbala_pct"
+    }
+  },
+  {
+    "id": "almamesh_domain_strength_reverse_tie",
+    "consumer": "AlmaMesh",
+    "source": "hseshadr/almamesh:backend/src/almamesh/domains/strength_summary.py:75-115",
+    "scope": "minimum of precomputed Shadbala and SAV percentages; calibration and bands stay external",
+    "native_score": 60,
+    "request": {
+      "method": "minimum",
+      "method_version": "almamesh.domain-strength-v1",
+      "components": [
+        {"id": "sav_pct", "label": "SAV percent", "value": 60.0, "scale": {"minimum": 0.0, "maximum": 100.0, "direction": "higher_is_better"}, "interval": null, "weight": null},
+        {"id": "shadbala_pct", "label": "Shadbala percent", "value": 60.0, "scale": {"minimum": 0.0, "maximum": 100.0, "direction": "higher_is_better"}, "interval": null, "weight": null}
+      ],
+      "clamp": "reject"
+    },
+    "expected": {
+      "schema": "assay.result/v1",
+      "method": {"id": "minimum", "version": "almamesh.domain-strength-v1"},
+      "score": 0.6,
+      "interval": null,
+      "clamp": "reject",
+      "intercept": null,
+      "weight_total": null,
+      "components": [
+        {"id": "sav_pct", "raw": 60.0, "normalized": 0.6, "declared_weight": null, "operation": "add", "coefficient": 1.0, "contribution": 0.6, "contribution_interval": null},
+        {"id": "shadbala_pct", "raw": 60.0, "normalized": 0.6, "declared_weight": null, "operation": "add", "coefficient": 1.0, "contribution": 0.6, "contribution_interval": null}
+      ],
+      "inputs_hash": "sha256:09c0694100a04d66119ca5712cb669459e7bece368e36f729d2bb1c98f4f1115",
+      "selected_component_id": "sav_pct"
+    }
+  }
+]

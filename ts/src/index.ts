@@ -1,28 +1,37 @@
-/**
- * `@edgeproc/avow` — the browser side of the Avow trust kernel.
- *
- * Two faces, mirroring the Python distribution of the same name:
- *
- * - **The envelope.** RFC-8785 canonical bytes + Ed25519 sign/verify, kept
- *   byte-compatible with the Python `avow` kernel by a shared golden-vector
- *   conformance suite. A receipt signed in Python verifies here; a receipt signed
- *   here verifies in Python.
- * - **The metrics.** Ranked-retrieval and binary-classification metrics, kept
- *   answer-compatible with the Python `assay` face by a second shared vector file.
- *   A recall@10 measured in a browser is the number the server would have printed.
- */
-
-export { canonicalBytes, contentHash, type JsonValue } from "./canonical.js";
+export { additive } from "./additive.js";
+export { compose } from "./compose.js";
+export type {
+  AdditiveRequest,
+  AdditiveTerm,
+  ClampPolicy,
+  Component,
+  Direction,
+  ExplainedComponent,
+  Interval,
+  Method,
+  MethodId,
+  MinimumRequest,
+  NativeScale,
+  Operation,
+  ScoreRequest,
+  ScoreResult,
+  WeightedComponent,
+  WeightedMeanRequest,
+} from "./contracts.js";
 export {
-  AvowError,
-  CanonicalizationFailed,
-  PayloadHashMismatch,
-  ReplayMismatch,
-  SignatureBytesInvalid,
-  SignatureInvalid,
-  SignerMismatch,
+  parseRequest,
+  parseRequestJson,
+  parseScoreResult,
+  parseScoreResultJson,
+} from "./contracts.js";
+export {
+  AssayError,
+  ContractCode,
+  ContractValidationError,
+  EmptyRelevantSet,
+  InvalidRankingRequest,
+  InvalidScoreRequest,
 } from "./errors.js";
-export { generateSeedHex, publicKeyHex } from "./keys.js";
 export {
   type BinaryRates,
   binaryRates,
@@ -32,6 +41,8 @@ export {
   ratesFromCounts,
   type ThresholdOptions,
 } from "./metrics.js";
+export { minimum } from "./minimum.js";
+export { normalize } from "./normalize.js";
 export {
   binaryJudgments,
   f1AtK,
@@ -40,10 +51,4 @@ export {
   precisionAtK,
   recallAtK,
 } from "./ranking.js";
-export { type SignedReceipt, signPayload, verifySignature } from "./receipt.js";
-export {
-  AssayError,
-  EmptyRelevantSet,
-  InvalidRankingRequest,
-  InvalidScoreRequest,
-} from "./scoringErrors.js";
+export { weightedMean } from "./weightedMean.js";

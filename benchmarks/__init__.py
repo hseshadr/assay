@@ -1,0 +1,1 @@
+"""Frozen Assay release benchmarks."""

@@ -56,7 +56,7 @@ class RelevanceJudgment(BaseModel):
 
 
 class RankedQuery(BaseModel):
-    """One query's evidence: what the system returned, in order, and what was judged.
+    """One query's scoring inputs: the returned order and relevance judgments.
 
     ``ranked`` is a *position* list — first element is the top hit — not scores. The two
     are deliberately separate: a ranking is judged against the whole judgment set,
@@ -85,9 +85,8 @@ class ItemRating(BaseModel):
 class AgreementRequest(BaseModel):
     """An inter-rater agreement request over one set of doubly-graded items.
 
-    ``scale`` is ORDERED, weakest band first, and is signed into the receipt. The same
-    ratings measured against a different band order are a different measurement, so the
-    order a number was computed under has to travel with the number."""
+    ``scale`` is ORDERED, weakest band first. The declared order is part of the scoring
+    method and result explanation because changing it changes the measurement."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -101,8 +100,8 @@ class RankingRequest(BaseModel):
     """A ranked-retrieval scoring request over a whole query set.
 
     ``k`` left as ``None`` means "use ``AssaySettings.ranking_k``"; whichever value ends
-    up applying is recorded in the receipt, so a reported precision@k always says which
-    k it was."""
+    up applying is method provenance, so a reported precision@k always explains which k
+    it used."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

@@ -1,25 +1,83 @@
-"""Assay: the scoring engine that refuses to lie — the score face of the Avow envelope.
-
-The scoring surface needs the heavy scientific stack (scikit-learn / scipy / numpy),
-installed via the ``avow[assay]`` extra. If it is missing we fail with a coded
-``ScoringExtraMissing`` instead of a raw ``ModuleNotFoundError`` traceback."""
+"""Assay combines heterogeneous measurements into explainable scores."""
 
 from __future__ import annotations
 
-from assay.errors import ScoringExtraMissing
-from avow import __version__
-
-try:
-    from assay.api import agreement_score, composite_score, ranking_score, replay, score, verify
-except ModuleNotFoundError as exc:  # pragma: no cover - only without the [assay] extra
-    raise ScoringExtraMissing("install avow[assay] to use the scoring face") from exc
+from assay._version import __version__
+from assay.compose import compose
+from assay.contracts import (
+    AdditiveRequest,
+    AdditiveTerm,
+    ClampPolicy,
+    Component,
+    Direction,
+    ExplainedComponent,
+    Interval,
+    Method,
+    MinimumRequest,
+    NativeScale,
+    Operation,
+    ScoreRequest,
+    ScoreResult,
+    WeightedMeanRequest,
+    parse_request,
+    parse_request_json,
+)
+from assay.errors import ContractValidationError
+from assay.measurement import (
+    AgreementMeasurementRequest,
+    AgreementMeasurementResult,
+    BinaryMeasurementRequest,
+    BinaryMeasurementResult,
+    BinaryMetricControls,
+    MeasurementRequest,
+    MeasurementResult,
+    OrdinalRating,
+    RankingMeasurementRequest,
+    RankingMeasurementResult,
+    RankingMetricControls,
+    RankingQueryInput,
+    RelevanceInput,
+    UncertaintyControls,
+    measure,
+    parse_measurement_json,
+)
+from assay.normalize import normalize
 
 __all__ = [
+    "AdditiveRequest",
+    "AdditiveTerm",
+    "AgreementMeasurementRequest",
+    "AgreementMeasurementResult",
+    "BinaryMeasurementRequest",
+    "BinaryMeasurementResult",
+    "BinaryMetricControls",
+    "ClampPolicy",
+    "Component",
+    "ContractValidationError",
+    "Direction",
+    "ExplainedComponent",
+    "Interval",
+    "MeasurementRequest",
+    "MeasurementResult",
+    "Method",
+    "MinimumRequest",
+    "NativeScale",
+    "Operation",
+    "OrdinalRating",
+    "RankingMeasurementRequest",
+    "RankingMeasurementResult",
+    "RankingMetricControls",
+    "RankingQueryInput",
+    "RelevanceInput",
+    "ScoreRequest",
+    "ScoreResult",
+    "UncertaintyControls",
+    "WeightedMeanRequest",
     "__version__",
-    "agreement_score",
-    "composite_score",
-    "ranking_score",
-    "replay",
-    "score",
-    "verify",
+    "compose",
+    "measure",
+    "normalize",
+    "parse_measurement_json",
+    "parse_request",
+    "parse_request_json",
 ]

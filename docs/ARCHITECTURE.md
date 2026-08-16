@@ -1,131 +1,101 @@
-# Avow architecture
+# Assay architecture
 
-One distribution (`avow`), three import packages, one dependency direction.
+> **TL;DR:** Assay has two independent production packages with one shared semantic
+> scoring contract. Repository support files do not become runtime packages.
 
-## The three packages and their import edges
+## Source to artifact map
 
-`assay` (scoring) and `writ` (effect) both import the `avow` envelope; `avow` imports
-neither. The arrows point one way only, which is what lets the envelope install without
-the science stack.
+Exactly two production source trees ship:
 
-```d2
-direction: right
-avow: "avow — the envelope\n(canonical · keys · envelope · verify · ledger · errors)"
-assay: "assay — scoring face\n(metrics · calibration · uncertainty · composite · api · cli)"
-writ: "writ — effect face\n(gate · policy · effector)"
-
-assay -> avow: imports
-writ -> avow: imports
+```text
+src/assay/  ──> assay-engine wheel ──> import assay
+ts/src/     ──> @edgeproc/assay npm tarball ──> import "@edgeproc/assay"
 ```
 
-**Enforced by construction** (and asserted in `tests/test_envelope_split.py`): importing
-`avow` loads no `assay`, no `writ`, and no scikit-learn/scipy. Base deps are the
-envelope's only — `pydantic`, `pydantic-settings`, `pynacl`, `rfc8785`.
+- `examples/` demonstrates installed artifacts.
+- `docs/` explains contracts and operations.
+- `tests/` enforces Python, documentation, artifact, and parity behavior.
+- `testdata/` holds shared language-neutral vectors.
 
-### Install matrix
+Those four directories support the repository. They are not a third production source
+tree and do not create another import package.
 
-| Command | Import packages available | For |
-|---|---|---|
-| `pip install avow` | `avow`, `writ` | signing/verifying receipts; the effect gate |
-| `pip install 'avow[assay]'` | `+ assay` | the scoring face (metrics, calibration, uncertainty, composite) |
-| `pip install 'avow[cli]'` | `+ assay` CLI (`assay` script) | the command-line tool |
+## Core data flow
 
-Import `assay` without the `[assay]` extra and it fails with a coded
-`ScoringExtraMissing`, never a bare `ModuleNotFoundError`.
-
-## Data flow (scoring face over the envelope)
-
-A request is computed into a deterministic payload; the payload is canonicalized and
-hashed; the hash is Ed25519-signed into a receipt; the receipt is (optionally) appended
-to a ledger and verified offline.
-
-```d2
-request: ScoreRequest / CompositeRequest        # assay
-compute: "metrics · calibration · uncertainty · composite (reused libs)"  # assay
-payload: ReceiptPayload (deterministic, no timestamp)  # assay.receipt
-hash: "avow.canonical (RFC 8785 JCS -> sha256)"
-sign: "avow.envelope (Ed25519 / PyNaCl)"
-receipt: "SignedReceipt[ReceiptPayload]"
-ledger: "avow.ledger (durable hash-chained JSONL + external head pin)"
-verify: "avow.verify (offline: recompute hash + pinned-key signature)"
-
-request -> compute -> payload -> hash -> sign -> receipt
-receipt -> ledger
-receipt -> verify
+```text
+unknown JSON
+    │
+    ▼
+strict request parser ──> typed weighted_mean | additive | minimum request
+    │
+    ▼
+declared-order finite binary64 arithmetic
+    │
+    ├──> ordered component explanations
+    ├──> propagated interval or null
+    └──> order-preserving inputs_hash
+             │
+             ▼
+         ScoreResult
 ```
 
-The complete runtime boundary is in [`OPERATIONS.md`](OPERATIONS.md): no hidden egress
-or persistence, plaintext retention and deletion duties, bounded ledger locking,
-crash-recovery behavior, supported filesystems, and the CI-enforced latency/RSS budgets.
+The public parser is the boundary. It rejects unknown fields, nonfinite numbers,
+malformed identifiers, duplicate component IDs, invalid scales or intervals, and
+method-specific shape errors before arithmetic. Requests are immutable after parsing.
 
-Every arrow is one-directional. Honesty invariants:
+The method version is caller-declared provenance. Assay includes it in the request
+fingerprint but does not interpret whether that version describes a good formula.
 
-1. **No timestamp in the signed payload** → the receipt hash is a pure function of the
-   inputs, so it reproduces byte-for-byte.
-2. **Sample-size floor** → below it, the scoring face abstains instead of emitting a
-   fabricated point estimate.
-3. **Fail-closed verification, with a pinned signer** → any tampered byte (payload or
-   signature) is detectable offline, with no network and no original inputs. Integrity
-   is not authenticity: the `public_key` field rides outside the signed payload, so
-   `verify` takes an `expected_public_key` the caller pins **out-of-band** (the `.pub`
-   from `keygen`) and rejects any receipt not signed by exactly that key.
+## Portable composition core
 
-## One trust envelope, two faces (score + effect)
+Both packages implement the same three methods:
 
-`avow.sign_payload` / `verify_signature` / `payload_digest` sign and check the canonical
-JSON of a frozen *subject* — they never inspect its fields. `assay.receipt.ReceiptPayload`
-is the *score* face's subject. `writ` defines its own frozen `EffectSubject` and reuses
-this same hash-sign-verify envelope unchanged; only the subject differs, never the trust
-boundary. `avow.verify_receipt` is generic over the subject, so one public verifier
-serves both faces (`demo/unification_demo.py`).
+- weighted mean: normalize, divide positive weights by their declared total, combine;
+- additive: multiply raw values by nonnegative coefficients, apply explicit signs in
+  order, then apply the optional final boundary;
+- minimum: normalize and choose the first lowest component.
 
-### The governed effect gate
+Both surfaces preserve field order, component order, binary64 results, and the exact
+`inputs_hash` for shared vectors. The fingerprint comes from a deterministic internal
+request encoding; it is not a claim about the bytes emitted by a language-native JSON
+serializer. [Methods](METHODS.md) defines the complete contract.
 
-```d2
-request: EffectRequest (action, target, args_digest)
-policy: "Policy.permits() — typed predicate (v1: OPA/Rego)"
-gate: "writ.gate — branch on the decision"
-effect: "effector.run — privileged side-effect (ALLOW only)"
-seal: "effector.seal — sign EffectSubject (ALWAYS)"
-receipt: "EffectReceipt = SignedReceipt[EffectSubject]"
+## Legacy Python compatibility
 
-request -> policy -> gate
-gate -> effect: allow
-gate -> seal
-effect -> seal: allow
-seal -> receipt
-```
+The wheel also retains the Python-only deep import `assay.composite` for callers still
+using `SubScore` and `composite(...)`. That migration adapter is not exported from the
+package root, does not return the portable typed method or `inputs_hash` fields, and is
+absent from TypeScript. For all new code, use package-root `parse_request()` and
+`compose()` with weighted mean, additive, or minimum.
 
-On **deny** the effect never runs and a signed denial receipt is sealed; on **allow**
-the effector runs the effect, then seals a signed effect receipt. Both are verifiable
-offline through the shared envelope under a pinned signer.
+## Python package
 
-**Un-bypassable seam — honest v0.** The effect credential (the signing key) and the
-privileged effect live only inside the `Effector`. `governed_gate(policy, effector)`
-captures the effector in the single closure the agent receives; the effector is never
-passed out, so the only path to the effect is back through the guard. This is a
-**capability-holding approximation**: the credential is still in-process, reachable by
-same-process reflection. TRUE un-bypassability — a **separate-process broker** or a
-**WASM guest**, where the agent's address space cannot reach the credential — is the
-**v1 hardening**. Even so, a bypass buys little: only the effector's held key can seal a
-receipt that verifies under the pinned signer, so any forged effect fails verification.
+The `assay-engine` base wheel depends only on Pydantic and includes contracts,
+normalization, composition, replay validation, and stable errors. The `cli` extra adds
+Typer for `assay compose`, `assay measure`, and `assay explain`. The `metrics` extra
+adds NumPy, SciPy, scikit-learn, ir-measures, and settings support.
 
-## Native vs browser (the byte-identity contract)
+Optional dependencies load only at optional entry points. Base composition works in a
+clean environment without the scientific stack. Missing extras fail with stable Assay
+error codes instead of leaking dependency exceptions.
 
-The kernel is designed to run unmodified both on CPython and in the browser, with
-cross-language byte identity **gated, not assumed**:
+## TypeScript package
 
-- **Native / CPython** consumers import the Python kernel directly.
-- **Pyodide** consumers `micropip`-install the same pure-Python wheel; `pynacl`,
-  `pydantic` and `pydantic-core` are in the official Pyodide lockfile and `rfc8785` is
-  pure Python — so the actual Python envelope runs in-browser, no crypto rewrite.
-- **Pure-TS** consumers use a sibling `@edgeproc/avow` package (RFC 8785 canonicalizer +
-  Ed25519 sign/verify). It is kept byte-compatible by replaying the golden vectors in
-  `testdata/vectors/` — the SAME files the Python suite replays. RFC 8785 number
-  serialization (ECMAScript shortest round-trip) is the known hazard, so the vectors
-  deliberately include `0.5`, `0.1`, `1e21`, `-0.0`, `1e-7`; any divergence fails in CI.
+The `@edgeproc/assay` tarball ships only compiled `dist/` output and has no runtime
+dependencies. Package-root exports provide strict request/result parsers, normalization,
+the three combiners, stable errors, and a smaller set of binary and ranking calculators.
 
-The TypeScript package `@edgeproc/avow` has already shipped — its source lives in this
-repo at `ts/`, it is published on npm, and the `ts-gate` job in CI replays the vectors in
-`testdata/vectors/` against it, so a cross-language divergence fails in CI, not
-production.
+The TypeScript source never imports the Python package. Shared vectors, not a runtime
+bridge, prove semantic agreement.
+
+## Application boundary
+
+Applications select the formula and method version, supply measurements and scales,
+interpret the result, and own any bands, thresholds, hard gates, fairness review,
+abstention rules, or decisions. Assay validates and explains declared arithmetic; it
+does not replace application policy.
+
+The engine performs no implicit persistence or runtime network I/O. The command-line
+adapter is the only core surface that reads or writes files, and it does so only for
+paths explicitly supplied by the operator. [Operations](OPERATIONS.md) defines that
+boundary.

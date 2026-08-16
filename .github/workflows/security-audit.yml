@@ -1,73 +1,98 @@
-# Weekly pip-audit over the locked dependency set.
-#
-# Deliberately its own workflow, not a CI step: new CVEs appear against unchanged
-# code, so this must run on a schedule — and a known-unfixable advisory must not
-# mask real code regressions in the main gate.
-# A red scheduled run counts as a red repo — check `gh run list` explicitly.
 name: Security audit
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   schedule:
-    - cron: "0 6 * * 1" # Mondays 06:00 UTC — advisories move without commits
-  workflow_dispatch:
+    - cron: "23 7 * * 1"
 
 permissions:
   contents: read
 
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  pip-audit:
-    runs-on: ubuntu-latest
+  secrets:
+    name: Full-history secret scan
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_SUMMARY: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+          GITLEAKS_VERSION: "8.30.1"
+      - name: Remove action-generated SARIF
+        if: ${{ always() }}
+        run: rm -f -- results.sarif
+      - name: Scan every commit and the current tree
+        run: |
+          gitleaks git --log-opts=--all --redact --no-banner .
+          gitleaks dir --redact --no-banner .
+          test ! -e results.sarif
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+  dependencies:
+    name: Locked dependency audits
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-
-      - name: Install uv
-        # Exact version in the comment, never a floating `# v9` — see ci.yml.
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          version: "latest"
+          version: "0.11.32"
+          enable-cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.13.0"
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: "11.5.0"
+          run_install: false
+      - name: Audit the frozen Python and npm graphs
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          uv lock --check
+          uv export --frozen --all-groups --all-extras --no-emit-project --format requirements.txt --output-file /tmp/assay-audit-requirements.txt
+          uvx --from pip-audit==2.10.1 pip-audit --requirement /tmp/assay-audit-requirements.txt --require-hashes --strict --disable-pip --progress-spinner off
+          pnpm --dir ts install --frozen-lockfile --ignore-scripts
+          pnpm --dir ts audit --audit-level high
+          test -z "$(git status --porcelain)"
 
-      - name: Export locked dependencies
-        # --all-extras: audit the scoring stack (scikit-learn/scipy/numpy) too, not
-        # just the light envelope base deps.
-        run: uv export --frozen --all-extras --no-emit-project --no-hashes -o requirements-audit.txt
-
-      # --disable-pip --no-deps: audit the pinned export directly, no venv.
-      # Safe because uv export pins the full transitive set from uv.lock.
-      - name: Audit dependencies for known vulnerabilities
-        run: uvx pip-audit -r requirements-audit.txt --disable-pip --no-deps
-
-  pnpm-audit:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ts
+  workflows:
+    name: Workflow security
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          version: 11.5.0
-          run_install: false
-
-      - name: Pin Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.3.0
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: ts/pnpm-lock.yaml
-
-      - name: Install locked dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Audit dependencies for known vulnerabilities
-        run: pnpm audit --audit-level low
+          version: "0.11.32"
+          enable-cache: false
+      - name: Run actionlint at a fixed version
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Run zizmor at a fixed version
+        run: uvx zizmor==1.29.0 --persona=pedantic --min-severity=low --offline --strict-collection .github
+      - name: Run ShellCheck over every shipped shell entry point
+        run: shellcheck examples/*.sh scripts/*.sh
+      - name: Prove workflow checks preserve the tree
+        run: test -z "$(git status --porcelain)"

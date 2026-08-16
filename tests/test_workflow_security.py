@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -84,6 +85,42 @@ def _yaml(path: Path) -> dict[object, object]:
     return document
 
 
+def _needs(job: dict[object, object]) -> tuple[str, ...]:
+    dependencies = job.get("needs")
+    if dependencies is None:
+        return ()
+    if isinstance(dependencies, str):
+        return (dependencies,)
+    assert isinstance(dependencies, list)
+    assert all(isinstance(dependency, str) for dependency in dependencies)
+    return tuple(dependencies)
+
+
+def _runs_disabled_release_guard(job: object) -> bool:
+    if not isinstance(job, dict):
+        return False
+    steps = job.get("steps", ())
+    if not isinstance(steps, list):
+        return False
+    return any(
+        isinstance(step, dict) and "scripts/verify_release_identity.py" in str(step.get("run", ""))
+        for step in steps
+    )
+
+
+def _is_publication_job(name: object, job: object) -> bool:
+    if not isinstance(name, str) or not isinstance(job, dict):
+        return False
+    permissions = job.get("permissions", {})
+    has_oidc = isinstance(permissions, dict) and permissions.get("id-token") == "write"
+    reusable = job.get("uses", "")
+    return (
+        name.startswith("publish")
+        or has_oidc
+        or (isinstance(reusable, str) and "publish" in reusable)
+    )
+
+
 def test_scheduled_security_audit_covers_python_and_typescript() -> None:
     workflow = _yaml(ROOT / ".github/workflows/security-audit.yml")
     triggers = workflow.get("on", workflow.get(True))
@@ -91,13 +128,14 @@ def test_scheduled_security_audit_covers_python_and_typescript() -> None:
     source = (ROOT / ".github/workflows/security-audit.yml").read_text(encoding="utf-8")
 
     assert isinstance(triggers, dict)
-    assert {"schedule", "workflow_dispatch"} <= set(triggers)
+    assert set(triggers) == {"push", "pull_request", "schedule"}
     assert isinstance(jobs, dict)
-    assert {"pip-audit", "pnpm-audit"} <= set(jobs)
-    assert "pnpm audit --audit-level low" in source
+    assert set(jobs) == {"secrets", "dependencies", "workflows"}
+    assert "uv export --frozen --all-groups --all-extras" in source
+    assert "pnpm --dir ts audit --audit-level high" in source
     package = json.loads((ROOT / "ts/package.json").read_text(encoding="utf-8"))
     version = package["packageManager"].removeprefix("pnpm@")
-    assert f"version: {version}" in source
+    assert f'version: "{version}"' in source
 
 
 def test_dependency_update_intake_covers_both_package_ecosystems() -> None:
@@ -123,33 +161,86 @@ def test_checkout_never_persists_push_credentials() -> None:
     assert offenders == []
 
 
-def test_publish_fails_closed_unless_tag_matches_both_artifact_versions() -> None:
+def test_should_accept_only_an_exact_release_identity() -> None:
     workflow = _yaml(ROOT / ".github/workflows/publish.yml")
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
-    assert "release-identity" in jobs
-    assert jobs["publish-pypi"]["needs"] == "release-identity"
-    assert jobs["publish-npm"]["needs"] == "release-identity"
-    identity = (ROOT / "scripts/verify_release_identity.py").read_text(encoding="utf-8")
-    assert "src/avow/_version.py" in identity
-    assert "ts/package.json" in identity
-    source = (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
-    assert "RELEASE_TAG: ${{ github.ref_name }}" in source
-    assert 'python scripts/verify_release_identity.py "$RELEASE_TAG"' in source
-    rejected = subprocess.run(
-        [sys.executable, "scripts/verify_release_identity.py", "v9.9.9"],
+    assert {"build", "preflight-python", "preflight-npm"} <= set(jobs)
+    command = str(jobs["build"])
+    assert "verify_release_identity.py" in command
+    assert '"$RELEASE_TAG" "$GITHUB_SHA"' in command
+    attempt = subprocess.run(
+        [sys.executable, "scripts/verify_release_identity.py", "v0.5.0-dev.0"],
         cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
     )
-    assert rejected.returncode == 1
-    version = json.loads((ROOT / "ts/package.json").read_text(encoding="utf-8"))["version"]
-    accepted = subprocess.run(  # noqa: S603 - version comes from this repository's manifest
-        [sys.executable, "scripts/verify_release_identity.py", f"v{version}"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
+    assert (attempt.returncode, attempt.stdout) == (1, "")
+    assert attempt.stderr == "usage: verify_release_identity.py vX.Y.Z GITHUB_SHA\n"
+
+
+def test_should_gate_every_publication_lane_behind_both_preflights() -> None:
+    # Given the tag-triggered trusted-publication workflow
+    jobs = _yaml(ROOT / ".github/workflows/publish.yml")["jobs"]
+    assert isinstance(jobs, dict)
+    # When both OIDC-capable lanes are inspected
+    for name in ("publish-python", "publish-npm"):
+        job = jobs[name]
+        assert isinstance(job, dict)
+        # Then neither lane starts before both registries have failed closed or passed
+        assert {"build", "preflight-python", "preflight-npm"} <= set(_needs(job))
+        assert job["permissions"] == {"actions": "read", "id-token": "write"}
+
+
+def test_should_run_the_complete_release_ci_contract() -> None:
+    # Given / When
+    workflow = _yaml(ROOT / ".github/workflows/ci.yml")
+    jobs = workflow["jobs"]
+    source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    # Then
+    assert isinstance(jobs, dict)
+    assert set(jobs) == {
+        "python",
+        "typescript",
+        "parity",
+        "mutation",
+        "example",
+        "benchmarks",
+        "artifacts",
+    }
+    assert "benchmarks.release" in source
+    assert "poe mutants" in source
+    assert 'node-version: "22.13.0"' in source
+    assert 'version: "11.5.0"' in source
+
+
+def test_should_activate_only_existing_assay_mutations() -> None:
+    # Given / When
+    namespace = runpy.run_path(ROOT / "scripts/mutation_harness.py")
+    mutations = namespace["MUTATIONS"]
+    targets = {mutation.target for mutation in mutations}
+
+    # Then
+    assert targets
+    assert all(
+        target.startswith("src/assay/")
+        or target.startswith("ts/src/")
+        or target == "ts/pnpm-workspace.yaml"
+        or target in {"testdata/vectors/metrics.json", "testdata/vectors/composition.json"}
+        for target in targets
     )
-    assert accepted.returncode == 0
+    assert all((ROOT / target).is_file() for target in targets)
+
+
+def test_should_allow_only_exact_assay_vector_mutation_paths() -> None:
+    # Given the mutation harness's target-boundary predicate
+    namespace = runpy.run_path(ROOT / "scripts/mutation_harness.py")
+    allowed = namespace["_is_allowed_assay_target"]
+    # When exact and near-miss testdata paths are checked
+    # Then only the two owned Assay vector files cross the boundary
+    assert allowed("testdata/vectors/metrics.json")
+    assert allowed("testdata/vectors/composition.json")
+    assert not allowed("testdata/vectors/composition.json.bak")
+    assert not allowed("testdata/vectors/unrelated.json")

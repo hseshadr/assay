@@ -8,13 +8,13 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { AssayError, InvalidScoreRequest } from "./errors.js";
 import {
   binaryRates,
   confusionCounts,
   DEFAULT_THRESHOLD,
   ratesFromCounts,
 } from "./metrics.js";
-import { AssayError, InvalidScoreRequest } from "./scoringErrors.js";
 
 // Predictions at 0.5 are (0,1,0,1) against labels (0,0,1,1): one of every cell.
 const Y_TRUE = [0, 0, 1, 1];

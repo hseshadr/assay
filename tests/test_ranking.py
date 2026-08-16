@@ -8,13 +8,13 @@ property, and would stay green through the exact bugs this module exists to catc
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
-from nacl.signing import SigningKey
 
-from assay.api import ranking_score, verify
-from assay.errors import EmptyRelevantSet, InvalidRankingRequest, UnknownMetric
-from assay.models import RankedQuery, RankingRequest, RelevanceJudgment
+from assay.errors import EmptyRelevantSet, InvalidRankingRequest
+from assay.models import RankedQuery, RelevanceJudgment
 from assay.ranking import (
     average_precision,
     binary_judgments,
@@ -28,10 +28,6 @@ from assay.ranking import (
 )
 from assay.settings import AssaySettings
 from assay.uncertainty import Abstention, Interval
-
-_SEED = bytes(range(32))
-_KEY = SigningKey(_SEED)
-_EXPECTED = bytes(_KEY.verify_key).hex()
 
 # Four judged-relevant documents; the ranker returned five, hitting at positions 1, 3, 5.
 _RELEVANT = binary_judgments(["d1", "d3", "d5", "d9"])
@@ -197,6 +193,17 @@ def test_should_mean_average_precision_across_a_query_set() -> None:
     assert mean_average_precision(queries) == pytest.approx(0.75)
 
 
+def test_should_preserve_numpy_map_rounding_bit_for_bit() -> None:
+    # Given AP values 1, 1/3, 1 whose mean differs by one ULP under fmean
+    queries = (
+        _query("first", ["a"], ["a"]),
+        _query("third", ["a"], ["b", "c", "a"]),
+        _query("last", ["a"], ["a"]),
+    )
+    # Then the published NumPy aggregation bit pattern remains unchanged
+    assert mean_average_precision(queries).hex() == "0x1.8e38e38e38e38p-1"
+
+
 # --------------------------------------------------------------------------------------
 # Refusals — every one of these would otherwise return a number nobody should believe
 # --------------------------------------------------------------------------------------
@@ -267,6 +274,18 @@ def test_should_refuse_a_fractional_relevance_gain() -> None:
         average_precision({"a": 0.5}, ("a", "b"))
     # And whole gains handed over as floats stay accepted — that is the public type
     assert ndcg_at_k({"a": 2.0, "b": 1.0}, ("a", "b"), 2) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("gain", [math.nan, math.inf, -math.inf])
+def test_should_refuse_nonfinite_relevance_gain_without_echoing_id(gain: float) -> None:
+    # Given a caller-owned identifier attached to a non-finite grade
+    private_id = "customer-private-document"
+    # When a graded ranking metric is requested
+    with pytest.raises(InvalidRankingRequest) as caught:
+        ndcg_at_k({private_id: gain}, (private_id,), 1)
+    # Then only the stable code crosses the failure boundary
+    assert str(caught.value) == "assay.invalid_ranking_request"
+    assert private_id not in str(caught.value)
 
 
 def test_should_refuse_a_document_judged_twice_in_one_query() -> None:
@@ -395,63 +414,3 @@ def test_should_stay_inside_zero_and_one_for_every_metric_and_every_input() -> N
         # And precision at the full list length is exactly the hit rate
         hits = len(set(ranked) & {d for d, g in relevant.items() if g > 0})
         assert precision_at_k(relevant, ranked, len(ranked)) == pytest.approx(hits / len(ranked))
-
-
-# --------------------------------------------------------------------------------------
-# The receipt: a ranking measurement is sealable like any other Assay number
-# --------------------------------------------------------------------------------------
-
-
-def _request(n: int = 4) -> RankingRequest:
-    return RankingRequest(metric_version="1", queries=_query_set(n), k=2)
-
-
-def test_should_seal_a_ranking_report_into_a_verifiable_receipt() -> None:
-    # Given a ranking request over a query set
-    request = _request()
-    # When it is scored into a receipt
-    receipt = ranking_score(request, signing_key=_KEY, settings=AssaySettings())
-    # Then the receipt verifies against the pinned signer and carries the ranking detail
-    assert verify(receipt, expected_public_key=_EXPECTED) is True
-    assert receipt.payload.metric == "ranking"
-    assert receipt.payload.ranking is not None
-    assert receipt.payload.ranking.k == 2
-    assert receipt.payload.ranking.n_queries == 4
-    assert receipt.payload.ranking.mean_ndcg_at_k == pytest.approx(1.0)
-    # And the headline score abstains below the sample floor, as classification does
-    assert receipt.payload.abstained is True
-    assert receipt.payload.score is None
-
-
-def test_should_carry_the_headline_ndcg_when_above_the_sample_floor() -> None:
-    # Given enough queries to support an interval
-    request = RankingRequest(metric_version="1", queries=_query_set(12), k=2)
-    settings = AssaySettings(min_samples=10, bootstrap_resamples=499)
-    # When it is scored
-    receipt = ranking_score(request, signing_key=_KEY, settings=settings)
-    # Then the headline score is mean nDCG@k with its interval, and nothing abstains
-    assert receipt.payload.abstained is False
-    assert receipt.payload.score == pytest.approx(1.0)
-    assert receipt.payload.interval_low is not None
-
-
-def test_should_refuse_an_unregistered_metric_name_on_a_ranking_request() -> None:
-    # Given a request naming a metric the ranking face does not implement
-    request = RankingRequest(metric="mystery", metric_version="1", queries=_query_set(2))
-    # When it is scored
-    # Then it refuses: the metric label is signed into the receipt, so it is verified
-    with pytest.raises(UnknownMetric):
-        ranking_score(request, signing_key=_KEY, settings=AssaySettings())
-
-
-def test_should_fail_verification_when_a_ranking_receipt_is_tampered() -> None:
-    # Given a sealed ranking receipt
-    receipt = ranking_score(_request(), signing_key=_KEY, settings=AssaySettings())
-    assert receipt.payload.ranking is not None
-    # When the reported mean nDCG is edited upward, leaving the stale hash in place
-    forged = receipt.payload.model_copy(
-        update={"ranking": receipt.payload.ranking.model_copy(update={"mean_ndcg_at_k": 0.99})}
-    )
-    tampered = receipt.model_copy(update={"payload": forged})
-    # Then verification fails — the number is bound to the signature, not merely asserted
-    assert verify(tampered, expected_public_key=_EXPECTED) is False

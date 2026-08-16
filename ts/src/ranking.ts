@@ -36,7 +36,7 @@
  * their only implementation.
  */
 
-import { EmptyRelevantSet, InvalidRankingRequest } from "./scoringErrors.js";
+import { EmptyRelevantSet, InvalidRankingRequest } from "./errors.js";
 
 /**
  * Document id -> graded gain. Gain > 0 means relevant; larger means more relevant.

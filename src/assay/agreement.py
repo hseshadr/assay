@@ -42,18 +42,21 @@ number. Sorted-by-accident is not a scale. The caller declares the order, always
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol, cast
 
-import numpy as np
 from pydantic import BaseModel, ConfigDict
-from scipy.stats import kendalltau
-from sklearn.metrics import cohen_kappa_score
 
+from assay._optional import call_dependency, dependency_failed, load_callable, load_module
 from assay.errors import InvalidAgreementRequest
+from assay.limits import MAX_ITEMS, MAX_SCALE_LEVELS
 from assay.models import ItemRating
-from assay.settings import AssaySettings
 from assay.uncertainty import Estimate, mean_interval
+
+if TYPE_CHECKING:
+    from assay.settings import AssaySettings
 
 type Scale = Sequence[str]
 """The band names in order, weakest first. The order IS the measurement."""
@@ -70,6 +73,11 @@ _TAU_UNDEFINED = (
     "at least one rater used a single band for every item, so there is no rank variation "
     "for tau-b to concord"
 )
+
+
+class _StatisticResult(Protocol):
+    statistic: object
+
 
 __all__ = [
     "AgreementReport",
@@ -112,7 +120,7 @@ class AgreementReport(BaseModel):
 
 
 def _require_scale(scale: Scale) -> None:
-    if len(scale) < _MIN_LEVELS:
+    if not _MIN_LEVELS <= len(scale) <= MAX_SCALE_LEVELS:
         raise InvalidAgreementRequest(
             f"an ordinal scale needs at least {_MIN_LEVELS} bands, got {len(scale)}"
         )
@@ -127,6 +135,8 @@ def _require_paired(rater_a: Sequence[str], rater_b: Sequence[str]) -> None:
         )
     if not rater_a:
         raise InvalidAgreementRequest("no items were graded; there is nothing to agree about")
+    if len(rater_a) > MAX_ITEMS:
+        raise InvalidAgreementRequest
 
 
 def _ordinals(ratings: Sequence[str], positions: Mapping[str, int]) -> list[int]:
@@ -165,6 +175,7 @@ def percent_agreement(rater_a: Sequence[str], rater_b: Sequence[str], *, scale: 
 
     Carried because it is the number people reach for — and because the report exists to
     show, side by side, why it is not enough."""
+    load_module("numpy")
     ordinals_a, ordinals_b = _validate(rater_a, rater_b, scale)
     matches = sum(a == b for a, b in zip(ordinals_a, ordinals_b, strict=True))
     return matches / len(ordinals_a)
@@ -175,35 +186,64 @@ def weighted_agreement(rater_a: Sequence[str], rater_b: Sequence[str], *, scale:
 
     Still uncorrected for chance — that correction is what kappa adds on top of it."""
     ordinals_a, ordinals_b = _validate(rater_a, rater_b, scale)
-    return float(np.mean(_per_item_weights(ordinals_a, ordinals_b, len(scale))))
+    return _numpy_mean(_per_item_weights(ordinals_a, ordinals_b, len(scale)))
 
 
 def quadratic_kappa(
     rater_a: Sequence[str], rater_b: Sequence[str], *, scale: Scale
 ) -> float | None:
-    """Sklearn quadratic kappa using the caller's declared ordinal scale.
-
-    Returns ``None`` when chance agreement is total and the denominator is zero."""
+    """Sklearn quadratic kappa, or ``None`` when chance agreement is total."""
     _validate(rater_a, rater_b, scale)
     if len(set(rater_a) | set(rater_b)) < _MIN_LEVELS:
         return None
-    return float(cohen_kappa_score(rater_a, rater_b, labels=list(scale), weights="quadratic"))
+    return _kappa_score(rater_a, rater_b, scale)
+
+
+def _kappa_score(rater_a: Sequence[str], rater_b: Sequence[str], scale: Scale) -> float:
+    return _finite_float(
+        _call(
+            "sklearn.metrics",
+            "cohen_kappa_score",
+            rater_a,
+            rater_b,
+            labels=list(scale),
+            weights="quadratic",
+        )
+    )
 
 
 def kendall_tau_b(rater_a: Sequence[str], rater_b: Sequence[str], *, scale: Scale) -> float | None:
-    """Kendall's tau-b over the two raters' band positions — ``scipy.stats.kendalltau``.
-
-    ``variant="b"`` is the tie-corrected form, and ties are the normal case here: a
-    three-band scale over fifty items ties constantly. tau-a would divide by every pair
-    including the tied ones and report near-zero concordance for graders who track each
-    other exactly.
-
-    ``None`` when either rater used a single band throughout — a constant column has no
-    ranks to be concordant with."""
+    """Tie-corrected rank concordance, or ``None`` for a constant rater."""
     ordinals_a, ordinals_b = _validate(rater_a, rater_b, scale)
     if min(len(set(ordinals_a)), len(set(ordinals_b))) < _MIN_LEVELS:
         return None
-    return float(kendalltau(ordinals_a, ordinals_b, variant="b").statistic)
+    raw = _call("scipy.stats", "kendalltau", ordinals_a, ordinals_b, variant="b")
+    statistic = call_dependency(_statistic, raw)
+    if dependency_failed(statistic):
+        raise InvalidAgreementRequest
+    return _finite_float(statistic)
+
+
+def _statistic(value: object) -> object:
+    return cast(_StatisticResult, value).statistic
+
+
+def _call(module: str, name: str, *args: object, **kwargs: object) -> object:
+    result = call_dependency(load_callable(module, name), *args, **kwargs)
+    if dependency_failed(result):
+        raise InvalidAgreementRequest
+    return result
+
+
+def _finite_float(value: object) -> float:
+    converted = call_dependency(float, value)
+    if dependency_failed(converted) or not math.isfinite(cast(float, converted)):
+        raise InvalidAgreementRequest
+    return cast(float, converted)
+
+
+def _numpy_mean(values: Sequence[float]) -> float:
+    return _finite_float(_call("numpy", "mean", values))
 
 
 def _require_distinct_items(ratings: Sequence[ItemRating]) -> None:
@@ -243,13 +283,22 @@ def _report(data: _ReportInputs, settings: AssaySettings) -> AgreementReport:
         n_items=len(data.per_item),
         n_exact_matches=sum(a == b for a, b in zip(data.rater_a, data.rater_b, strict=True)),
         percent_agreement=percent_agreement(data.rater_a, data.rater_b, scale=data.scale),
-        weighted_agreement=float(np.mean(data.per_item)),
+        weighted_agreement=_numpy_mean(data.per_item),
         quadratic_kappa=kappa,
         kappa_undefined_reason=None if kappa is not None else _KAPPA_UNDEFINED,
         kendall_tau_b=tau,
         tau_undefined_reason=None if tau is not None else _TAU_UNDEFINED,
         weighted_agreement_interval=_interval(data.per_item, settings),
     )
+
+
+def _report_inputs(ratings: Sequence[ItemRating], scale: Scale) -> _ReportInputs:
+    _require_distinct_items(ratings)
+    rater_a = [row.rater_a for row in ratings]
+    rater_b = [row.rater_b for row in ratings]
+    ordinals_a, ordinals_b = _validate(rater_a, rater_b, scale)
+    weights = _per_item_weights(ordinals_a, ordinals_b, len(scale))
+    return _ReportInputs(tuple(rater_a), tuple(rater_b), tuple(scale), tuple(weights))
 
 
 def agreement_report(
@@ -260,10 +309,4 @@ def agreement_report(
     ``ratings`` is item-keyed rather than two loose parallel lists, because the item id is
     what makes "the same item graded twice" detectable — a duplicate would let one
     disputed item vote twice and quietly reweight the whole measurement."""
-    _require_distinct_items(ratings)
-    rater_a = [row.rater_a for row in ratings]
-    rater_b = [row.rater_b for row in ratings]
-    ordinals_a, ordinals_b = _validate(rater_a, rater_b, scale)
-    per_item = _per_item_weights(ordinals_a, ordinals_b, len(scale))
-    data = _ReportInputs(tuple(rater_a), tuple(rater_b), tuple(scale), tuple(per_item))
-    return _report(data, settings)
+    return _report(_report_inputs(ratings, scale), settings)

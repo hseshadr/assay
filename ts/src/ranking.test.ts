@@ -14,6 +14,11 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  AssayError,
+  EmptyRelevantSet,
+  InvalidRankingRequest,
+} from "./errors.js";
+import {
   binaryJudgments,
   f1AtK,
   type Judgments,
@@ -21,11 +26,6 @@ import {
   precisionAtK,
   recallAtK,
 } from "./ranking.js";
-import {
-  AssayError,
-  EmptyRelevantSet,
-  InvalidRankingRequest,
-} from "./scoringErrors.js";
 
 // Four judged-relevant documents; the ranker returned five, hitting at positions 1, 3, 5.
 const RELEVANT: Judgments = binaryJudgments(["d1", "d3", "d5", "d9"]);
