@@ -8,10 +8,11 @@
 
 ## Immutable local candidate
 
-- Corrected source candidate: `cb8983c5b8d305a6693d2568a3bf9060b70be894`
-- Corrected source tree: `fcb980e91dc535b25d7b7ebe88c4b9793299b7f8`
+- Corrected source candidate: `c2524966787acb71e38a417ffed312b4955f11ad`
+- Corrected source tree: `335772b0059ceff2fd85459ebcf222d91804f20a`
 - Correction commits: `d56b737e3f3f440665058652074ddf18ee26e51e` and
-  `cb8983c5b8d305a6693d2568a3bf9060b70be894`
+  `cb8983c5b8d305a6693d2568a3bf9060b70be894`, followed by final boundary commit
+  `c2524966787acb71e38a417ffed312b4955f11ad`
 - Review baseline: `41e5e9105769c9d48631db037f16a7c3dddb9842`
 - Task baseline: `6756fbc41d5394f6b3395e0992a90f11ee065b67`
 - Local compatibility ref: `release/avow-0.4.x` is exactly
@@ -78,6 +79,14 @@ only from deliberately constructing a duplicate ZIP member; it is now captured a
 focused warnings-as-errors replay passed `1 passed in 40.03s`, and the final complete gate reports
 no warnings.
 
+The final independent review then exposed seven additional boundary failures. The RED witness was
+`7 failed`: a correct-size response without `Content-Length` was accepted, the privileged npm
+recheck did not bind the returned package name, raw tar aliases and wrong wheel/sdist identity
+roots survived normalization, and the publish/local release lanes lacked unconditional cleanup and
+full-tree proof. The smallest corrective implementation produced `9 passed` in the focused archive,
+download, and workflow set, then `117 passed` in the expanded release/workflow/security contract
+set. Ruff, format, strict mypy, Xenon Grade A, actionlint, and pedantic zizmor all remained green.
+
 ## Final release-candidate evidence
 
 The clean source candidate ran:
@@ -90,7 +99,7 @@ PATH=<Node-22.13.0-bin>:<pnpm-11.5.0-wrapper>:<fixed-system-path> \
 It exited `0` and cleaned every generated release and publisher output. Evidence within that one
 run:
 
-- Python: `792 passed in 469.85s`, zero warnings, branch-aware coverage `94.30%`; Ruff, format,
+- Python: `797 passed in 512.66s`, zero warnings, branch-aware coverage `94.30%`; Ruff, format,
   strict mypy, Xenon Grade A, and the 15-line shipped-function contract all green.
 - TypeScript: `12/12` files and `160/160` tests; statements `98.19%`, branches `96.11%`, functions
   `100%`, lines `99.44%`; Biome, typecheck, and build green.
@@ -107,15 +116,15 @@ run:
 
 Every heavy scenario uses five independent child processes, nearest-rank percentiles, per-child
 timeouts, and actual per-child high-water RSS. The CI benchmark job also has a 15-minute bound.
-These reports contain exact source SHA `cb8983c5b8d305a6693d2568a3bf9060b70be894`:
+These reports contain exact source SHA `c2524966787acb71e38a417ffed312b4955f11ad`:
 
 | Workload | Count | Samples | p50 ms | p95 ms | p99 ms | Peak RSS MiB |
 |---|---:|---:|---:|---:|---:|---:|
-| Python composition batch | 2,000 | 5 | 179.892 | 181.264 | 181.264 | 38.406 |
-| Python minimum compose + replay | 150,000 | 5 | 10,626.642 | 10,677.305 | 10,677.305 | 898.563 |
-| Python binary measurement | 10,000 | 5 | 509.972 | 861.820 | 861.820 | 130.766 |
-| TypeScript composition batch | 2,000 | 5 | 93.639 | 96.998 | 96.998 | 58.438 |
-| TypeScript minimum compose + replay | 150,000 | 5 | 2,573.123 | 2,597.820 | 2,597.820 | 810.828 |
+| Python composition batch | 2,000 | 5 | 179.547 | 182.041 | 182.041 | 38.391 |
+| Python minimum compose + replay | 150,000 | 5 | 10,694.547 | 10,758.353 | 10,758.353 | 898.484 |
+| Python binary measurement | 10,000 | 5 | 540.195 | 791.899 | 791.899 | 130.891 |
+| TypeScript composition batch | 2,000 | 5 | 95.661 | 100.261 | 100.261 | 58.234 |
+| TypeScript minimum compose + replay | 150,000 | 5 | 2,589.963 | 2,690.960 | 2,690.960 | 810.672 |
 
 The binary workload explicitly uses 99 resamples: 990,000 bootstrap work cells, below the
 10,000,000-cell cap.
@@ -165,7 +174,7 @@ builds use the locked, no-isolation path.
 
 - actionlint `1.7.12`: green.
 - zizmor `1.29.0`, pedantic, low severity, offline, strict collection over `.github`: no findings.
-- Gitleaks `8.30.1`: 176 commits / approximately 2.47 MiB full history and approximately 4.00 MiB
+- Gitleaks `8.30.1`: 178 commits / approximately 2.49 MB full history and approximately 4.02 MB
   current tree scanned; no leaks.
 - The sole historical false positive is ignored only by its exact fingerprint, with rationale
   `documented Ed25519 public key test vector; not secret`. Tests reject broad rule, path, or history
