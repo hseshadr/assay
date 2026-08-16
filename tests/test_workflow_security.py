@@ -226,7 +226,20 @@ def test_should_activate_only_existing_assay_mutations() -> None:
     # Then
     assert targets
     assert all(
-        target.startswith("src/assay/") or target == "testdata/vectors/metrics.json"
+        target.startswith("src/assay/")
+        or target in {"testdata/vectors/metrics.json", "testdata/vectors/composition.json"}
         for target in targets
     )
     assert all((ROOT / target).is_file() for target in targets)
+
+
+def test_should_allow_only_exact_assay_vector_mutation_paths() -> None:
+    # Given the mutation harness's target-boundary predicate
+    namespace = runpy.run_path(ROOT / "scripts/mutation_harness.py")
+    allowed = namespace["_is_allowed_assay_target"]
+    # When exact and near-miss testdata paths are checked
+    # Then only the two owned Assay vector files cross the boundary
+    assert allowed("testdata/vectors/metrics.json")
+    assert allowed("testdata/vectors/composition.json")
+    assert not allowed("testdata/vectors/composition.json.bak")
+    assert not allowed("testdata/vectors/unrelated.json")

@@ -559,7 +559,7 @@ class AdditiveRequest(_ContractModel):
     method: Literal["additive"]
     method_version: _StableIdentifier
     terms: tuple[AdditiveTerm, ...]
-    clamp: _ExplicitClampPolicy
+    clamp: _ExplicitClampPolicy | None
     intercept: _FiniteNumber = 0.0
 
     @model_validator(mode="after")
@@ -597,6 +597,7 @@ class ScoreResult(_ContractModel):
     interval: Interval | None = None
     components: tuple[ExplainedComponent, ...]
     inputs_hash: _InputsHash
+    selected_component_id: _StableIdentifier | None = None
 
     @model_validator(mode="after")
     def _validate_components(self) -> Self:

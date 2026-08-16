@@ -1,24 +1,150 @@
-"""Weighted multi-scale composite with propagated uncertainty.
-
-Each sub-score is normalized to [0,1] by its own scale, then combined as a
-positive-weighted mean. Because the mean is monotone in each input, the composite
-interval is the same weighted mean applied to the sub-scores' lows and highs —
-exact interval arithmetic, no fabricated tightening."""
+"""Shared deterministic composition helpers and the legacy composite adapter."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import hashlib
+import json
+import math
+import struct
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, NoReturn
 
-from assay.errors import InvalidScoreRequest
+from assay.contracts import (
+    AdditiveRequest,
+    AdditiveTerm,
+    Component,
+    Interval,
+    MinimumRequest,
+    ScoreRequest,
+    WeightedMeanRequest,
+)
+from assay.errors import ContractCode, ContractValidationError, InvalidScoreRequest
 
-MIN_SUBSCORES: Final[int] = 3
+MIN_SUBSCORES: Final = 3
+_PREIMAGE_VERSION: Final = "assay.request/v1"
+
+
+def _fail(code: ContractCode) -> NoReturn:
+    raise ContractValidationError(code) from None
+
+
+def canonical_zero(value: float) -> float:
+    """Return portable positive zero without changing any other finite value."""
+    return 0.0 if value == 0.0 else value
+
+
+def finite_output(value: float) -> float:
+    """Refuse non-finite arithmetic before it reaches a result contract."""
+    if not math.isfinite(value):
+        _fail(ContractCode.INVALID_NUMBER)
+    return canonical_zero(value)
+
+
+def left_add(values: Iterable[float], initial: float = 0.0) -> float:
+    """Add in declared order using direct IEEE-754 operations."""
+    total = finite_output(initial)
+    for value in values:
+        total = finite_output(total + value)
+    return total
+
+
+def interval_or_none(low: float, high: float) -> Interval | None:
+    """Represent a collapsed propagated interval as deterministic output."""
+    ordered_low = finite_output(min(low, high))
+    ordered_high = finite_output(max(low, high))
+    return None if ordered_low == ordered_high else Interval(low=ordered_low, high=ordered_high)
+
+
+def _float_token(value: float) -> str:
+    return f"f64:{struct.pack('!d', value).hex()}"
+
+
+def _interval_token(interval: Interval | None) -> object:
+    if interval is None:
+        return None
+    return (_float_token(interval.low), _float_token(interval.high))
+
+
+def _component_token(component: Component) -> object:
+    scale = component.scale
+    weight = None if component.weight is None else _float_token(component.weight)
+    return (
+        component.id,
+        component.label,
+        _float_token(component.value),
+        (_float_token(scale.minimum), _float_token(scale.maximum), scale.direction.value),
+        _interval_token(component.interval),
+        weight,
+    )
+
+
+def _term_token(term: AdditiveTerm) -> object:
+    return (
+        term.id,
+        term.label,
+        _float_token(term.value),
+        _float_token(term.coefficient),
+        term.operation.value,
+        _interval_token(term.interval),
+    )
+
+
+def _weighted_token(request: WeightedMeanRequest) -> object:
+    components = tuple(_component_token(item) for item in request.components)
+    return (
+        _PREIMAGE_VERSION,
+        request.method,
+        request.method_version,
+        request.clamp.value,
+        components,
+    )
+
+
+def _additive_token(request: AdditiveRequest) -> object:
+    policy = None if request.clamp is None else request.clamp.value
+    terms = tuple(_term_token(item) for item in request.terms)
+    return (
+        _PREIMAGE_VERSION,
+        request.method,
+        request.method_version,
+        policy,
+        _float_token(request.intercept),
+        terms,
+    )
+
+
+def _minimum_token(request: MinimumRequest) -> object:
+    components = tuple(_component_token(item) for item in request.components)
+    return (
+        _PREIMAGE_VERSION,
+        request.method,
+        request.method_version,
+        request.clamp.value,
+        components,
+    )
+
+
+def inputs_preimage(request: ScoreRequest) -> str:
+    """Encode a request as UTF-8 JSON arrays with every float as big-endian f64 hex."""
+    if isinstance(request, WeightedMeanRequest):
+        token = _weighted_token(request)
+    elif isinstance(request, AdditiveRequest):
+        token = _additive_token(request)
+    else:
+        token = _minimum_token(request)
+    return json.dumps(token, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+
+def inputs_hash(request: ScoreRequest) -> str:
+    """Hash the documented, order-preserving, cross-language request preimage."""
+    digest = hashlib.sha256(inputs_preimage(request).encode()).hexdigest()
+    return f"sha256:{digest}"
 
 
 @dataclass(frozen=True)
 class SubScore:
-    """One input sub-score with its native scale and an uncertainty interval."""
+    """Legacy v0 input retained until the optional-metrics migration."""
 
     name: str
     value: float
@@ -31,7 +157,7 @@ class SubScore:
 
 @dataclass(frozen=True)
 class NormalizedSubScore:
-    """A sub-score after normalization to [0,1]."""
+    """Legacy normalized part retained for source compatibility."""
 
     name: str
     normalized_value: float
@@ -40,7 +166,7 @@ class NormalizedSubScore:
 
 @dataclass(frozen=True)
 class CompositeScore:
-    """The composite value with its propagated interval and normalized parts."""
+    """Legacy v0 result retained for source compatibility."""
 
     value: float
     low: float
@@ -48,54 +174,55 @@ class CompositeScore:
     parts: tuple[NormalizedSubScore, ...]
 
 
-def _require_min_count(subscores: Sequence[SubScore]) -> None:
+def _require_legacy_count(subscores: Sequence[SubScore]) -> None:
     if len(subscores) < MIN_SUBSCORES:
-        raise InvalidScoreRequest("composite needs at least three sub-scores")
+        raise InvalidScoreRequest
 
 
-def _require_increasing_scales(subscores: Sequence[SubScore]) -> None:
-    if any(s.scale_max <= s.scale_min for s in subscores):
-        raise InvalidScoreRequest("scale_max must exceed scale_min")
+def _require_legacy_scales(subscores: Sequence[SubScore]) -> None:
+    if any(score.scale_max <= score.scale_min for score in subscores):
+        raise InvalidScoreRequest
 
 
-def _require_positive_weight(subscores: Sequence[SubScore]) -> None:
-    if any(s.weight <= 0 for s in subscores):
-        raise InvalidScoreRequest("each sub-score weight must be positive")
+def _require_legacy_weights(subscores: Sequence[SubScore]) -> None:
+    if any(score.weight <= 0 for score in subscores):
+        raise InvalidScoreRequest
 
 
-def _require_ordered_intervals(subscores: Sequence[SubScore]) -> None:
-    if any(not (s.low <= s.value <= s.high) for s in subscores):
-        raise InvalidScoreRequest("each sub-score must satisfy low <= value <= high")
+def _require_legacy_intervals(subscores: Sequence[SubScore]) -> None:
+    if any(not score.low <= score.value <= score.high for score in subscores):
+        raise InvalidScoreRequest
 
 
-def _validate(subscores: Sequence[SubScore]) -> None:
-    _require_min_count(subscores)
-    _require_increasing_scales(subscores)
-    _require_positive_weight(subscores)
-    _require_ordered_intervals(subscores)
+def _validate_legacy(subscores: Sequence[SubScore]) -> None:
+    _require_legacy_count(subscores)
+    _require_legacy_scales(subscores)
+    _require_legacy_weights(subscores)
+    _require_legacy_intervals(subscores)
 
 
-def _normalize(x: float, s: SubScore) -> float:
-    return min(1.0, max(0.0, (x - s.scale_min) / (s.scale_max - s.scale_min)))
+def _legacy_normalize(value: float, score: SubScore) -> float:
+    result = (value - score.scale_min) / (score.scale_max - score.scale_min)
+    return min(1.0, max(0.0, result))
 
 
-def _weighted(
-    subscores: Sequence[SubScore], total_w: float, pick: Callable[[SubScore], float]
+def _legacy_weighted(
+    subscores: Sequence[SubScore], total: float, pick: Callable[[SubScore], float]
 ) -> float:
-    return sum(s.weight * _normalize(pick(s), s) for s in subscores) / total_w
+    return sum(score.weight * _legacy_normalize(pick(score), score) for score in subscores) / total
 
 
-def _part(s: SubScore) -> NormalizedSubScore:
-    return NormalizedSubScore(s.name, _normalize(s.value, s), s.weight)
+def _legacy_part(score: SubScore) -> NormalizedSubScore:
+    return NormalizedSubScore(score.name, _legacy_normalize(score.value, score), score.weight)
 
 
 def composite(subscores: Sequence[SubScore]) -> CompositeScore:
-    """Combine >= 3 multi-scale sub-scores into one interval-carrying composite."""
-    _validate(subscores)
-    total_w = sum(s.weight for s in subscores)
+    """Run the legacy v0 weighted composite while callers migrate to ``compose``."""
+    _validate_legacy(subscores)
+    total = sum(score.weight for score in subscores)
     return CompositeScore(
-        value=_weighted(subscores, total_w, lambda s: s.value),
-        low=_weighted(subscores, total_w, lambda s: s.low),
-        high=_weighted(subscores, total_w, lambda s: s.high),
-        parts=tuple(_part(s) for s in subscores),
+        value=_legacy_weighted(subscores, total, lambda score: score.value),
+        low=_legacy_weighted(subscores, total, lambda score: score.low),
+        high=_legacy_weighted(subscores, total, lambda score: score.high),
+        parts=tuple(_legacy_part(score) for score in subscores),
     )

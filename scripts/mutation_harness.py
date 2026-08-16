@@ -68,6 +68,7 @@ _LEDGER = "src/avow/ledger.py"
 _SETTINGS = "src/assay/settings.py"
 _VECTORS = "testdata/vectors/canonical.json"
 _METRIC_VECTORS = "testdata/vectors/metrics.json"
+_COMPOSITION_VECTORS = "testdata/vectors/composition.json"
 _PNPM_WORKSPACE = "ts/pnpm-workspace.yaml"
 _TS_RANKING = "ts/src/ranking.ts"
 _TS_METRICS = "ts/src/metrics.ts"
@@ -126,6 +127,11 @@ def _drop_last_metric_vector(text: str) -> str:
         raise MutationNotAppliedError("fewer than two ranking cases; nothing to drop")
     vectors["ranking"] = vectors["ranking"][:-1]
     return json.dumps(vectors, indent=2) + "\n"
+
+
+def _zero_composition_vectors(_text: str) -> str:
+    """Remove every composition oracle so non-vacuous replay must fail."""
+    return "[]\n"
 
 
 def _delete_throw(statement: str) -> Callable[[str], str]:
@@ -727,13 +733,164 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
 )
 
 
+_COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
+    Mutation(
+        name="composition-honors-normalization-direction",
+        claim="lower-is-better endpoints reverse before weighted composition",
+        target="src/assay/normalize.py",
+        guard=(
+            "tests/test_weighted_mean.py::test_should_propagate_weighted_interval_endpoints_in_declared_direction",
+        ),
+        edit=_replace_once(
+            "    if scale.direction is Direction.LOWER_IS_BETTER:",
+            "    if scale.direction is Direction.HIGHER_IS_BETTER:",
+        ),
+    ),
+    Mutation(
+        name="weighted-mean-divides-by-total-weight",
+        claim="each declared weight is divided by the total positive weight",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::test_should_normalize_before_dividing_by_total_weight",
+        ),
+        edit=_replace_once(
+            "    coefficient = finite_output(_weight(component) / total)",
+            "    coefficient = finite_output(_weight(component))",
+        ),
+    ),
+    Mutation(
+        name="additive-subtraction-keeps-its-sign",
+        claim="a subtract term lowers the running total",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_preserve_unbounded_negative_consumer_score_when_policy_is_null",
+        ),
+        edit=_replace_once(
+            "    return finite_output(total - contribution)",
+            "    return finite_output(total + contribution)",
+        ),
+    ),
+    Mutation(
+        name="additive-terms-run-in-declared-order",
+        claim="direct IEEE-754 evaluation never reorders additive terms",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_apply_intercept_and_terms_strictly_left_to_right_without_division",
+        ),
+        edit=_replace_once("    for row in rows:", "    for row in reversed(rows):"),
+    ),
+    Mutation(
+        name="additive-clamps-only-the-final-score",
+        claim="an intermediate overshoot is not clamped before later terms run",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_clamp_only_after_all_terms_and_preserve_explanations",
+        ),
+        edit=_replace_once(
+            "        total = _apply(total, row.contribution, row.operation)",
+            "        total = _final(_apply(total, row.contribution, row.operation), request.clamp)",
+        ),
+    ),
+    Mutation(
+        name="minimum-is-not-maximum",
+        claim="the limiting candidate is the lowest normalized value",
+        target="src/assay/minimum.py",
+        guard=(
+            "tests/test_minimum.py::test_should_select_lowest_normalized_component_and_explain_every_candidate",
+        ),
+        edit=_replace_once(
+            "    selected = min(rows, key=lambda row: row.contribution)",
+            "    selected = max(rows, key=lambda row: row.contribution)",
+        ),
+    ),
+    Mutation(
+        name="minimum-ties-keep-first-declared-component",
+        claim="equal minima never sort by identifier before selection",
+        target="src/assay/minimum.py",
+        guard=(
+            "tests/test_minimum.py::test_should_choose_first_tied_component_without_sorting_identifiers",
+        ),
+        edit=_replace_once(
+            "    selected = min(rows, key=lambda row: row.contribution)",
+            "    selected = min(sorted(rows, key=lambda row: row.id), "
+            "key=lambda row: row.contribution)",
+        ),
+    ),
+    Mutation(
+        name="weighted-explanation-keeps-raw-value",
+        claim="weighted explanations report the original native value",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::test_should_normalize_before_dividing_by_total_weight",
+        ),
+        edit=_replace_once("        raw=component.value,", "        raw=normalized,"),
+    ),
+    Mutation(
+        name="additive-explanation-keeps-exact-contribution",
+        claim="additive explanations report raw times coefficient",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_preserve_unbounded_negative_consumer_score_when_policy_is_null",
+        ),
+        edit=_replace_once(
+            "        contribution=_contribution(term),",
+            "        contribution=term.value,",
+        ),
+    ),
+    Mutation(
+        name="subtract-interval-reverses-term-endpoints",
+        claim="subtract uses term high for result low and term low for result high",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_propagate_add_and_subtract_interval_endpoints",
+        ),
+        edit=_replace_once(
+            "    return finite_output(low - term_high), finite_output(high - term_low)",
+            "    return finite_output(low - term_low), finite_output(high - term_high)",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-label",
+        claim="display-label changes alter the complete request digest",
+        target="src/assay/composite.py",
+        guard=(
+            "tests/test_weighted_mean.py::test_should_emit_method_schema_determinism_and_pinned_inputs_hash",
+        ),
+        edit=_replace_once("        component.label,", '        "",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-operation",
+        claim="add versus subtract changes the complete additive request digest",
+        target="src/assay/composite.py",
+        guard=(
+            "tests/test_consumer_conformance.py::test_should_replay_every_literal_consumer_result_exactly",
+        ),
+        edit=_replace_once("        term.operation.value,", '        "add",'),
+    ),
+    Mutation(
+        name="composition-vectors-are-non-vacuous",
+        claim="an empty composition vector file cannot report successful replay",
+        target=_COMPOSITION_VECTORS,
+        guard=(
+            "tests/test_consumer_conformance.py::test_should_ship_every_named_consumer_oracle_without_personal_data",
+        ),
+        edit=_zero_composition_vectors,
+    ),
+)
+
+
+def _is_allowed_assay_target(target: str) -> bool:
+    """Admit Assay source plus the two exact Assay-owned vector files."""
+    vector_targets = frozenset((_METRIC_VECTORS, _COMPOSITION_VECTORS))
+    return target.startswith("src/assay/") or target in vector_targets
+
+
 def _is_active_assay_mutation(mutation: Mutation) -> bool:
     """Keep only scoring guards whose targets remain in the Assay distribution."""
-    is_assay_source = mutation.target.startswith("src/assay/")
-    return mutation.runner == _PYTEST and (is_assay_source or mutation.target == _METRIC_VECTORS)
+    return mutation.runner == _PYTEST and _is_allowed_assay_target(mutation.target)
 
 
-MUTATIONS = tuple(filter(_is_active_assay_mutation, _MIXED_PRODUCT_MUTATIONS))
+MUTATIONS = (*filter(_is_active_assay_mutation, _MIXED_PRODUCT_MUTATIONS), *_COMPOSITION_MUTATIONS)
 
 
 @dataclass(frozen=True)

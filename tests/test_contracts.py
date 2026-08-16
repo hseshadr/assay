@@ -115,6 +115,32 @@ def _additive_request() -> AdditiveRequest:
     )
 
 
+def test_should_round_trip_explicit_unbounded_additive_policy() -> None:
+    # Given an additive request that explicitly declines a final unit bound
+    request = AdditiveRequest(
+        method="additive",
+        method_version="edge-v1",
+        terms=(_term(),),
+        clamp=None,
+    )
+    # When it crosses both JSON parsers
+    payload = request.model_dump_json()
+    # Then null remains explicit and both public paths preserve it
+    assert '"clamp":null' in payload
+    assert AdditiveRequest.model_validate_json(payload) == request
+    assert parse_request_json(payload) == request
+
+
+def test_should_reject_missing_additive_policy_even_though_null_is_valid() -> None:
+    # Given an additive request object with no final-policy field
+    payload = _additive_request().model_dump(exclude={"clamp"})
+    # When it crosses the public parser
+    with pytest.raises(ContractValidationError) as caught:
+        parse_request(payload)
+    # Then omission is distinct from an explicit unbounded null
+    assert caught.value.code == ContractCode.MISSING_FIELD.value
+
+
 def _minimum_request() -> MinimumRequest:
     return MinimumRequest(
         method="minimum",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from assay._version import __version__
+from assay.compose import compose
 from assay.contracts import (
     AdditiveRequest,
     AdditiveTerm,
@@ -41,6 +42,7 @@ __all__ = [
     "ScoreResult",
     "WeightedMeanRequest",
     "__version__",
+    "compose",
     "normalize",
     "parse_request",
     "parse_request_json",
