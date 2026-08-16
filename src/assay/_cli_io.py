@@ -43,7 +43,7 @@ def read_input(path: str) -> bytes:
     """Read one bounded regular file through a single already-open descriptor."""
     descriptor = -1
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
         return _read_regular(descriptor)
     except OSError:
         raise CliInputInvalid from None

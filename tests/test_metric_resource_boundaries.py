@@ -5,8 +5,10 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import pytest
+import scipy.stats
 import sklearn.calibration
 
 from assay import _optional
@@ -102,3 +104,70 @@ def test_should_reject_calibration_bounds_before_calling_sklearn(
     with pytest.raises(InvalidScoreRequest):
         calibration_report([0, 1], [0.1, 0.9], n_bins=10**100)
     assert not called
+
+
+def test_should_reject_bootstrap_work_budget_before_calling_scipy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a finite request whose 30 billion resampled cells exceed the work budget
+    called = False
+
+    def mark_called(*_args: object, **_kwargs: object) -> object:
+        nonlocal called
+        called = True
+        return SimpleNamespace(confidence_interval=SimpleNamespace(low=0.0, high=1.0))
+
+    monkeypatch.setattr(scipy.stats, "bootstrap", mark_called)
+    _optional.load_callable.cache_clear()
+    _optional.load_object.cache_clear()
+
+    # When / Then validation refuses it before resolving or calling SciPy
+    try:
+        with pytest.raises(InvalidScoreRequest, match=r"^assay\.invalid_request$"):
+            mean_interval(
+                [0.0, 1.0] * 15_000,
+                min_samples=30,
+                n_resamples=1_000_000,
+                confidence_level=0.95,
+                seed=0,
+            )
+        assert not called
+    finally:
+        _optional.load_callable.cache_clear()
+        _optional.load_object.cache_clear()
+
+
+def test_should_bound_scipy_batch_cells_for_accepted_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given an accepted four-million-cell workload and a SciPy-shaped dependency
+    observed_batch: object = None
+
+    def record_batch(*_args: object, **kwargs: object) -> object:
+        nonlocal observed_batch
+        observed_batch = kwargs.get("batch")
+        bounds = SimpleNamespace(low=0.25, high=0.75)
+        return SimpleNamespace(confidence_interval=bounds)
+
+    monkeypatch.setattr(scipy.stats, "bootstrap", record_batch)
+    _optional.load_callable.cache_clear()
+    _optional.load_object.cache_clear()
+    samples = [0.0, 1.0] * 1_000
+
+    # When the real uncertainty adapter invokes SciPy
+    try:
+        result = mean_interval(
+            samples,
+            min_samples=30,
+            n_resamples=2_000,
+            confidence_level=0.95,
+            seed=0,
+        )
+    finally:
+        _optional.load_callable.cache_clear()
+        _optional.load_object.cache_clear()
+
+    # Then peak resample cells are explicitly capped without changing the estimate
+    assert isinstance(observed_batch, int)
+    assert observed_batch * len(samples) <= 1_000_000
+    assert (result.point, result.low, result.high) == (0.5, 0.25, 0.75)

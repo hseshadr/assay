@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,10 +13,13 @@ from pydantic import ValidationError
 
 from assay import (
     AgreementMeasurementRequest,
+    AgreementMeasurementResult,
     BinaryMeasurementRequest,
+    BinaryMeasurementResult,
     BinaryMetricControls,
     OrdinalRating,
     RankingMeasurementRequest,
+    RankingMeasurementResult,
     RankingMetricControls,
     RankingQueryInput,
     RelevanceInput,
@@ -24,6 +28,7 @@ from assay import (
     parse_measurement_json,
 )
 from assay.errors import AssayError, InvalidSettings, UnknownMetric
+from assay.measurement import BinaryMeasurementReport
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -253,6 +258,124 @@ def test_should_freeze_measurement_contracts_and_forbid_extra_fields() -> None:
             **request.model_dump(),
             private_extra="PRIVATE_SENTINEL",
         )
+
+
+def test_should_reject_forged_binary_result_on_every_validation_path() -> None:
+    # Given NaN, coercive text, negative counts, oversized controls, and inverted bounds
+    result = measure(_binary_request())
+    coercive = result.model_dump(mode="json", by_alias=True)
+    coercive_report = coercive["report"]
+    assert isinstance(coercive_report, dict)
+    classification = coercive_report["classification"]
+    assert isinstance(classification, dict)
+    classification["accuracy"] = "0.5"
+
+    # When / Then direct construction rejects numeric coercion
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult(
+            metric="binary",
+            metric_version=result.metric_version,
+            controls=result.controls,
+            report=coercive_report,
+        )
+
+    # Given a distinct report with a negative confusion cell
+    negative = result.model_dump(mode="json", by_alias=True)
+    negative_report = negative["report"]
+    assert isinstance(negative_report, dict)
+    negative_classification = negative_report["classification"]
+    assert isinstance(negative_classification, dict)
+    counts = negative_classification["counts"]
+    assert isinstance(counts, dict)
+    counts["false_negatives"] = -1
+
+    # When / Then direct validation rejects the negative family value independently
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate(negative)
+
+    # Given a valid wire whose uncertainty bounds contradict their point
+    wire = result.model_dump(mode="json", by_alias=True)
+    wire_report = wire["report"]
+    assert isinstance(wire_report, dict)
+    interval = wire_report["accuracy_interval"]
+    assert isinstance(interval, dict)
+    interval.update({"low": 1.1, "high": 0.9})
+
+    # When / Then JSON validation rejects the inverted bounds without details
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(wire))
+
+    # When / Then copy validation rejects an oversized result control
+    controls = {**result.controls.model_dump(), "bootstrap_resamples": 1_000_001}
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        result.model_copy(update={"controls": controls})
+
+    # When / Then a model_construct forgery is revalidated rather than trusted
+    forged_scores = replace(result.report.classification, accuracy=float("nan"))
+    forged_report = BinaryMeasurementReport.model_construct(
+        classification=forged_scores,
+        calibration=result.report.calibration,
+        accuracy_interval=result.report.accuracy_interval,
+    )
+    forged = BinaryMeasurementResult.model_construct(
+        schema_version="assay.measurement/v1",
+        metric="binary",
+        metric_version=result.metric_version,
+        controls=result.controls,
+        report=forged_report,
+    )
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate(forged)
+
+
+def test_should_reject_forged_ranking_result_invariants() -> None:
+    # Given a ranking result whose counts, controls, and interval disagree
+    result = measure(_ranking_request())
+    payload = result.model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    report["n_queries"] = -1
+    report["k"] = "2"
+
+    # When / Then family validation is strict and value-free
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        RankingMeasurementResult.model_validate_json(json.dumps(payload))
+
+    # Given a valid report whose query count no longer matches its rows
+    mismatch = result.model_dump(mode="json", by_alias=True)
+    mismatch_report = mismatch["report"]
+    assert isinstance(mismatch_report, dict)
+    mismatch_report["n_queries"] = 3
+
+    # When / Then standalone result replay refuses the contradiction
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        RankingMeasurementResult.model_validate(mismatch)
+
+
+def test_should_reject_forged_agreement_result_invariants() -> None:
+    # Given an agreement result with coercive counts and inverted uncertainty
+    result = measure(_agreement_request())
+    payload = result.model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    report["n_items"] = "3"
+    interval = report["weighted_agreement_interval"]
+    assert isinstance(interval, dict)
+    interval.update({"low": 0.9, "high": 0.1})
+
+    # When / Then JSON replay returns only the agreement-family error
+    with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
+        AgreementMeasurementResult.model_validate_json(json.dumps(payload))
+
+    # Given a count that contradicts the exact-match population
+    mismatch = result.model_dump(mode="json", by_alias=True)
+    mismatch_report = mismatch["report"]
+    assert isinstance(mismatch_report, dict)
+    mismatch_report["n_exact_matches"] = 4
+
+    # When / Then direct replay refuses it
+    with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
+        AgreementMeasurementResult.model_validate(mismatch)
 
 
 def test_should_execute_library_measurement_from_metrics_only_wheel(

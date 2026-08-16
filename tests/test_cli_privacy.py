@@ -225,6 +225,42 @@ def test_should_reject_oversized_or_nonregular_input_without_path_echo(
     assert all(result.stderr == "FAIL: assay.cli_input_invalid\n" for result in results)
 
 
+def test_should_reject_fifo_input_without_blocking_or_writing(
+    installed_cli: Path, tmp_path: Path
+) -> None:
+    # Given a real FIFO with no writer and a private destination
+    request = tmp_path / "PRIVATE_FIFO"
+    output = tmp_path / "PRIVATE_OUTPUT.json"
+    os.mkfifo(request)
+
+    # When the installed command opens the non-regular input
+    try:
+        completed = subprocess.run(
+            [
+                str(installed_cli),
+                "compose",
+                "--request",
+                str(request),
+                "--out",
+                str(output),
+            ],
+            cwd=tmp_path,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("CLI blocked while opening a FIFO input")
+
+    # Then it fails immediately with no path leak or output mutation
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == "FAIL: assay.cli_input_invalid\n"
+    assert "PRIVATE" not in completed.stderr
+    assert not output.exists()
+
+
 def test_should_reject_tampered_result_without_echoing_private_fields(
     installed_cli: Path, tmp_path: Path
 ) -> None:

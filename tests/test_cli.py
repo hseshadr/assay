@@ -142,6 +142,22 @@ def _agreement_request() -> dict[str, object]:
     }
 
 
+def _over_budget_binary_request() -> dict[str, object]:
+    return {
+        "metric": "binary",
+        "metric_version": "classification.2026-08",
+        "y_true": [index % 2 for index in range(30_000)],
+        "y_score": [0.25 if index % 2 == 0 else 0.75 for index in range(30_000)],
+        "controls": {
+            "min_samples": 30_001,
+            "bootstrap_resamples": 1_000_000,
+            "confidence_level": 0.95,
+            "ece_bins": 15,
+            "bootstrap_seed": 7,
+        },
+    }
+
+
 def test_should_compose_northstar_request_from_installed_cli(
     installed_cli: Path, tmp_path: Path
 ) -> None:
@@ -200,6 +216,23 @@ def test_should_fail_with_metrics_extra_code_after_cli_only_parse(
     assert completed.stderr == "FAIL: assay.metrics_extra_missing\n"
 
 
+def test_should_reject_over_budget_measurement_before_cli_only_dependency_load(
+    installed_cli: Path, tmp_path: Path
+) -> None:
+    # Given a valid sub-megabyte contract that requests 30 billion resampled cells
+    request = tmp_path / "PRIVATE_WORKLOAD.json"
+    request.write_text(json.dumps(_over_budget_binary_request()), encoding="utf-8")
+
+    # When the CLI-only wheel parses it without metric dependencies
+    completed = _invoke_cli(installed_cli, tmp_path, "measure", "--request", str(request))
+
+    # Then the request budget wins over the missing-extra boundary without path disclosure
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == "FAIL: assay.invalid_settings\n"
+    assert "PRIVATE" not in completed.stderr
+
+
 def test_should_measure_binary_family_from_installed_full_cli(
     installed_full_cli: Path, tmp_path: Path
 ) -> None:
@@ -224,6 +257,25 @@ def test_should_measure_binary_family_from_installed_full_cli(
     assert payload["metric"] == "binary"
     assert set(payload["report"]) == {"classification", "calibration", "accuracy_interval"}
     assert "score" not in payload
+
+
+def test_should_reject_over_budget_measurement_from_installed_full_cli(
+    installed_full_cli: Path, tmp_path: Path
+) -> None:
+    # Given the same bounded-size request in a wheel carrying every metric dependency
+    request = tmp_path / "PRIVATE_WORKLOAD.json"
+    encoded = json.dumps(_over_budget_binary_request())
+    request.write_text(encoded, encoding="utf-8")
+    assert len(encoded.encode("utf-8")) < 1_048_576
+
+    # When it reaches the full installed command
+    completed = _invoke_cli(installed_full_cli, tmp_path, "measure", "--request", str(request))
+
+    # Then it is rejected before scientific execution with the same static code
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == "FAIL: assay.invalid_settings\n"
+    assert "PRIVATE" not in completed.stderr
 
 
 @pytest.mark.parametrize(

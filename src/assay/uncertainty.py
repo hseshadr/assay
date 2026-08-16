@@ -16,7 +16,13 @@ from typing import Literal, Protocol, cast
 
 from assay._optional import call_dependency, dependency_failed, load_callable
 from assay.errors import InvalidScoreRequest
-from assay.limits import MAX_BOOTSTRAP_RESAMPLES, MAX_ITEMS, MAX_SEED
+from assay.limits import (
+    MAX_BOOTSTRAP_BATCH_CELLS,
+    MAX_BOOTSTRAP_RESAMPLES,
+    MAX_BOOTSTRAP_WORK_CELLS,
+    MAX_ITEMS,
+    MAX_SEED,
+)
 
 
 @dataclass(frozen=True)
@@ -81,7 +87,13 @@ def _bootstrap_result(data: Sequence[float], settings: _BootstrapSettings) -> ob
             confidence_level=settings.confidence_level,
             method="percentile",
             rng=settings.seed,
+            batch=_batch_size(len(data), settings.n_resamples),
         )
+
+
+def _batch_size(sample_count: int, resamples: int) -> int:
+    cells_per_batch = max(1, MAX_BOOTSTRAP_BATCH_CELLS // max(1, sample_count))
+    return min(resamples, cells_per_batch)
 
 
 def _confidence_bounds(result: object) -> tuple[object, object]:
@@ -135,6 +147,8 @@ def _validate_samples(samples: Sequence[float]) -> None:
 def _validate(samples: Sequence[float], settings: _BootstrapSettings) -> None:
     _validate_settings(settings)
     _validate_samples(samples)
+    if len(samples) * settings.n_resamples > MAX_BOOTSTRAP_WORK_CELLS:
+        raise InvalidScoreRequest
 
 
 def _call(module: str, name: str, *args: object, **kwargs: object) -> object:

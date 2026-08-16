@@ -6,9 +6,19 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from typing import Annotated, ClassVar, Literal, cast, overload
+from typing import Annotated, ClassVar, Literal, Self, cast, overload
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
+from pydantic.config import ExtraValues
 
 from assay.agreement import AgreementReport, agreement_report
 from assay.calibration import CalibrationReport, calibration_report
@@ -24,6 +34,7 @@ from assay.errors import (
 )
 from assay.limits import (
     MAX_BOOTSTRAP_RESAMPLES,
+    MAX_BOOTSTRAP_WORK_CELLS,
     MAX_CALIBRATION_BINS,
     MAX_ITEMS,
     MAX_RANKING_K,
@@ -35,7 +46,7 @@ from assay.metrics import ClassificationScores, binary_scores, correctness, requ
 from assay.models import ItemRating, RankedQuery, RelevanceJudgment
 from assay.ranking import RankingReport, ranking_report
 from assay.settings import AssaySettings
-from assay.uncertainty import Estimate, mean_interval
+from assay.uncertainty import Abstention, Estimate, Interval, mean_interval
 
 __all__ = [
     "AgreementMeasurementRequest",
@@ -56,13 +67,33 @@ __all__ = [
     "parse_measurement_json",
 ]
 
-_CONFIG = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+_CONFIG = ConfigDict(
+    frozen=True,
+    extra="forbid",
+    from_attributes=True,
+    hide_input_in_errors=True,
+    populate_by_name=True,
+    revalidate_instances="always",
+)
 _STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _MAX_TEXT_LENGTH = 256
 _MIN_SCALE_LEVELS = 2
 _BINARY_CLASS_COUNT = 2
 _SURROGATE_MIN = 0xD800
 _SURROGATE_MAX = 0xDFFF
+_OptionalBool = bool | None
+_OptionalExtra = ExtraValues | None
+_PythonValidationOptions = tuple[
+    _OptionalBool,
+    _OptionalExtra,
+    _OptionalBool,
+    object | None,
+    _OptionalBool,
+    _OptionalBool,
+]
+_JsonValidationOptions = tuple[
+    _OptionalBool, _OptionalExtra, object | None, _OptionalBool, _OptionalBool
+]
 
 
 def _finite(value: object) -> float:
@@ -148,6 +179,11 @@ def _require_known_ratings(values: tuple[str, ...], scale: tuple[str, ...]) -> N
         raise InvalidAgreementRequest
 
 
+def _require_workload(sample_count: int, resamples: int) -> None:
+    if sample_count * resamples > MAX_BOOTSTRAP_WORK_CELLS:
+        raise InvalidSettings
+
+
 type _Probability = Annotated[float, BeforeValidator(_probability)]
 type _Finite = Annotated[float, BeforeValidator(_finite)]
 type _BinaryLabel = Annotated[int, BeforeValidator(_binary_label)]
@@ -156,6 +192,16 @@ type _NonnegativeInt = Annotated[int, BeforeValidator(_nonnegative_int)]
 type _Confidence = Annotated[float, BeforeValidator(_confidence)]
 type _Identifier = Annotated[str, BeforeValidator(_identifier)]
 type _SafeText = Annotated[str, BeforeValidator(_safe_text)]
+
+
+def _result_json(data: str | bytes | bytearray, error: type[AssayError]) -> Mapping[str, object]:
+    try:
+        decoded = json.loads(data)
+    except (ValueError, UnicodeDecodeError, TypeError, RecursionError):
+        raise error from None
+    if not isinstance(decoded, Mapping):
+        raise error
+    return cast(Mapping[str, object], decoded)
 
 
 class _MeasurementModel(BaseModel):
@@ -167,6 +213,74 @@ class _MeasurementModel(BaseModel):
             super().__init__(**data)
         except ValidationError:
             raise self._error from None
+
+    @classmethod
+    def model_validate(
+        cls,
+        obj: object,
+        *,
+        strict: _OptionalBool = None,
+        extra: _OptionalExtra = None,
+        from_attributes: _OptionalBool = None,
+        context: object | None = None,
+        by_alias: _OptionalBool = None,
+        by_name: _OptionalBool = None,
+    ) -> Self:
+        options = (strict, extra, from_attributes, context, by_alias, by_name)
+        return cls._validate_python(obj, options)
+
+    @classmethod
+    def _validate_python(cls, obj: object, options: _PythonValidationOptions) -> Self:
+        strict, extra, from_attributes, context, by_alias, by_name = options
+        try:
+            return super().model_validate(
+                obj,
+                strict=strict,
+                extra=extra,
+                from_attributes=from_attributes,
+                context=context,
+                by_alias=by_alias,
+                by_name=by_name,
+            )
+        except ValidationError:
+            raise cls._error from None
+
+    @classmethod
+    def model_validate_json(
+        cls,
+        data: str | bytes | bytearray,
+        *,
+        strict: _OptionalBool = None,
+        extra: _OptionalExtra = None,
+        context: object | None = None,
+        by_alias: _OptionalBool = None,
+        by_name: _OptionalBool = None,
+    ) -> Self:
+        options = (strict, extra, context, by_alias, by_name)
+        return cls._validate_decoded_json(data, options)
+
+    @classmethod
+    def _validate_decoded_json(
+        cls, data: str | bytes | bytearray, options: _JsonValidationOptions
+    ) -> Self:
+        strict, extra, context, by_alias, by_name = options
+        decoded = _result_json(data, cls._error)
+        return cls.model_validate(
+            decoded,
+            strict=strict,
+            extra=extra,
+            context=context,
+            by_alias=by_alias,
+            by_name=by_name,
+        )
+
+    def model_copy(self, *, update: Mapping[str, object] | None = None, deep: bool = False) -> Self:
+        candidate = super().model_copy(update=update, deep=deep)
+        return type(self).model_validate(candidate)
+
+    @model_serializer(mode="wrap")
+    def _serialize_validated(self, handler: SerializerFunctionWrapHandler) -> object:
+        return handler(type(self).model_validate(self))
 
 
 class UncertaintyControls(_MeasurementModel):
@@ -257,6 +371,7 @@ class BinaryMeasurementRequest(_MeasurementModel):
             raise InvalidScoreRequest
         if len(set(self.y_true)) != _BINARY_CLASS_COUNT:
             raise InvalidScoreRequest
+        _require_workload(len(self.y_true), self.controls.bootstrap_resamples)
         return self
 
 
@@ -269,6 +384,11 @@ class RankingMeasurementRequest(_MeasurementModel):
     queries: Annotated[tuple[RankingQueryInput, ...], Field(min_length=1, max_length=MAX_ITEMS)]
     k: Annotated[_PositiveInt, Field(le=MAX_RANKING_K)] = 10
     controls: RankingMetricControls = RankingMetricControls()
+
+    @model_validator(mode="after")
+    def _require_ranking_workload(self) -> Self:
+        _require_workload(len(self.queries), self.controls.bootstrap_resamples)
+        return self
 
 
 class AgreementMeasurementRequest(_MeasurementModel):
@@ -290,6 +410,7 @@ class AgreementMeasurementRequest(_MeasurementModel):
         _require_unique_agreement(self.scale)
         _require_unique_agreement(items)
         _require_known_ratings(values, self.scale)
+        _require_workload(len(self.ratings), self.controls.bootstrap_resamples)
         return self
 
 
@@ -299,30 +420,290 @@ type MeasurementRequest = Annotated[
 ]
 
 
+def _proof_float(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError
+    return 0.0 if number == 0.0 else number
+
+
+def _proof_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError
+    return value
+
+
+def _proof_text(value: object) -> str:
+    if not isinstance(value, str) or not value or len(value) > _MAX_TEXT_LENGTH:
+        raise ValueError
+    if _contains_surrogate(value):
+        raise ValueError
+    return value
+
+
+type _ProofFloat = Annotated[float, BeforeValidator(_proof_float)]
+type _ProofProbability = Annotated[_ProofFloat, Field(ge=0.0, le=1.0)]
+type _ProofSignedUnit = Annotated[_ProofFloat, Field(ge=-1.0, le=1.0)]
+type _ProofCount = Annotated[int, BeforeValidator(_proof_int), Field(ge=0, le=MAX_ITEMS)]
+type _ProofPositiveCount = Annotated[int, BeforeValidator(_proof_int), Field(ge=1, le=MAX_ITEMS)]
+type _ProofText = Annotated[str, BeforeValidator(_proof_text)]
+
+
+class _ProofModel(BaseModel):
+    model_config = _CONFIG
+
+
+class _IntervalProof(_ProofModel):
+    kind: Literal["interval"]
+    point: _ProofProbability
+    low: _ProofProbability
+    high: _ProofProbability
+
+    @model_validator(mode="after")
+    def _require_ordered_bounds(self) -> Self:
+        if not self.low <= self.point <= self.high:
+            raise ValueError
+        return self
+
+
+class _AbstentionProof(_ProofModel):
+    kind: Literal["abstention"]
+    reason: _ProofText
+    n_samples: _ProofCount
+    min_samples: _ProofPositiveCount
+
+    @model_validator(mode="after")
+    def _require_honest_floor(self) -> Self:
+        if self.n_samples >= self.min_samples:
+            raise ValueError
+        return self
+
+
+type _EstimateProof = Annotated[
+    _IntervalProof | _AbstentionProof,
+    Field(discriminator="kind"),
+]
+
+
+class _CountsProof(_ProofModel):
+    true_positives: _ProofCount
+    false_positives: _ProofCount
+    true_negatives: _ProofCount
+    false_negatives: _ProofCount
+
+    @model_validator(mode="after")
+    def _require_population(self) -> Self:
+        if not 0 < _count_total(self) <= MAX_ITEMS:
+            raise ValueError
+        return self
+
+
+def _count_total(counts: _CountsProof) -> int:
+    return sum(
+        (
+            counts.true_positives,
+            counts.false_positives,
+            counts.true_negatives,
+            counts.false_negatives,
+        )
+    )
+
+
+class _ClassificationProof(_ProofModel):
+    accuracy: _ProofProbability
+    precision: _ProofProbability
+    recall: _ProofProbability
+    f1: _ProofProbability
+    pr_auc: _ProofProbability
+    roc_auc: _ProofProbability
+    counts: _CountsProof
+    false_negative_rate: _ProofProbability
+
+    @model_validator(mode="after")
+    def _require_count_rates(self) -> Self:
+        counts = self.counts
+        if self.accuracy != (counts.true_positives + counts.true_negatives) / _count_total(counts):
+            raise ValueError
+        positives = counts.true_positives + counts.false_negatives
+        if positives == 0 or self.false_negative_rate != counts.false_negatives / positives:
+            raise ValueError
+        return self
+
+
+class _ReliabilityBinProof(_ProofModel):
+    mean_predicted: _ProofProbability
+    fraction_positive: _ProofProbability
+    count: _ProofPositiveCount
+
+
+class _CalibrationProof(_ProofModel):
+    ece: _ProofProbability
+    brier: _ProofProbability
+    bins: Annotated[
+        tuple[_ReliabilityBinProof, ...], Field(min_length=1, max_length=MAX_CALIBRATION_BINS)
+    ]
+
+
+class _BinaryReportProof(_ProofModel):
+    classification: _ClassificationProof
+    calibration: _CalibrationProof
+    accuracy_interval: _EstimateProof
+
+    @model_validator(mode="after")
+    def _require_same_population(self) -> Self:
+        observed = sum(row.count for row in self.calibration.bins)
+        if observed != _count_total(self.classification.counts):
+            raise ValueError
+        return self
+
+
+class _QueryProof(_ProofModel):
+    query: _ProofText
+    precision_at_k: _ProofProbability
+    recall_at_k: _ProofProbability
+    f1_at_k: _ProofProbability
+    ndcg_at_k: _ProofProbability
+    reciprocal_rank: _ProofProbability
+    average_precision: _ProofProbability
+
+
+class _RankingReportProof(_ProofModel):
+    k: Annotated[_ProofPositiveCount, Field(le=MAX_RANKING_K)]
+    n_queries: _ProofPositiveCount
+    per_query: Annotated[tuple[_QueryProof, ...], Field(min_length=1, max_length=MAX_ITEMS)]
+    mean_precision_at_k: _ProofProbability
+    mean_recall_at_k: _ProofProbability
+    mean_f1_at_k: _ProofProbability
+    mean_ndcg_at_k: _ProofProbability
+    mrr: _ProofProbability
+    mean_average_precision: _ProofProbability
+    ndcg_interval: _EstimateProof
+
+    @model_validator(mode="after")
+    def _require_query_population(self) -> Self:
+        if self.n_queries != len(self.per_query):
+            raise ValueError
+        return self
+
+
+class _AgreementReportProof(_ProofModel):
+    scale: Annotated[
+        tuple[_ProofText, ...], Field(min_length=_MIN_SCALE_LEVELS, max_length=MAX_SCALE_LEVELS)
+    ]
+    n_items: _ProofPositiveCount
+    n_exact_matches: _ProofCount
+    percent_agreement: _ProofProbability
+    weighted_agreement: _ProofProbability
+    quadratic_kappa: _ProofSignedUnit | None
+    kappa_undefined_reason: _ProofText | None
+    kendall_tau_b: _ProofSignedUnit | None
+    tau_undefined_reason: _ProofText | None
+    weighted_agreement_interval: _EstimateProof
+
+    @model_validator(mode="after")
+    def _require_agreement_population(self) -> Self:
+        if len(self.scale) != len(set(self.scale)) or self.n_exact_matches > self.n_items:
+            raise ValueError
+        if self.percent_agreement != self.n_exact_matches / self.n_items:
+            raise ValueError
+        _require_reason_pair(self.quadratic_kappa, self.kappa_undefined_reason)
+        _require_reason_pair(self.kendall_tau_b, self.tau_undefined_reason)
+        return self
+
+
+def _require_reason_pair(value: float | None, reason: str | None) -> None:
+    if (value is None) != (reason is not None):
+        raise ValueError
+
+
+def _prove(data: object, proof: type[_ProofModel], error: type[AssayError]) -> None:
+    try:
+        proof.model_validate(data)
+    except ValidationError:
+        raise error from None
+
+
+def _field(data: object, name: str) -> object:
+    if isinstance(data, Mapping):
+        return data.get(name)
+    return getattr(data, name, None)
+
+
+def _require_estimate(
+    estimate: Estimate,
+    count: int,
+    minimum: int,
+    point: float,
+    error: type[AssayError],
+) -> None:
+    if estimate.kind == "abstention":
+        _require_abstention(estimate, count, minimum, error)
+        return
+    _require_interval(estimate, count, minimum, point, error)
+
+
+def _require_abstention(
+    estimate: Abstention, count: int, minimum: int, error: type[AssayError]
+) -> None:
+    if count >= minimum or estimate.n_samples != count or estimate.min_samples != minimum:
+        raise error
+
+
+def _require_interval(
+    estimate: Interval,
+    count: int,
+    minimum: int,
+    point: float,
+    error: type[AssayError],
+) -> None:
+    if count < minimum or estimate.point != point:
+        raise error
+
+
 class BinaryResultControls(_MeasurementModel):
+    _error = InvalidScoreRequest
     threshold: _Probability
-    min_samples: _PositiveInt
-    bootstrap_resamples: _PositiveInt
+    min_samples: Annotated[_PositiveInt, Field(le=MAX_ITEMS)]
+    bootstrap_resamples: Annotated[_PositiveInt, Field(le=MAX_BOOTSTRAP_RESAMPLES)]
     confidence_level: _Confidence
-    ece_bins: _PositiveInt
-    bootstrap_seed: _NonnegativeInt
+    ece_bins: Annotated[_PositiveInt, Field(le=MAX_CALIBRATION_BINS)]
+    bootstrap_seed: Annotated[_NonnegativeInt, Field(le=MAX_SEED)]
 
 
 class RankingResultControls(_MeasurementModel):
-    k: _PositiveInt
-    min_samples: _PositiveInt
-    bootstrap_resamples: _PositiveInt
+    _error = InvalidRankingRequest
+    k: Annotated[_PositiveInt, Field(le=MAX_RANKING_K)]
+    min_samples: Annotated[_PositiveInt, Field(le=MAX_ITEMS)]
+    bootstrap_resamples: Annotated[_PositiveInt, Field(le=MAX_BOOTSTRAP_RESAMPLES)]
     confidence_level: _Confidence
-    bootstrap_seed: _NonnegativeInt
+    bootstrap_seed: Annotated[_NonnegativeInt, Field(le=MAX_SEED)]
+
+
+class AgreementResultControls(_MeasurementModel):
+    _error = InvalidAgreementRequest
+    min_samples: Annotated[_PositiveInt, Field(le=MAX_ITEMS)]
+    bootstrap_resamples: Annotated[_PositiveInt, Field(le=MAX_BOOTSTRAP_RESAMPLES)]
+    confidence_level: _Confidence
+    bootstrap_seed: Annotated[_NonnegativeInt, Field(le=MAX_SEED)]
 
 
 class BinaryMeasurementReport(_MeasurementModel):
+    _error = InvalidScoreRequest
     classification: ClassificationScores
     calibration: CalibrationReport
     accuracy_interval: Estimate
 
+    @model_validator(mode="before")
+    @classmethod
+    def _prove_report(cls, data: object) -> object:
+        _prove(data, _BinaryReportProof, InvalidScoreRequest)
+        return data
+
 
 class BinaryMeasurementResult(_MeasurementModel):
+    _error = InvalidScoreRequest
     schema_version: Literal["assay.measurement/v1"] = Field(
         default="assay.measurement/v1", alias="schema"
     )
@@ -331,8 +712,24 @@ class BinaryMeasurementResult(_MeasurementModel):
     controls: BinaryResultControls
     report: BinaryMeasurementReport
 
+    @model_validator(mode="after")
+    def _require_binary_invariants(self) -> Self:
+        counts = self.report.classification.counts
+        count = sum(vars(counts).values())
+        _require_estimate(
+            self.report.accuracy_interval,
+            count,
+            self.controls.min_samples,
+            self.report.classification.accuracy,
+            InvalidScoreRequest,
+        )
+        if len(self.report.calibration.bins) > self.controls.ece_bins:
+            raise InvalidScoreRequest
+        return self
+
 
 class RankingMeasurementResult(_MeasurementModel):
+    _error = InvalidRankingRequest
     schema_version: Literal["assay.measurement/v1"] = Field(
         default="assay.measurement/v1", alias="schema"
     )
@@ -341,15 +738,52 @@ class RankingMeasurementResult(_MeasurementModel):
     controls: RankingResultControls
     report: RankingReport
 
+    @model_validator(mode="before")
+    @classmethod
+    def _prove_report(cls, data: object) -> object:
+        _prove(_field(data, "report"), _RankingReportProof, InvalidRankingRequest)
+        return data
+
+    @model_validator(mode="after")
+    def _require_ranking_invariants(self) -> Self:
+        if self.controls.k != self.report.k:
+            raise InvalidRankingRequest
+        _require_estimate(
+            self.report.ndcg_interval,
+            self.report.n_queries,
+            self.controls.min_samples,
+            self.report.mean_ndcg_at_k,
+            InvalidRankingRequest,
+        )
+        return self
+
 
 class AgreementMeasurementResult(_MeasurementModel):
+    _error = InvalidAgreementRequest
     schema_version: Literal["assay.measurement/v1"] = Field(
         default="assay.measurement/v1", alias="schema"
     )
     metric: Literal["agreement"]
     metric_version: _Identifier
-    controls: UncertaintyControls
+    controls: AgreementResultControls
     report: AgreementReport
+
+    @model_validator(mode="before")
+    @classmethod
+    def _prove_report(cls, data: object) -> object:
+        _prove(_field(data, "report"), _AgreementReportProof, InvalidAgreementRequest)
+        return data
+
+    @model_validator(mode="after")
+    def _require_agreement_invariants(self) -> Self:
+        _require_estimate(
+            self.report.weighted_agreement_interval,
+            self.report.n_items,
+            self.controls.min_samples,
+            self.report.weighted_agreement,
+            InvalidAgreementRequest,
+        )
+        return self
 
 
 type MeasurementResult = Annotated[
@@ -373,6 +807,10 @@ def _binary_controls(request: BinaryMeasurementRequest) -> BinaryResultControls:
 
 def _ranking_controls(request: RankingMeasurementRequest) -> RankingResultControls:
     return RankingResultControls(k=request.k, **request.controls.model_dump())
+
+
+def _agreement_controls(request: AgreementMeasurementRequest) -> AgreementResultControls:
+    return AgreementResultControls(**request.controls.model_dump())
 
 
 def _ranking_query(query: RankingQueryInput) -> RankedQuery:
@@ -435,7 +873,7 @@ def _measure_agreement(request: AgreementMeasurementRequest) -> AgreementMeasure
     return AgreementMeasurementResult(
         metric="agreement",
         metric_version=request.metric_version,
-        controls=request.controls,
+        controls=_agreement_controls(request),
         report=report,
     )
 
