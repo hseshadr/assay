@@ -12,6 +12,7 @@ __all__ = [
     "EmptyRelevantSet",
     "InsufficientSamples",
     "InvalidAgreementRequest",
+    "InvalidMethod",
     "InvalidRankingRequest",
     "InvalidScoreRequest",
     "ReplayRefused",
@@ -36,11 +37,15 @@ class ContractCode(StrEnum):
     INVALID_LABEL = "assay.invalid_label"
     INVALID_METHOD = "assay.invalid_method"
     INVALID_NUMBER = "assay.invalid_number"
+    INVALID_OBJECT = "assay.invalid_object"
     INVALID_OPERATION = "assay.invalid_operation"
     INVALID_SCALE = "assay.invalid_scale"
+    INVALID_TEXT = "assay.invalid_text"
     INVALID_WEIGHT = "assay.invalid_weight"
+    MISSING_FIELD = "assay.missing_field"
     MISSING_WEIGHT = "assay.missing_weight"
     OUT_OF_RANGE = "assay.out_of_range"
+    UNKNOWN_FIELD = "assay.unknown_field"
 
 
 class AssayError(Exception):
@@ -63,6 +68,12 @@ class InvalidScoreRequest(AssayError):
     """A score request cannot produce a meaningful result."""
 
     code: ClassVar[str] = "assay.invalid_request"
+
+
+class InvalidMethod(AssayError):
+    """A score request has no recognized combiner discriminator."""
+
+    code: ClassVar[str] = "assay.invalid_method"
 
 
 class UnknownMetric(AssayError):

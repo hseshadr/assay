@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from assay import (
     AdditiveRequest,
@@ -19,12 +20,16 @@ from assay import (
     MinimumRequest,
     NativeScale,
     Operation,
+    ScoreRequest,
     ScoreResult,
     WeightedMeanRequest,
+    parse_request,
+    parse_request_json,
 )
-from assay.errors import InvalidScoreRequest
+from assay.errors import InvalidMethod, InvalidScoreRequest
 
 _INPUTS_HASH = "sha256:7f83b1657ff1fc53b92dc18148a1d65dfa13514d74c69915a0b7543842cff331"
+_SENTINEL = "PII-SENTINEL-ALICE"
 
 
 def _scale() -> NativeScale:
@@ -64,52 +69,307 @@ def _explained(identifier: str = "reliability") -> ExplainedComponent:
     )
 
 
-def test_should_forbid_extra_fields_on_component_boundaries() -> None:
-    # Given
-    models = (
+def _result() -> ScoreResult:
+    return ScoreResult(
+        method=Method(id="weighted_mean", version="northstar-v2"),
+        score=0.88,
+        interval=None,
+        components=(_explained(),),
+        inputs_hash=_INPUTS_HASH,
+    )
+
+
+def _public_models() -> tuple[BaseModel, ...]:
+    return (
         _scale(),
         Interval(low=12, high=14),
         _component(),
         _term(),
         _explained(),
         Method(id="weighted_mean", version="northstar-v2"),
+        _weighted_request(),
+        _additive_request(),
+        _minimum_request(),
+        _result(),
     )
 
-    # When / Then
-    for model in models:
+
+def _weighted_request() -> WeightedMeanRequest:
+    return WeightedMeanRequest(
+        method="weighted_mean",
+        method_version="northstar-v2",
+        components=(_component(),),
+        clamp="reject",
+    )
+
+
+def _additive_request() -> AdditiveRequest:
+    return AdditiveRequest(
+        method="additive",
+        method_version="edge-v1",
+        terms=(_term(),),
+        clamp="clamp",
+    )
+
+
+def _minimum_request() -> MinimumRequest:
+    return MinimumRequest(
+        method="minimum",
+        method_version="alma-v1",
+        components=(_component(weight=None),),
+        clamp="reject",
+    )
+
+
+def test_should_forbid_and_redact_extra_fields_on_every_public_model() -> None:
+    # Given / When / Then
+    for model in _public_models():
         payload = model.model_dump()
-        payload["extra"] = True
-        with pytest.raises(ValidationError):
+        payload[_SENTINEL] = "private-value"
+        with pytest.raises(ValidationError) as caught:
             type(model).model_validate(payload)
+        assert "assay.unknown_field" in str(caught.value)
+        assert _SENTINEL not in str(caught.value)
+        assert "private-value" not in str(caught.value)
 
 
-def test_should_forbid_extra_fields_on_request_boundaries() -> None:
+def test_should_freeze_every_public_model() -> None:
+    # Given / When / Then
+    for model in _public_models():
+        field_name = next(iter(type(model).model_fields))
+        with pytest.raises(ValidationError):
+            setattr(model, field_name, None)
+
+
+def _assert_redacted(error: Exception, code: str) -> None:
+    text = str(error)
+    assert code in text
+    assert _SENTINEL not in text
+    assert "private-value" not in text
+
+
+def test_should_redact_nested_unknown_field_from_direct_construction() -> None:
     # Given
-    requests = (
-        WeightedMeanRequest(
-            method_version="northstar-v2", components=(_component(),), clamp="reject"
+    scale = {"minimum": 0, "maximum": 1, "direction": "higher_is_better"}
+    scale[_SENTINEL] = "private-value"
+
+    # When
+    with pytest.raises(ValidationError) as caught:
+        Component(id="quality", label="Quality", value=0.5, scale=scale, weight=1)
+
+    # Then
+    _assert_redacted(caught.value, "assay.unknown_field")
+
+
+def test_should_redact_nested_unknown_field_from_model_validate() -> None:
+    # Given
+    payload = _weighted_request().model_dump()
+    payload["components"][0]["scale"][_SENTINEL] = "private-value"
+
+    # When
+    with pytest.raises(ValidationError) as caught:
+        WeightedMeanRequest.model_validate(payload)
+
+    # Then
+    _assert_redacted(caught.value, "assay.unknown_field")
+
+
+def test_should_redact_nested_unknown_field_from_model_validate_json() -> None:
+    # Given
+    payload = _additive_request().model_dump()
+    payload["terms"][0][_SENTINEL] = "private-value"
+
+    # When
+    with pytest.raises(ValidationError) as caught:
+        AdditiveRequest.model_validate_json(json.dumps(payload))
+
+    # Then
+    _assert_redacted(caught.value, "assay.unknown_field")
+
+
+def test_should_redact_nested_missing_operation_from_model_validate_json() -> None:
+    # Given
+    payload = _additive_request().model_dump()
+    payload["terms"][0]["label"] = _SENTINEL
+    payload["terms"][0].pop("operation")
+
+    # When
+    with pytest.raises(ValidationError) as caught:
+        AdditiveRequest.model_validate_json(json.dumps(payload))
+
+    # Then
+    _assert_redacted(caught.value, "assay.missing_field")
+
+
+def test_should_redact_nested_missing_direction_from_model_validate() -> None:
+    # Given
+    payload = _component().model_dump()
+    payload["label"] = _SENTINEL
+    payload["scale"].pop("direction")
+
+    # When
+    with pytest.raises(ValidationError) as caught:
+        Component.model_validate(payload)
+
+    # Then
+    _assert_redacted(caught.value, "assay.missing_field")
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (NativeScale, {"minimum": _SENTINEL, "maximum": 1}),
+        (
+            WeightedMeanRequest,
+            {
+                "method": "weighted_mean",
+                "method_version": _SENTINEL,
+                "components": (),
+            },
         ),
-        AdditiveRequest(method_version="edge-v1", terms=(_term(),), clamp="clamp"),
-        MinimumRequest(
-            method_version="alma-v1", components=(_component(weight=None),), clamp="reject"
+        (
+            AdditiveTerm,
+            {"id": "term", "label": _SENTINEL, "value": 1, "coefficient": 1},
         ),
+    ],
+)
+def test_should_use_stable_code_for_missing_required_fields(
+    model: type[BaseModel], payload: object
+) -> None:
+    # Given / When
+    with pytest.raises(ValidationError) as caught:
+        model.model_validate(payload)
+
+    # Then
+    _assert_redacted(caught.value, "assay.missing_field")
+
+
+def test_should_require_a_literal_method_on_every_request() -> None:
+    # Given / When / Then
+    with pytest.raises(ValidationError, match=r"assay\.invalid_method"):
+        WeightedMeanRequest.model_validate(
+            {"method_version": "v1", "components": (), "clamp": "reject"}
+        )
+    with pytest.raises(ValidationError, match=r"assay\.invalid_method"):
+        AdditiveRequest.model_validate({"method_version": "v1", "terms": (), "clamp": "reject"})
+    with pytest.raises(ValidationError, match=r"assay\.invalid_method"):
+        MinimumRequest.model_validate({"method_version": "v1", "components": (), "clamp": "reject"})
+
+
+def test_should_reject_weighted_payload_as_minimum() -> None:
+    # Given
+    payload = _weighted_request().model_dump()
+
+    # When / Then
+    with pytest.raises(ValidationError, match=r"assay\.invalid_method"):
+        MinimumRequest.model_validate(payload)
+
+
+def test_should_dispatch_and_round_trip_every_request_method() -> None:
+    # Given
+    requests: tuple[ScoreRequest, ...] = (
+        _weighted_request(),
+        _additive_request(),
+        _minimum_request(),
     )
 
     # When / Then
     for request in requests:
-        payload = request.model_dump()
-        payload["extra"] = True
-        with pytest.raises(ValidationError):
-            type(request).model_validate(payload)
+        parsed = parse_request_json(request.model_dump_json())
+        assert type(parsed) is type(request)
+        assert parsed == request
 
 
-def test_should_freeze_every_contract_model() -> None:
+@pytest.mark.parametrize("method", [None, _SENTINEL])
+def test_should_redact_unknown_or_missing_method_from_parser(method: str | None) -> None:
     # Given
-    scale = _scale()
+    payload = _weighted_request().model_dump()
+    payload["method"] = method
 
-    # When / Then
-    with pytest.raises(ValidationError):
-        scale.minimum = 1
+    # When
+    with pytest.raises(InvalidMethod) as caught:
+        parse_request(payload)
+
+    # Then
+    assert str(caught.value) == "assay.invalid_method"
+    assert _SENTINEL not in str(caught.value)
+
+
+def test_should_redact_unknown_method_from_json_parser() -> None:
+    # Given
+    payload = _weighted_request().model_dump()
+    payload["method"] = _SENTINEL
+
+    # When
+    with pytest.raises(InvalidMethod) as caught:
+        parse_request_json(json.dumps(payload))
+
+    # Then
+    assert str(caught.value) == "assay.invalid_method"
+    assert _SENTINEL not in str(caught.value)
+
+
+def test_should_redact_nested_validation_from_exported_parser() -> None:
+    # Given
+    payload = _weighted_request().model_dump()
+    payload["components"][0][_SENTINEL] = "private-value"
+
+    # When
+    with pytest.raises(InvalidScoreRequest) as caught:
+        parse_request(payload)
+
+    # Then
+    assert str(caught.value) == "assay.invalid_request"
+    assert _SENTINEL not in str(caught.value)
+    assert "private-value" not in str(caught.value)
+
+
+def test_should_redact_missing_method_from_parser() -> None:
+    # Given
+    payload = _weighted_request().model_dump()
+    payload.pop("method")
+    payload["method_version"] = _SENTINEL
+
+    # When
+    with pytest.raises(InvalidMethod) as caught:
+        parse_request(payload)
+
+    # Then
+    assert str(caught.value) == "assay.invalid_method"
+    assert _SENTINEL not in str(caught.value)
+
+
+@pytest.mark.parametrize("loader", [Component.model_validate, Component.model_validate_json])
+def test_should_reject_unpaired_unicode_surrogates(loader: object) -> None:
+    # Given
+    payload = {
+        "id": "quality",
+        "label": "\ud800",
+        "value": 0.5,
+        "scale": _scale().model_dump(),
+    }
+    value = json.dumps(payload) if loader == Component.model_validate_json else payload
+
+    # When
+    with pytest.raises(ValidationError, match=r"assay\.invalid_text"):
+        loader(value)
+
+
+def test_should_reject_unpaired_unicode_surrogate_from_constructor() -> None:
+    # Given / When / Then
+    with pytest.raises(ValidationError, match=r"assay\.invalid_text"):
+        Component(id="quality", label="\ud800", value=0.5, scale=_scale())
+
+
+def test_should_round_trip_valid_unicode_labels() -> None:
+    # Given
+    component = Component(id="quality", label="Fiabilité 🌟", value=0.5, scale=_scale())
+
+    # When
+    restored = Component.model_validate_json(component.model_dump_json())
+
+    # Then
+    assert restored == component
 
 
 @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
@@ -186,9 +446,12 @@ def test_should_reject_nonpositive_weighted_mean_weights(weight: float) -> None:
 def test_should_require_nonempty_unique_weighted_components() -> None:
     # Given / When / Then
     with pytest.raises(ValidationError, match=r"assay\.empty_components"):
-        WeightedMeanRequest(method_version="northstar-v2", components=(), clamp="reject")
+        WeightedMeanRequest(
+            method="weighted_mean", method_version="northstar-v2", components=(), clamp="reject"
+        )
     with pytest.raises(ValidationError, match=r"assay\.duplicate_identifier"):
         WeightedMeanRequest(
+            method="weighted_mean",
             method_version="northstar-v2",
             components=(_component(), _component()),
             clamp="reject",
@@ -199,6 +462,7 @@ def test_should_require_a_weight_for_every_weighted_component() -> None:
     # Given / When / Then
     with pytest.raises(ValidationError, match=r"assay\.missing_weight"):
         WeightedMeanRequest(
+            method="weighted_mean",
             method_version="northstar-v2",
             components=(_component(weight=None),),
             clamp="reject",
@@ -211,29 +475,47 @@ def test_should_reject_out_of_range_components_without_clamping() -> None:
 
     # When / Then
     with pytest.raises(ValidationError, match=r"assay\.out_of_range"):
-        WeightedMeanRequest(method_version="northstar-v2", components=(component,), clamp="reject")
+        WeightedMeanRequest(
+            method="weighted_mean",
+            method_version="northstar-v2",
+            components=(component,),
+            clamp="reject",
+        )
     assert WeightedMeanRequest(
-        method_version="northstar-v2", components=(component,), clamp="clamp"
+        method="weighted_mean",
+        method_version="northstar-v2",
+        components=(component,),
+        clamp="clamp",
     )
 
 
 def test_should_require_an_explicit_clamp_policy_for_every_request() -> None:
     # Given / When / Then
     with pytest.raises(ValidationError):
-        WeightedMeanRequest(method_version="northstar-v2", components=(_component(),))
+        WeightedMeanRequest(
+            method="weighted_mean", method_version="northstar-v2", components=(_component(),)
+        )
     with pytest.raises(ValidationError):
-        AdditiveRequest(method_version="edge-v1", terms=(_term(),))
+        AdditiveRequest(method="additive", method_version="edge-v1", terms=(_term(),))
     with pytest.raises(ValidationError):
-        MinimumRequest(method_version="alma-v1", components=(_component(weight=None),))
+        MinimumRequest(
+            method="minimum", method_version="alma-v1", components=(_component(weight=None),)
+        )
 
 
 def test_should_support_both_explicit_clamp_policies() -> None:
     # Given / When
     rejected = WeightedMeanRequest(
-        method_version="northstar-v2", components=(_component(),), clamp="reject"
+        method="weighted_mean",
+        method_version="northstar-v2",
+        components=(_component(),),
+        clamp="reject",
     )
     clamped = WeightedMeanRequest(
-        method_version="northstar-v2", components=(_component(),), clamp="clamp"
+        method="weighted_mean",
+        method_version="northstar-v2",
+        components=(_component(),),
+        clamp="clamp",
     )
 
     # Then
@@ -276,23 +558,35 @@ def test_should_reject_nonfinite_additive_numbers(bad: float) -> None:
     with pytest.raises(ValidationError, match=r"assay\.invalid_number"):
         AdditiveTerm(id="term", label="Term", value=bad, coefficient=1, operation="add")
     with pytest.raises(ValidationError, match=r"assay\.invalid_number"):
-        AdditiveRequest(method_version="edge-v1", terms=(_term(),), intercept=bad, clamp="reject")
+        AdditiveRequest(
+            method="additive",
+            method_version="edge-v1",
+            terms=(_term(),),
+            intercept=bad,
+            clamp="reject",
+        )
 
 
 def test_should_require_nonempty_unique_additive_terms() -> None:
     # Given / When / Then
     with pytest.raises(ValidationError, match=r"assay\.empty_terms"):
-        AdditiveRequest(method_version="edge-v1", terms=(), clamp="reject")
+        AdditiveRequest(method="additive", method_version="edge-v1", terms=(), clamp="reject")
     with pytest.raises(ValidationError, match=r"assay\.duplicate_identifier"):
-        AdditiveRequest(method_version="edge-v1", terms=(_term(), _term()), clamp="reject")
+        AdditiveRequest(
+            method="additive",
+            method_version="edge-v1",
+            terms=(_term(), _term()),
+            clamp="reject",
+        )
 
 
 def test_should_require_nonempty_unique_minimum_components() -> None:
     # Given / When / Then
     with pytest.raises(ValidationError, match=r"assay\.empty_components"):
-        MinimumRequest(method_version="alma-v1", components=(), clamp="reject")
+        MinimumRequest(method="minimum", method_version="alma-v1", components=(), clamp="reject")
     with pytest.raises(ValidationError, match=r"assay\.duplicate_identifier"):
         MinimumRequest(
+            method="minimum",
             method_version="alma-v1",
             components=(_component(weight=None), _component(weight=None)),
             clamp="reject",
@@ -311,12 +605,18 @@ def test_should_reject_out_of_range_minimum_intervals_without_clamping() -> None
 
     # When / Then
     with pytest.raises(ValidationError, match=r"assay\.out_of_range"):
-        MinimumRequest(method_version="alma-v1", components=(component,), clamp="reject")
+        MinimumRequest(
+            method="minimum",
+            method_version="alma-v1",
+            components=(component,),
+            clamp="reject",
+        )
 
 
 def test_should_preserve_declaration_order() -> None:
     # Given
     request = WeightedMeanRequest(
+        method="weighted_mean",
         method_version="northstar-v2",
         components=(_component("zeta"), _component("alpha")),
         clamp="reject",
@@ -329,11 +629,16 @@ def test_should_preserve_declaration_order() -> None:
 def test_should_round_trip_every_request_shape_through_json() -> None:
     # Given
     requests = (
-        WeightedMeanRequest(
-            method_version="northstar-v2", components=(_component(),), clamp="reject"
+        _weighted_request(),
+        AdditiveRequest(
+            method="additive",
+            method_version="edge-v1",
+            terms=(_term(),),
+            intercept=0.1,
+            clamp="clamp",
         ),
-        AdditiveRequest(method_version="edge-v1", terms=(_term(),), intercept=0.1, clamp="clamp"),
         MinimumRequest(
+            method="minimum",
             method_version="alma-v1",
             components=(_component(weight=None),),
             clamp="reject",

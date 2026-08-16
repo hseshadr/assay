@@ -2,15 +2,28 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
+from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Literal, NoReturn, Self
+from json import JSONDecodeError
+from typing import Annotated, ClassVar, Literal, NoReturn, Self
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
+from pydantic.config import ExtraValues
+from pydantic.fields import FieldInfo
 from pydantic_core import PydanticCustomError
 
-from assay.errors import ContractCode
+from assay.errors import ContractCode, InvalidMethod, InvalidScoreRequest
 
 __all__ = [
     "AdditiveRequest",
@@ -24,8 +37,11 @@ __all__ = [
     "MinimumRequest",
     "NativeScale",
     "Operation",
+    "ScoreRequest",
     "ScoreResult",
     "WeightedMeanRequest",
+    "parse_request",
+    "parse_request_json",
 ]
 
 _MODEL_CONFIG = ConfigDict(
@@ -39,6 +55,14 @@ _STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_IDENTIFIER_LENGTH = 128
 _MAX_LABEL_LENGTH = 256
+_SURROGATE_MIN = 0xD800
+_SURROGATE_MAX = 0xDFFF
+_JsonData = str | bytes | bytearray
+_OptionalBool = bool | None
+_OptionalExtra = ExtraValues | None
+_ValidationOptions = tuple[
+    _OptionalBool, _OptionalExtra, object | None, _OptionalBool, _OptionalBool
+]
 
 
 class Direction(StrEnum):
@@ -64,6 +88,14 @@ class Operation(StrEnum):
 
 def _fail(code: ContractCode) -> NoReturn:
     raise PydanticCustomError(code.value, code.value)
+
+
+def _decode_json(data: _JsonData) -> object:
+    try:
+        decoded: object = json.loads(data)
+    except (JSONDecodeError, UnicodeDecodeError, TypeError):
+        raise InvalidScoreRequest from None
+    return decoded
 
 
 def _finite(value: object) -> float:
@@ -100,11 +132,17 @@ def _stable_identifier(value: object) -> str:
     return value
 
 
+def _contains_surrogate(value: str) -> bool:
+    return any(_SURROGATE_MIN <= ord(character) <= _SURROGATE_MAX for character in value)
+
+
 def _label(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         _fail(ContractCode.INVALID_LABEL)
     if len(value) > _MAX_LABEL_LENGTH:
         _fail(ContractCode.INVALID_LABEL)
+    if _contains_surrogate(value):
+        _fail(ContractCode.INVALID_TEXT)
     return value
 
 
@@ -169,7 +207,102 @@ _MethodIdentifier = Annotated[
 ]
 
 
-class NativeScale(BaseModel):
+def _accepted_names(name: str, field: FieldInfo) -> tuple[str, ...]:
+    if isinstance(field.alias, str):
+        return (name, field.alias)
+    return (name,)
+
+
+def _allowed_names(fields: Mapping[str, FieldInfo]) -> frozenset[str]:
+    return frozenset(
+        accepted for name, field in fields.items() for accepted in _accepted_names(name, field)
+    )
+
+
+def _contains_only_known_fields(
+    data: Mapping[object, object], fields: Mapping[str, FieldInfo]
+) -> bool:
+    allowed = _allowed_names(fields)
+    return all(isinstance(key, str) and key in allowed for key in data)
+
+
+def _contains_required_fields(
+    data: Mapping[object, object], fields: Mapping[str, FieldInfo]
+) -> bool:
+    return all(
+        not field.is_required() or any(name in data for name in _accepted_names(field_name, field))
+        for field_name, field in fields.items()
+    )
+
+
+def _require_mapping(data: object) -> Mapping[object, object]:
+    if not isinstance(data, Mapping):
+        _fail(ContractCode.INVALID_OBJECT)
+    return data
+
+
+def _require_known_fields(data: Mapping[object, object], fields: Mapping[str, FieldInfo]) -> None:
+    if not _contains_only_known_fields(data, fields):
+        _fail(ContractCode.UNKNOWN_FIELD)
+
+
+def _require_method(data: Mapping[object, object], expected: str | None) -> None:
+    if expected is not None and data.get("method") != expected:
+        _fail(ContractCode.INVALID_METHOD)
+
+
+def _require_required_fields(
+    data: Mapping[object, object], fields: Mapping[str, FieldInfo]
+) -> None:
+    if not _contains_required_fields(data, fields):
+        _fail(ContractCode.MISSING_FIELD)
+
+
+class _ContractModel(BaseModel):
+    """Shared fail-closed shape validation for every public JSON model."""
+
+    model_config = _MODEL_CONFIG
+    _expected_method: ClassVar[str | None] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_input_shape(cls, data: object) -> object:
+        if isinstance(data, cls):
+            return data
+        mapping = _require_mapping(data)
+        _require_known_fields(mapping, cls.model_fields)
+        _require_method(mapping, cls._expected_method)
+        _require_required_fields(mapping, cls.model_fields)
+        return mapping
+
+    @classmethod
+    def model_validate_json(
+        cls,
+        data: _JsonData,
+        *,
+        strict: _OptionalBool = None,
+        extra: _OptionalExtra = None,
+        context: object | None = None,
+        by_alias: _OptionalBool = None,
+        by_name: _OptionalBool = None,
+    ) -> Self:
+        options = (strict, extra, context, by_alias, by_name)
+        return cls._validate_decoded_json(data, options)
+
+    @classmethod
+    def _validate_decoded_json(cls, data: _JsonData, options: _ValidationOptions) -> Self:
+        strict, extra, context, by_alias, by_name = options
+        return cls.model_validate(
+            _decode_json(data),
+            strict=strict,
+            extra=extra,
+            context=context,
+            by_alias=by_alias,
+            by_name=by_name,
+        )
+
+
+class NativeScale(_ContractModel):
     """The declared native range and direction for one measurement."""
 
     model_config = _MODEL_CONFIG
@@ -185,7 +318,7 @@ class NativeScale(BaseModel):
         return self
 
 
-class Interval(BaseModel):
+class Interval(_ContractModel):
     """A finite uncertainty interval; deterministic values use ``None``."""
 
     model_config = _MODEL_CONFIG
@@ -200,7 +333,7 @@ class Interval(BaseModel):
         return self
 
 
-class Component(BaseModel):
+class Component(_ContractModel):
     """A measurement on its declared native scale."""
 
     model_config = _MODEL_CONFIG
@@ -213,7 +346,7 @@ class Component(BaseModel):
     weight: _PositiveWeight | None = None
 
 
-class AdditiveTerm(BaseModel):
+class AdditiveTerm(_ContractModel):
     """One explicitly signed term in a left-to-right additive score."""
 
     model_config = _MODEL_CONFIG
@@ -226,7 +359,7 @@ class AdditiveTerm(BaseModel):
     interval: Interval | None = None
 
 
-class ExplainedComponent(BaseModel):
+class ExplainedComponent(_ContractModel):
     """The contribution of one declared input to a composed result."""
 
     model_config = _MODEL_CONFIG
@@ -239,7 +372,7 @@ class ExplainedComponent(BaseModel):
     contribution: _FiniteNumber
 
 
-class Method(BaseModel):
+class Method(_ContractModel):
     """The closed combiner identity and caller-declared method version."""
 
     model_config = _MODEL_CONFIG
@@ -275,11 +408,13 @@ def _require_component_ranges(components: tuple[Component, ...], clamp: ClampPol
         _fail(ContractCode.OUT_OF_RANGE)
 
 
-class WeightedMeanRequest(BaseModel):
+class WeightedMeanRequest(_ContractModel):
     """A positive weighted mean of normalized components."""
 
     model_config = _MODEL_CONFIG
+    _expected_method: ClassVar[str | None] = "weighted_mean"
 
+    method: Literal["weighted_mean"]
     method_version: _StableIdentifier
     components: tuple[Component, ...]
     clamp: _ExplicitClampPolicy
@@ -293,11 +428,13 @@ class WeightedMeanRequest(BaseModel):
         return self
 
 
-class AdditiveRequest(BaseModel):
+class AdditiveRequest(_ContractModel):
     """An ordered additive score with explicit term operations."""
 
     model_config = _MODEL_CONFIG
+    _expected_method: ClassVar[str | None] = "additive"
 
+    method: Literal["additive"]
     method_version: _StableIdentifier
     terms: tuple[AdditiveTerm, ...]
     clamp: _ExplicitClampPolicy
@@ -309,11 +446,13 @@ class AdditiveRequest(BaseModel):
         return self
 
 
-class MinimumRequest(BaseModel):
+class MinimumRequest(_ContractModel):
     """A bottleneck score selecting the first minimum normalized component."""
 
     model_config = _MODEL_CONFIG
+    _expected_method: ClassVar[str | None] = "minimum"
 
+    method: Literal["minimum"]
     method_version: _StableIdentifier
     components: tuple[Component, ...]
     clamp: _ExplicitClampPolicy
@@ -325,7 +464,7 @@ class MinimumRequest(BaseModel):
         return self
 
 
-class ScoreResult(BaseModel):
+class ScoreResult(_ContractModel):
     """A deterministic, portable explanation of one composed score."""
 
     model_config = _MODEL_CONFIG
@@ -341,3 +480,33 @@ class ScoreResult(BaseModel):
     def _validate_components(self) -> Self:
         _require_identifiers(self.components, ContractCode.EMPTY_COMPONENTS)
         return self
+
+
+ScoreRequest = Annotated[
+    WeightedMeanRequest | AdditiveRequest | MinimumRequest,
+    Field(discriminator="method"),
+]
+_REQUEST_ADAPTER: TypeAdapter[ScoreRequest] = TypeAdapter(ScoreRequest)
+_METHODS = frozenset(("weighted_mean", "additive", "minimum"))
+
+
+def _validate_request_method(data: object) -> object:
+    if not isinstance(data, Mapping):
+        raise InvalidScoreRequest from None
+    if data.get("method") not in _METHODS:
+        raise InvalidMethod from None
+    return data
+
+
+def parse_request(data: object) -> ScoreRequest:
+    """Parse an in-memory request without exposing Pydantic's internal errors."""
+    prepared = _validate_request_method(data)
+    try:
+        return _REQUEST_ADAPTER.validate_python(prepared)
+    except ValidationError:
+        raise InvalidScoreRequest from None
+
+
+def parse_request_json(data: _JsonData) -> ScoreRequest:
+    """Parse a JSON request into its explicitly discriminated request type."""
+    return parse_request(_decode_json(data))

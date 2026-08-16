@@ -15,8 +15,11 @@ from assay.contracts import (
     MinimumRequest,
     NativeScale,
     Operation,
+    ScoreRequest,
     ScoreResult,
     WeightedMeanRequest,
+    parse_request,
+    parse_request_json,
 )
 
 __all__ = [
@@ -31,7 +34,10 @@ __all__ = [
     "MinimumRequest",
     "NativeScale",
     "Operation",
+    "ScoreRequest",
     "ScoreResult",
     "WeightedMeanRequest",
     "__version__",
+    "parse_request",
+    "parse_request_json",
 ]
