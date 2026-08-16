@@ -868,8 +868,6 @@ class _RankingReportProof(_ProofModel):
 def _require_query_rows(report: _RankingReportProof) -> None:
     if report.n_queries != len(report.per_query):
         raise ValueError
-    if len({row.query for row in report.per_query}) != report.n_queries:
-        raise ValueError
     for row in report.per_query:
         _require_query_counts(row, report.k)
 

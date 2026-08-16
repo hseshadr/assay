@@ -858,16 +858,27 @@ def test_should_reject_ndcg_zero_state_that_disagrees_with_top_k_hits() -> None:
         _replay_ranking("json", result, changes)
 
 
-def test_should_reject_duplicate_query_identity_in_result_rows() -> None:
-    # Given two otherwise native rows that claim the same query identity
-    result = measure(_ranking_request())
-    first, second = result.report.per_query
-    duplicate = second.model_copy(update={"query": first.query})
-    report = result.report.model_copy(update={"per_query": (first, duplicate)})
+def test_should_measure_and_replay_duplicate_query_text() -> None:
+    # Given two distinct ranking rows that use the same human-readable query text
+    request = _ranking_request()
+    first, second = request.queries
+    duplicated = request.model_copy(
+        update={
+            "queries": (
+                first.model_copy(update={"query": "same question"}),
+                second.model_copy(update={"query": "same question"}),
+            )
+        }
+    )
 
-    # When / Then replay rejects a query voting twice under one identifier
-    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
-        result.model_copy(update={"report": report})
+    # When the valid request is measured and its result JSON is replayed
+    result = measure(duplicated)
+    replayed = RankingMeasurementResult.model_validate_json(result.model_dump_json())
+
+    # Then query text stays non-unique while both rows and their means remain intact
+    assert result.report.n_queries == 2
+    assert tuple(row.query for row in result.report.per_query) == ("same question", "same question")
+    assert replayed == result
 
 
 def test_should_reject_noncollapsed_ndcg_interval_for_one_query() -> None:
