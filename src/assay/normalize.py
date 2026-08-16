@@ -43,14 +43,27 @@ def _formula(value: float, scale: NativeScale) -> float:
     return result
 
 
-def _apply_policy(result: float, clamp: ClampPolicy) -> float:
+def _canonical_policy(clamp: ClampPolicy) -> ClampPolicy:
     if not isinstance(clamp, ClampPolicy):
         _fail(ContractCode.INVALID_CLAMP_POLICY)
-    if clamp is ClampPolicy.CLAMP:
-        return min(_NORMALIZED_MAX, max(_NORMALIZED_MIN, result))
+    try:
+        return ClampPolicy(str(clamp))
+    except ValueError:
+        _fail(ContractCode.INVALID_CLAMP_POLICY)
+
+
+def _canonical_zero(value: float) -> float:
+    return _NORMALIZED_MIN if value == _NORMALIZED_MIN else value
+
+
+def _apply_policy(result: float, clamp: ClampPolicy) -> float:
+    policy = _canonical_policy(clamp)
+    if policy is ClampPolicy.CLAMP:
+        bounded = min(_NORMALIZED_MAX, max(_NORMALIZED_MIN, result))
+        return _canonical_zero(bounded)
     if not _NORMALIZED_MIN <= result <= _NORMALIZED_MAX:
         _fail(ContractCode.OUT_OF_RANGE)
-    return result
+    return _canonical_zero(result)
 
 
 def normalize(value: float, scale: NativeScale, clamp: ClampPolicy) -> float:

@@ -163,22 +163,18 @@ def _inputs_hash(value: object) -> str:
 
 
 def _direction(value: object) -> Direction:
-    if isinstance(value, Direction):
-        return value
     if isinstance(value, str):
         try:
-            return Direction(value)
+            return Direction(str(value))
         except ValueError:
             pass
     _fail(ContractCode.INVALID_DIRECTION)
 
 
 def _clamp_policy(value: object) -> ClampPolicy:
-    if isinstance(value, ClampPolicy):
-        return value
     if isinstance(value, str):
         try:
-            return ClampPolicy(value)
+            return ClampPolicy(str(value))
         except ValueError:
             pass
     _fail(ContractCode.INVALID_CLAMP_POLICY)

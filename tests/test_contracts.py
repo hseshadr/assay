@@ -29,7 +29,7 @@ from assay import (
     parse_request,
     parse_request_json,
 )
-from assay.errors import InvalidScoreRequest
+from assay.errors import ContractCode, InvalidScoreRequest
 
 _INPUTS_HASH = "sha256:7f83b1657ff1fc53b92dc18148a1d65dfa13514d74c69915a0b7543842cff331"
 _SENTINEL = "PII-SENTINEL-ALICE"
@@ -653,6 +653,25 @@ def test_should_support_both_declared_directions() -> None:
     assert lower.direction is Direction.LOWER_IS_BETTER
 
 
+def test_should_canonicalize_a_forged_valid_direction_member() -> None:
+    # Given a StrEnum-shaped Direction that is not a declared member
+    forged = str.__new__(Direction, "lower_is_better")
+    # When it crosses the NativeScale boundary
+    scale = NativeScale(minimum=0, maximum=1, direction=forged)
+    # Then the model stores only the exact canonical enum member
+    assert scale.direction is Direction.LOWER_IS_BETTER
+
+
+def test_should_reject_a_forged_unknown_direction_member() -> None:
+    # Given a forged Direction carrying an undeclared value
+    forged = str.__new__(Direction, "sideways")
+    # When it crosses the NativeScale boundary
+    with pytest.raises(ContractValidationError) as caught:
+        NativeScale(minimum=0, maximum=1, direction=forged)
+    # Then validation fails through the stable public code
+    assert caught.value.code == ContractCode.INVALID_DIRECTION.value
+
+
 @pytest.mark.parametrize(("low", "high"), [(2, 1), (1, 1)])
 def test_should_reject_unordered_or_zero_width_intervals(low: float, high: float) -> None:
     # Given / When / Then
@@ -768,6 +787,35 @@ def test_should_support_both_explicit_clamp_policies() -> None:
     # Then
     assert rejected.clamp is ClampPolicy.REJECT
     assert clamped.clamp is ClampPolicy.CLAMP
+
+
+def test_should_canonicalize_a_forged_valid_clamp_member() -> None:
+    # Given a StrEnum-shaped ClampPolicy that is not a declared member
+    forged = str.__new__(ClampPolicy, "clamp")
+    # When it crosses a score-request boundary
+    request = WeightedMeanRequest(
+        method="weighted_mean",
+        method_version="northstar-v2",
+        components=(_component(),),
+        clamp=forged,
+    )
+    # Then the model stores only the exact canonical enum member
+    assert request.clamp is ClampPolicy.CLAMP
+
+
+def test_should_reject_a_forged_unknown_clamp_member() -> None:
+    # Given a forged ClampPolicy carrying an undeclared value
+    forged = str.__new__(ClampPolicy, "sometimes")
+    # When it crosses a score-request boundary
+    with pytest.raises(ContractValidationError) as caught:
+        WeightedMeanRequest(
+            method="weighted_mean",
+            method_version="northstar-v2",
+            components=(_component(),),
+            clamp=forged,
+        )
+    # Then validation fails through the stable public code
+    assert caught.value.code == ContractCode.INVALID_CLAMP_POLICY.value
 
 
 @pytest.mark.parametrize("coefficient", [-1, -0.1])

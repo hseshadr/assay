@@ -73,6 +73,25 @@ def test_should_preserve_ieee_754_arithmetic_order_for_fractional_values() -> No
     assert result == 0.5000000000000001
 
 
+def test_should_use_canonical_lower_direction_when_member_is_forged() -> None:
+    # Given a valid lower direction value forged outside the enum declaration
+    forged = str.__new__(Direction, "lower_is_better")
+    scale = NativeScale.model_construct(minimum=0.0, maximum=10.0, direction=forged)
+    # When the public boundary revalidates and normalizes it
+    result = normalize(2.0, scale, ClampPolicy.REJECT)
+    # Then the canonical lower-is-better formula is selected
+    assert result == 0.8
+
+
+def test_should_use_canonical_clamp_policy_when_member_is_forged() -> None:
+    # Given a valid clamp value forged outside the enum declaration
+    forged = str.__new__(ClampPolicy, "clamp")
+    # When an out-of-range result is normalized with that policy
+    result = normalize(-1.0, _scale(0.0, 1.0), forged)
+    # Then the canonical clamp behavior is applied
+    assert result == 0.0
+
+
 @pytest.mark.parametrize(
     ("value", "direction", "expected"),
     [
@@ -139,6 +158,39 @@ def test_should_reject_nonfinite_intermediate_arithmetic() -> None:
     assert caught.value.code == ContractCode.INVALID_NUMBER.value
 
 
+@pytest.mark.parametrize("direction", list(Direction))
+def test_should_reject_nonfinite_normalized_output_before_clamping(direction: Direction) -> None:
+    # Given a finite tiny scale whose normalized output overflows
+    scale = _scale(0.0, 5e-324, direction)
+    # When explicit clamping is requested
+    with pytest.raises(ContractValidationError) as caught:
+        normalize(1e308, scale, ClampPolicy.CLAMP)
+    # Then the non-finite output is rejected before it can be clamped
+    assert caught.value.code == ContractCode.INVALID_NUMBER.value
+
+
+@pytest.mark.parametrize(
+    ("value", "scale", "policy"),
+    [
+        (-0.0, _scale(0.0, 1.0), ClampPolicy.REJECT),
+        (-0.0, _scale(0.0, 1.0), ClampPolicy.CLAMP),
+        (0.0, _scale(-1.0, -0.0, Direction.LOWER_IS_BETTER), ClampPolicy.REJECT),
+        (0.0, _scale(-1.0, -0.0, Direction.LOWER_IS_BETTER), ClampPolicy.CLAMP),
+        (-0.0, _scale(-1.0, -0.0, Direction.LOWER_IS_BETTER), ClampPolicy.REJECT),
+        (-0.0, _scale(-1.0, -0.0, Direction.LOWER_IS_BETTER), ClampPolicy.CLAMP),
+    ],
+)
+def test_should_return_canonical_positive_zero(
+    value: float, scale: NativeScale, policy: ClampPolicy
+) -> None:
+    # Given an input and formula that can produce signed zero
+    # When either public range policy accepts the normalized result
+    result = normalize(value, scale, policy)
+    # Then the portable output is canonical positive zero
+    assert result == 0.0
+    assert math.copysign(1.0, result) == 1.0
+
+
 def test_should_reject_an_invalid_clamp_policy() -> None:
     # Given a caller value outside the ClampPolicy contract
     # When normalization is attempted
@@ -170,3 +222,5 @@ def test_should_replay_every_committed_normalization_vector() -> None:
         actual = normalize(float(row["value"]), scale, ClampPolicy(str(row["clamp"])))
         # Then the exact IEEE-754 result matches the language-neutral fixture
         assert actual == row["normalized"]
+        if row["normalized"] == 0.0:
+            assert math.copysign(1.0, actual) == 1.0

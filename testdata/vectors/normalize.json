@@ -62,5 +62,13 @@
     "direction": "lower_is_better",
     "clamp": "clamp",
     "normalized": 0.0
+  },
+  {
+    "value": -0.0,
+    "minimum": 0.0,
+    "maximum": 1.0,
+    "direction": "higher_is_better",
+    "clamp": "reject",
+    "normalized": 0.0
   }
 ]
