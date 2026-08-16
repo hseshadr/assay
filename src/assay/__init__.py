@@ -22,6 +22,7 @@ from assay.contracts import (
     parse_request_json,
 )
 from assay.errors import ContractValidationError
+from assay.normalize import normalize
 
 __all__ = [
     "AdditiveRequest",
@@ -40,6 +41,7 @@ __all__ = [
     "ScoreResult",
     "WeightedMeanRequest",
     "__version__",
+    "normalize",
     "parse_request",
     "parse_request_json",
 ]
