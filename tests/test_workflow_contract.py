@@ -734,10 +734,35 @@ def test_should_always_clean_and_prove_the_publish_build_tree() -> None:
     assert cleanup.get("if") == "${{ always() }}"
     command = str(cleanup.get("run", ""))
     assert "rm -rf -- release publish-tools" in command
+    assert "pnpm --dir ts clean" in command
     assert "test ! -e release" in command
     assert "test ! -e publish-tools" in command
+    assert "test ! -e ts/dist" in command
     assert "git diff --exit-code" in command
     assert "git status --porcelain=v1 --untracked-files=all" in command
+
+
+def test_should_remove_every_ignored_publish_build_output(tmp_path: Path) -> None:
+    # Given every ignored output recreated by the publish build after its local gate
+    checkout = tmp_path / "checkout"
+    _clean_checkout(checkout)
+    outputs = (checkout / "release", checkout / "publish-tools", checkout / "ts/dist")
+    for output in outputs:
+        output.mkdir(parents=True)
+        (output / "generated.txt").write_text("generated\n", encoding="utf-8")
+    cleanup = _steps(_job(_workflow("publish.yml"), "build"))[-1]
+    # When the workflow's unconditional final cleanup runs
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", str(cleanup["run"])],
+        cwd=checkout,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_node_environment(),
+    )
+    # Then no release, publisher, or TypeScript build output survives
+    assert result.returncode == 0, result.stderr
+    assert all(not output.exists() for output in outputs)
 
 
 def test_should_keep_npm_prereleases_off_the_latest_channel() -> None:
