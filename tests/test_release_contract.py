@@ -519,9 +519,11 @@ def test_should_reject_a_duplicate_wheel_record(release_bundle: Path, tmp_path: 
     root = tmp_path / "release"
     shutil.copytree(release_bundle, root)
     wheel = next((root / "python").glob("*.whl"))
-    with pytest.warns(UserWarning, match=r"Duplicate name: 'assay/py\.typed'"):
-        with zipfile.ZipFile(wheel, "a") as archive:
-            archive.writestr("assay/py.typed", b"")
+    with (
+        pytest.warns(UserWarning, match=r"Duplicate name: 'assay/py\.typed'"),
+        zipfile.ZipFile(wheel, "a") as archive,
+    ):
+        archive.writestr("assay/py.typed", b"")
     _rewrite_manifest(root)
     # When exact member validation runs
     verifier = _load_module("scripts.verify_release_artifacts")
