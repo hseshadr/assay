@@ -9,15 +9,23 @@ only scoring code; signed evidence and receipts belong to the separate Avow proj
 uv sync --all-extras
 uv run poe gate
 uv run poe mutants
-
-corepack pnpm --dir ts install --frozen-lockfile
-corepack pnpm --dir ts gate
-corepack pnpm --dir ts audit --audit-level low
-corepack pnpm --dir ts pack
 ```
 
-Use Node 22.13 and the `pnpm@11.5.0` pinned in `ts/package.json`. The ambient Node or pnpm may be
-newer and can produce different package artifacts.
+```bash
+cd ts
+NODE22=$(npx --yes --package=node@22.13.0 -c 'command -v node')
+COREPACK=$(npx --yes --package=corepack@0.34.0 -c 'command -v corepack')
+export PATH="$(dirname "$NODE22"):$(dirname "$COREPACK"):$PATH"
+node --version
+corepack pnpm --version
+corepack pnpm install --frozen-lockfile
+corepack pnpm gate
+mkdir -p "${TMPDIR:-/tmp}/assay-pack"
+corepack pnpm pack --pack-destination "${TMPDIR:-/tmp}/assay-pack"
+```
+
+These commands select Node 22.13.0 and pnpm 11.5.0. The version lines must print
+`v22.13.0` and `11.5.0`; ambient tools can produce a different archive.
 
 ## Layout
 
@@ -33,6 +41,8 @@ newer and can produce different package artifacts.
 - Hashes encode every number as big-endian binary64 bits and preserve declared input order.
 - `weighted_mean`, `additive`, and `minimum` are separate methods. Additive arithmetic is strictly
   left-to-right; minimum ties select the first declared component.
+- `assay.composite` is a Python-only legacy deep import for migration. New code uses the typed
+  package-root `compose`; its result has no method or `inputs_hash` and no TypeScript peer.
 - Unknown inputs and serialized results are parsed strictly. Errors use stable, value-free
   `assay.*` codes.
 - Keep scoring independent of signing, evidence, receipts, ledgers, persistence, and network I/O.

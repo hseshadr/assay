@@ -36,6 +36,12 @@ _LEGACY_KEY_PHRASES = (
     "public key",
     "signing key",
 )
+_ARTIFACT_SAFE_LINKS = (
+    "https://github.com/hseshadr/assay/blob/main/QUICKSTART.md",
+    "https://github.com/hseshadr/assay/blob/main/docs/ARCHITECTURE.md",
+    "https://github.com/hseshadr/assay/blob/main/docs/METHODS.md",
+    "https://github.com/hseshadr/assay/blob/main/docs/OPERATIONS.md",
+)
 _MIGRATION_BOUNDARY_FILES = frozenset(
     {
         "src/assay/cli.py",
@@ -126,6 +132,16 @@ def test_should_keep_one_bounded_integration_paragraph_and_no_legacy_product_cop
         remainder = text.replace(_BOUNDARY, "")
         assert "avow" not in _words(remainder)
         assert not set(_LEGACY_WORDS) & set(_words(remainder))
+
+
+def test_should_keep_long_description_links_valid_outside_the_sdist(
+    built_artifacts: tuple[Path, Path],
+) -> None:
+    wheel, sdist = built_artifacts
+    for text in (_wheel_metadata(wheel), _sdist_readme(sdist)):
+        assert all(link in text for link in _ARTIFACT_SAFE_LINKS)
+        assert "](QUICKSTART.md)" not in text
+        assert "](docs/" not in text
 
 
 def test_should_scan_every_sdist_text_for_legacy_product_copy(

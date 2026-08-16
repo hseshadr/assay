@@ -9,6 +9,9 @@ from pathlib import Path
 
 import pytest
 
+import assay
+from assay.composite import SubScore, composite
+
 _ROOT = Path(__file__).resolve().parents[1]
 _README = _ROOT / "README.md"
 _METHODS = _ROOT / "docs" / "METHODS.md"
@@ -187,6 +190,25 @@ def test_should_define_all_methods_and_result_fields() -> None:
     assert all(f"`{field}`" in methods for field in _FIELDS)
     assert "(value - minimum) / (maximum - minimum)" in methods
     assert "(maximum - value) / (maximum - minimum)" in methods
+
+
+def test_should_document_legacy_python_composite_as_nonportable_compatibility() -> None:
+    # Given the shipped legacy Python adapter and its actual result
+    scores = (
+        SubScore("a", 0.5, 0.4, 0.6, 0.0, 1.0, 1.0),
+        SubScore("b", 0.6, 0.5, 0.7, 0.0, 1.0, 1.0),
+        SubScore("c", 0.7, 0.6, 0.8, 0.0, 1.0, 1.0),
+    )
+    result = composite(scores)
+    # When README and architecture describe the supported composition surfaces
+    documents = (_read(_README), _read(_ROOT / "docs" / "ARCHITECTURE.md"))
+    # Then they distinguish the portable API from the deep-import compatibility adapter
+    assert "composite" not in assay.__all__
+    assert not hasattr(result, "method")
+    assert not hasattr(result, "inputs_hash")
+    for text in documents:
+        assert all(term in text for term in ("assay.composite", "SubScore", "Python-only"))
+        assert all(term in text for term in ("deep import", "TypeScript", "new code"))
 
 
 def test_should_map_exactly_two_production_source_trees_to_artifacts() -> None:

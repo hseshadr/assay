@@ -12,13 +12,21 @@ until a release is explicitly authorized.
 ## Build the tarball
 
 ```bash
-corepack pnpm --dir ts install --frozen-lockfile
-corepack pnpm --dir ts gate
-corepack pnpm --dir ts pack --pack-destination /tmp/assay-pack
+cd ts
+NODE22=$(npx --yes --package=node@22.13.0 -c 'command -v node')
+COREPACK=$(npx --yes --package=corepack@0.34.0 -c 'command -v corepack')
+export PATH="$(dirname "$NODE22"):$(dirname "$COREPACK"):$PATH"
+node --version
+corepack pnpm --version
+corepack pnpm install --frozen-lockfile
+corepack pnpm gate
+mkdir -p "${TMPDIR:-/tmp}/assay-pack"
+corepack pnpm pack --pack-destination "${TMPDIR:-/tmp}/assay-pack"
 ```
 
-This produces `edgeproc-assay-0.5.0-dev.0.tgz`. Install that file in a separate Node 22
-application, then import only from the package root.
+The version lines must print `v22.13.0` and `11.5.0`. The final command produces
+`edgeproc-assay-0.5.0-dev.0.tgz` under `${TMPDIR:-/tmp}/assay-pack`. Install that file
+in a separate Node 22 application, then import only from the package root.
 
 ## Compose a typed score
 
@@ -55,7 +63,8 @@ console.log(result.score); // 0.8
 
 `parseRequest()` accepts `unknown`, rejects extra fields and invalid values, and returns
 the closed `ScoreRequest` union. `compose()` dispatches only `weighted_mean`, `additive`,
-or `minimum`. See the repository's [method reference](../docs/METHODS.md) for every
+or `minimum`. See the repository's
+[method reference](https://github.com/hseshadr/assay/blob/main/docs/METHODS.md) for every
 request rule and result field.
 
 ## Parity boundary
@@ -69,7 +78,7 @@ The TypeScript package also exposes small binary and ranking calculators. Python
 optional metric surface is broader; complete optional-metric parity is not claimed.
 Application bands, thresholds, hard gates, and decisions remain outside this package.
 
-Run the repository-wide realistic parity demo from any directory:
+Return to the checkout root and run the repository-wide realistic parity demo:
 
 ```bash
 bash examples/run_composite.sh

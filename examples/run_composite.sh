@@ -30,6 +30,15 @@ PY_RESULT="$TMP/python-result.json"
 TS_RESULT="$TMP/typescript-result.json"
 mkdir -p "$ARTIFACTS" "$TS_COPY" "$NODE_APP"
 
+copy_typescript_checkout() {
+  local relative target
+  while IFS= read -r -d '' relative; do
+    target="$TS_COPY/${relative#ts/}"
+    mkdir -p "$(dirname "$target")"
+    cp "$ROOT/$relative" "$target"
+  done < <(git -C "$ROOT" ls-files -z -- ts)
+}
+
 run_step python-build uv build --wheel --out-dir "$ARTIFACTS" "$ROOT"
 WHEELS=("$ARTIFACTS"/assay_engine-*.whl)
 if [[ ${#WHEELS[@]} -ne 1 || ! -f ${WHEELS[0]} ]]; then
@@ -40,11 +49,9 @@ run_step python-environment uv venv --python 3.13 "$PY_ENV"
 run_step python-install uv pip install --python "$PY_ENV/bin/python" "${WHEELS[0]}[cli]"
 run_step python-compose "$PY_ENV/bin/assay" compose --request "$REQUEST" --out "$PY_RESULT"
 
-cp "$ROOT/ts/package.json" "$ROOT/ts/pnpm-lock.yaml" "$ROOT/ts/pnpm-workspace.yaml" "$TS_COPY/"
-cp "$ROOT/ts/tsconfig.json" "$ROOT/ts/tsconfig.build.json" "$TS_COPY/"
-cp -R "$ROOT/ts/scripts" "$ROOT/ts/src" "$TS_COPY/"
+copy_typescript_checkout
 NPM_JS=$(realpath "$(command -v npm)")
-if ! NODE22=$(npx --yes --package=node@22 -c 'command -v node' 2>"$TMP/node22.log"); then
+if ! NODE22=$(npx --yes --package=node@22.13.0 -c 'command -v node' 2>"$TMP/node22.log"); then
   cat "$TMP/node22.log" >&2
   exit 1
 fi
@@ -66,6 +73,10 @@ TARBALLS=("$ARTIFACTS"/edgeproc-assay-*.tgz)
 if [[ ${#TARBALLS[@]} -ne 1 || ! -f ${TARBALLS[0]} ]]; then
   echo "Expected exactly one @edgeproc/assay tarball" >&2
   exit 1
+fi
+if [[ -n ${ASSAY_EXAMPLE_ARTIFACT_DIR:-} ]]; then
+  mkdir -p "$ASSAY_EXAMPLE_ARTIFACT_DIR"
+  cp "${TARBALLS[0]}" "$ASSAY_EXAMPLE_ARTIFACT_DIR/"
 fi
 
 cat >"$NODE_APP/package.json" <<'JSON'

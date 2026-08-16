@@ -19,10 +19,11 @@ Northstar weighted score: 0.92
 Parity: Python and TypeScript fields and values match
 ```
 
-The demo works from any current directory because it resolves the repository relative
-to its own path. It builds the real wheel and npm tarball, installs them outside the
-checkout, compares both typed results with the committed oracle, and removes its
-temporary files on success or failure.
+The displayed relative command runs from the checkout root. The script itself resolves
+the repository from its own path, so an absolute path such as
+`bash /path/to/assay/examples/run_composite.sh` also works elsewhere. It builds the real
+wheel and npm tarball, installs them outside the checkout, compares both typed results
+with the committed oracle, and removes its temporary files on success or failure.
 
 ## Python checkout
 
@@ -59,10 +60,19 @@ Install the pinned development toolchain, run its complete gate, then build the 
 tarball:
 
 ```bash
-corepack pnpm --dir ts install --frozen-lockfile
-corepack pnpm --dir ts gate
-corepack pnpm --dir ts pack --pack-destination /tmp/assay-pack
+cd ts
+NODE22=$(npx --yes --package=node@22.13.0 -c 'command -v node')
+COREPACK=$(npx --yes --package=corepack@0.34.0 -c 'command -v corepack')
+export PATH="$(dirname "$NODE22"):$(dirname "$COREPACK"):$PATH"
+node --version
+corepack pnpm --version
+corepack pnpm install --frozen-lockfile
+corepack pnpm gate
+mkdir -p "${TMPDIR:-/tmp}/assay-pack"
+corepack pnpm pack --pack-destination "${TMPDIR:-/tmp}/assay-pack"
 ```
+
+The two version lines must print `v22.13.0` and `11.5.0`.
 
 Install that tarball into a Node 22 application. The package root exports
 `parseRequest()` and `compose()`:
@@ -96,7 +106,8 @@ Run the complete Python and TypeScript gates independently:
 
 ```bash
 uv run poe gate
-corepack pnpm --dir ts gate
+npx --yes --package=node@22.13.0 --package=corepack@0.34.0 \
+  -c 'cd ts && corepack pnpm gate'
 ```
 
 The Python gate covers formatting, lint, strict types, Grade A complexity, branch

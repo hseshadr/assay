@@ -60,6 +60,14 @@ Both surfaces preserve field order, component order, binary64 results, and the e
 request encoding; it is not a claim about the bytes emitted by a language-native JSON
 serializer. [Methods](METHODS.md) defines the complete contract.
 
+## Legacy Python compatibility
+
+The wheel also retains the Python-only deep import `assay.composite` for callers still
+using `SubScore` and `composite(...)`. That migration adapter is not exported from the
+package root, does not return the portable typed method or `inputs_hash` fields, and is
+absent from TypeScript. For all new code, use package-root `parse_request()` and
+`compose()` with weighted mean, additive, or minimum.
+
 ## Python package
 
 The `assay-engine` base wheel depends only on Pydantic and includes contracts,

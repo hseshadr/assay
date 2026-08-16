@@ -236,7 +236,10 @@ def test_should_document_the_assay_only_repository_workflow() -> None:
     # Then
     assert guidance.startswith("# Assay scoring engine")
     assert "uv run poe gate" in guidance
-    assert "corepack pnpm --dir ts gate" in guidance
+    assert "node@22.13.0" in guidance
+    assert "corepack@0.34.0" in guidance
+    assert "corepack pnpm gate" in guidance
+    assert "corepack pnpm --dir ts" not in guidance
     assert "Node 22.13" in guidance
     assert "Avow trust-kernel monorepo" not in guidance
     assert "src/avow" not in guidance

@@ -95,7 +95,8 @@ Run both gates and the installed-artifact example before reviewing a candidate:
 
 ```bash
 uv run poe gate
-corepack pnpm --dir ts gate
+npx --yes --package=node@22.13.0 --package=corepack@0.34.0 \
+  -c 'cd ts && corepack pnpm gate'
 bash examples/run_composite.sh
 ```
 

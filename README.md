@@ -65,7 +65,7 @@ production:  ( 2 - 0) / ( 5 - 0) ×  5/100 = 0.02
 total:                                            0.92
 ```
 
-Assay supports exactly three composition methods:
+Assay's portable typed API supports exactly three composition methods:
 
 - `weighted_mean` normalizes components, converts positive declared weights into
   coefficients that sum to one, and adds their contributions.
@@ -75,15 +75,24 @@ Assay supports exactly three composition methods:
   order the tie-breaker.
 
 The method is chosen by the application because it owns the formula. Assay never
-silently replaces a shipped formula with an average. See [Methods](docs/METHODS.md) for
-validation, uncertainty, and exact arithmetic rules.
+silently replaces a shipped formula with an average. See
+[Methods](https://github.com/hseshadr/assay/blob/main/docs/METHODS.md) for validation,
+uncertainty, and exact arithmetic rules.
+
+### Legacy Python compatibility
+
+The wheel retains a Python-only migration adapter at the deep import `assay.composite`:
+`SubScore` plus `composite(...)`. It is not exported from the package root, does not
+return the typed method or `inputs_hash` fields, and has no TypeScript equivalent. For
+all new code, use package-root `parse_request()` and `compose()` with one of the three
+portable methods above.
 
 Every result field is explicit:
 
 | Field | Meaning |
 |---|---|
 | `schema` | Serialized result contract, currently `assay.result/v1`. |
-| `method.id` | One of the three closed composition methods. |
+| `method.id` | One of the three portable typed composition methods. |
 | `method.version` | Caller-declared provenance for this formula revision. |
 | `score` | Final finite binary64 result. |
 | `interval` | Propagated uncertainty bounds, or `null` for deterministic inputs. |
@@ -144,8 +153,10 @@ binary and ranking calculators.
 
 This README is self-contained because the Python source distribution currently ships
 it, but does not ship the repository's quickstart, docs, or examples. The detailed
-[architecture](docs/ARCHITECTURE.md), [operations contract](docs/OPERATIONS.md), and
-[quickstart](QUICKSTART.md) are available in the source checkout.
+[architecture](https://github.com/hseshadr/assay/blob/main/docs/ARCHITECTURE.md),
+[operations contract](https://github.com/hseshadr/assay/blob/main/docs/OPERATIONS.md),
+and [quickstart](https://github.com/hseshadr/assay/blob/main/QUICKSTART.md) are available
+in the source checkout.
 
 ## Use the local candidate directly
 
@@ -186,15 +197,17 @@ print(result.score, result.selected_component_id)
 
 The command line accepts typed JSON for `assay compose`, `assay measure`, and
 `assay explain`. Build and installation commands for the unpublished checkout are in
-the [quickstart](QUICKSTART.md).
+the [quickstart](https://github.com/hseshadr/assay/blob/main/QUICKSTART.md).
 
 ## Optional calculators
 
 Python's optional scientific surface calculates typed binary-classification, ranking,
 calibration, agreement, and uncertainty reports. TypeScript exposes a smaller binary
 and ranking calculator set. Complete optional-metric parity is not claimed, and the
-calculator resource ceilings do not limit core composition. See [Methods](docs/METHODS.md)
-and [Operations](docs/OPERATIONS.md) for the exact boundary.
+calculator resource ceilings do not limit core composition. See
+[Methods](https://github.com/hseshadr/assay/blob/main/docs/METHODS.md) and
+[Operations](https://github.com/hseshadr/assay/blob/main/docs/OPERATIONS.md) for the
+exact boundary.
 
 ## Optional integration
 
