@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import math
 import re
+from bisect import bisect_left
 from collections.abc import Mapping
-from itertools import pairwise
 from typing import Annotated, ClassVar, Final, Literal, Self, cast, overload
 
 from pydantic import (
@@ -26,7 +26,7 @@ from pydantic.config import ExtraValues
 
 from assay._json import decode_json
 from assay.agreement import AgreementReport, agreement_report
-from assay.calibration import CalibrationReport, calibration_report
+from assay.calibration import CalibrationReport, ReliabilityBin, calibration_report
 from assay.errors import (
     AssayError,
     ContractValidationError,
@@ -505,7 +505,7 @@ class _IntervalProof(_ProofModel):
 
     @model_validator(mode="after")
     def _require_ordered_bounds(self) -> Self:
-        if not self.low <= self.point <= self.high:
+        if self.low > self.high:
             raise ValueError
         return self
 
@@ -687,12 +687,6 @@ def _require_calibration_loss(report: _BinaryReportProof) -> None:
         raise ValueError
 
 
-def _require_calibration_order(report: _BinaryReportProof) -> None:
-    means = tuple(row.mean_predicted for row in report.calibration.bins)
-    if any(first >= second for first, second in pairwise(means)):
-        raise ValueError
-
-
 def _class_populations(counts: _CountsProof) -> tuple[int, int]:
     positives = counts.true_positives + counts.false_negatives
     negatives = counts.true_negatives + counts.false_positives
@@ -717,10 +711,18 @@ def _roc_bounds(counts: _CountsProof) -> tuple[float, float]:
     return lower, (counts.true_positives * counts.true_negatives + flexible) / pairs
 
 
+def _require_perfect_threshold_ap(scores: _ClassificationProof) -> None:
+    counts = scores.counts
+    perfect = counts.false_positives == counts.false_negatives == 0
+    if perfect and not _summary_matches(scores.pr_auc, 1.0):
+        raise ValueError
+
+
 def _require_auc_coherence(report: _BinaryReportProof) -> None:
     scores = report.classification
     if scores.pr_auc == 0.0:
         raise ValueError
+    _require_perfect_threshold_ap(scores)
     _require_roc_grid(report)
     lower, upper = _roc_bounds(scores.counts)
     if _exceeds(lower, scores.roc_auc) or _exceeds(scores.roc_auc, upper):
@@ -747,7 +749,6 @@ class _BinaryReportProof(_ProofModel):
         _require_integer_bin_populations(self)
         _require_calibration_ece(self, total)
         _require_calibration_loss(self)
-        _require_calibration_order(self)
         _require_auc_coherence(self)
         _require_binary_interval(self)
         return self
@@ -795,21 +796,23 @@ def _precision_hits(row: _QueryProof, k: int) -> int:
     return hits
 
 
-def _require_recall_population(row: _QueryProof, hits: int) -> None:
+def _require_recall_population(row: _QueryProof, hits: int) -> int | None:
     if hits == 0:
-        return
+        return None
     relevant = round(hits / row.recall_at_k)
     valid = hits <= relevant <= MAX_ITEMS
     if not valid or not _summary_matches(row.recall_at_k, hits / relevant):
         raise ValueError
+    return relevant
 
 
-def _require_hit_position(row: _QueryProof, hits: int, k: int) -> None:
+def _require_hit_position(row: _QueryProof, hits: int, k: int) -> int | None:
     position = _reciprocal_position(row.reciprocal_rank)
     if hits == 0:
         _require_position_after_cut(position, k)
-        return
+        return position
     _require_position_by(position, k - hits + 1)
+    return position
 
 
 def _require_position_after_cut(position: int | None, k: int) -> None:
@@ -822,10 +825,20 @@ def _require_position_by(position: int | None, latest: int) -> None:
         raise ValueError
 
 
+def _require_one_relevant(row: _QueryProof, relevant: int | None, position: int | None) -> None:
+    if relevant != 1 or position is None:
+        return
+    expected_ndcg = 1.0 / math.log2(position + 1.0)
+    observed = (row.average_precision, row.ndcg_at_k)
+    if not _summaries_match(observed, (row.reciprocal_rank, expected_ndcg)):
+        raise ValueError
+
+
 def _require_query_counts(row: _QueryProof, k: int) -> None:
     hits = _precision_hits(row, k)
-    _require_recall_population(row, hits)
-    _require_hit_position(row, hits, k)
+    relevant = _require_recall_population(row, hits)
+    position = _require_hit_position(row, hits, k)
+    _require_one_relevant(row, relevant, position)
 
 
 def _mean(values: tuple[float, ...]) -> float:
@@ -954,7 +967,7 @@ def _require_agreement_interval(report: _AgreementReportProof) -> None:
 
 
 def _require_perfect_if_defined(value: float | None) -> None:
-    if value is not None and value != 1.0:
+    if value is not None and not _summary_matches(value, 1.0):
         raise ValueError
 
 
@@ -1017,6 +1030,30 @@ class BinaryResultControls(_MeasurementModel):
     bootstrap_seed: Annotated[_NonnegativeInt, Field(le=MAX_SEED)]
 
 
+def _uniform_edge(index: int, n_bins: int) -> float:
+    if index == n_bins:
+        return 1.0
+    return index * (1.0 / n_bins)
+
+
+def _compatible_bin_range(row: ReliabilityBin, edges: tuple[float, ...]) -> tuple[int, int]:
+    tolerance = max(_SUMMARY_TOLERANCE, row.count * math.ulp(1.0))
+    lower = bisect_left(edges, max(0.0, row.mean_predicted - tolerance))
+    upper = bisect_left(edges, min(1.0, row.mean_predicted + tolerance))
+    return lower, upper
+
+
+def _require_distinct_bins(rows: tuple[ReliabilityBin, ...], n_bins: int) -> None:
+    edges = tuple(_uniform_edge(index, n_bins) for index in range(1, n_bins))
+    next_index = 0
+    for row in rows:
+        lower, upper = _compatible_bin_range(row, edges)
+        assigned = max(next_index, lower)
+        if assigned > upper:
+            raise InvalidScoreRequest
+        next_index = assigned + 1
+
+
 class RankingResultControls(_MeasurementModel):
     _error = InvalidRankingRequest
     k: Annotated[_PositiveInt, Field(le=MAX_RANKING_K)]
@@ -1068,8 +1105,7 @@ class BinaryMeasurementResult(_MeasurementModel):
             self.report.classification.accuracy,
             InvalidScoreRequest,
         )
-        if len(self.report.calibration.bins) > self.controls.ece_bins:
-            raise InvalidScoreRequest
+        _require_distinct_bins(self.report.calibration.bins, self.controls.ece_bins)
         _require_result_workload(count, self.controls.bootstrap_resamples, InvalidScoreRequest)
         return self
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 from dataclasses import replace
@@ -134,6 +135,58 @@ def _agreement_request() -> AgreementMeasurementRequest:
     )
 
 
+def _low_resample_binary_request() -> BinaryMeasurementRequest:
+    controls = BinaryMetricControls(
+        min_samples=3,
+        bootstrap_resamples=1,
+        confidence_level=0.9,
+        ece_bins=2,
+        bootstrap_seed=4,
+    )
+    return BinaryMeasurementRequest(
+        metric="binary",
+        metric_version="classification.2026-08",
+        y_true=(0, 1, 1),
+        y_score=(0.9, 0.1, 0.9),
+        controls=controls,
+    )
+
+
+def _low_resample_ranking_request() -> RankingMeasurementRequest:
+    queries = tuple(
+        RankingQueryInput(
+            query=str(position),
+            judgments=(RelevanceInput(doc_id="a", gain=1),),
+            ranked=tuple((*[f"x{index}" for index in range(position - 1)], "a")),
+        )
+        for position in (1, 2, 3)
+    )
+    controls = RankingMetricControls(
+        min_samples=3, bootstrap_resamples=1, confidence_level=0.9, bootstrap_seed=0
+    )
+    return RankingMeasurementRequest(
+        metric="ranking", metric_version="ranking.2026-08", queries=queries, k=2, controls=controls
+    )
+
+
+def _low_resample_agreement_request() -> AgreementMeasurementRequest:
+    pairs = (("low", "low"), ("low", "middle"), ("high", "low"))
+    ratings = tuple(
+        OrdinalRating(item=str(index), rater_a=first, rater_b=second)
+        for index, (first, second) in enumerate(pairs)
+    )
+    controls = UncertaintyControls(
+        min_samples=3, bootstrap_resamples=1, confidence_level=0.9, bootstrap_seed=0
+    )
+    return AgreementMeasurementRequest(
+        metric="agreement",
+        metric_version="agreement.2026-08",
+        scale=("low", "middle", "high"),
+        ratings=ratings,
+        controls=controls,
+    )
+
+
 def _abstaining_agreement_result() -> AgreementMeasurementResult:
     controls = _agreement_request().controls.model_copy(update={"min_samples": 4})
     request = _agreement_request().model_copy(update={"controls": controls})
@@ -174,6 +227,15 @@ def _varying_exact_agreement_result() -> AgreementMeasurementResult:
     return measure(_agreement_request().model_copy(update={"ratings": ratings}))
 
 
+def _rounded_tau_agreement_result() -> AgreementMeasurementResult:
+    bands = ("low", "low", "middle")
+    ratings = tuple(
+        OrdinalRating(item=str(index), rater_a=band, rater_b=band)
+        for index, band in enumerate(bands)
+    )
+    return measure(_agreement_request().model_copy(update={"ratings": ratings}))
+
+
 def _agreement_payload(
     result: AgreementMeasurementResult, changes: dict[str, object]
 ) -> dict[str, object]:
@@ -201,6 +263,84 @@ def _replay_agreement(
     return forged.model_dump_json(by_alias=True)
 
 
+def _binary_payload(
+    result: BinaryMeasurementResult, changes: dict[str, object]
+) -> dict[str, object]:
+    payload = result.model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    scores = report["classification"]
+    assert isinstance(scores, dict)
+    scores.update(changes)
+    return payload
+
+
+def _replay_binary(
+    boundary: str, result: BinaryMeasurementResult, changes: dict[str, object]
+) -> object:
+    payload = _binary_payload(result, changes)
+    if boundary == "constructor":
+        return BinaryMeasurementResult(
+            **result.model_dump(exclude={"report"}), report=payload["report"]
+        )
+    if boundary == "json":
+        return BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+    if boundary == "copy":
+        return result.model_copy(update={"report": payload["report"]})
+    scores = replace(result.report.classification, **changes)
+    report = BinaryMeasurementReport.model_construct(
+        classification=scores,
+        calibration=result.report.calibration,
+        accuracy_interval=result.report.accuracy_interval,
+    )
+    forged = BinaryMeasurementResult.model_construct(
+        **result.model_dump(exclude={"report"}), report=report
+    )
+    return forged.model_dump_json(by_alias=True)
+
+
+def _same_bin_calibration_payload(result: BinaryMeasurementResult) -> dict[str, object]:
+    payload = result.model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    calibration = report["calibration"]
+    assert isinstance(calibration, dict)
+    bins = calibration["bins"]
+    assert isinstance(bins, list)
+    assert all(isinstance(row, dict) for row in bins)
+    bins[0]["mean_predicted"] = 0.2
+    bins[1]["mean_predicted"] = 0.4
+    calibration.update({"ece": 0.4, "brier": 0.2})
+    return payload
+
+
+def _same_bin_calibration_report(result: BinaryMeasurementResult) -> BinaryMeasurementReport:
+    first, second = result.report.calibration.bins
+    bins = (replace(first, mean_predicted=0.2), replace(second, mean_predicted=0.4))
+    calibration = replace(result.report.calibration, bins=bins, ece=0.4, brier=0.2)
+    return BinaryMeasurementReport.model_construct(
+        classification=result.report.classification,
+        calibration=calibration,
+        accuracy_interval=result.report.accuracy_interval,
+    )
+
+
+def _replay_same_bin_calibration(boundary: str, result: BinaryMeasurementResult) -> object:
+    payload = _same_bin_calibration_payload(result)
+    if boundary == "constructor":
+        return BinaryMeasurementResult(
+            **result.model_dump(exclude={"report"}), report=payload["report"]
+        )
+    if boundary == "json":
+        return BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+    if boundary == "copy":
+        return result.model_copy(update={"report": payload["report"]})
+    forged = BinaryMeasurementResult.model_construct(
+        **result.model_dump(exclude={"report"}), report=_same_bin_calibration_report(result)
+    )
+    return forged.model_dump_json(by_alias=True)
+
+
 def _single_ranking_result(
     query: RankingQueryInput | None = None, *, k: int = 2, min_samples: int = 2
 ) -> RankingMeasurementResult:
@@ -210,6 +350,16 @@ def _single_ranking_result(
     return measure(
         request.model_copy(update={"queries": (selected,), "k": k, "controls": controls})
     )
+
+
+def _one_relevant_result(position: int) -> RankingMeasurementResult:
+    prefix = tuple(f"x{index}" for index in range(position - 1))
+    query = RankingQueryInput(
+        query=f"position-{position}",
+        judgments=(RelevanceInput(doc_id="a", gain=1),),
+        ranked=(*prefix, "a"),
+    )
+    return _single_ranking_result(query)
 
 
 def _ranking_changes(
@@ -242,6 +392,46 @@ def _replay_ranking(
         return result.model_copy(update={"report": report})
     forged = RankingMeasurementResult.model_construct(**data, report=report)
     return forged.model_dump_json(by_alias=True)
+
+
+def _binary_sweep_result(seed: int, *, interval: bool) -> BinaryMeasurementResult:
+    request = _low_resample_binary_request() if interval else _binary_request()
+    minimum = len(request.y_true) if interval else len(request.y_true) + 1
+    controls = request.controls.model_copy(
+        update={"min_samples": minimum, "bootstrap_resamples": 1, "bootstrap_seed": seed}
+    )
+    threshold = request.threshold if interval else (0.2, 0.5, 0.8)[seed % 3]
+    return measure(request.model_copy(update={"controls": controls, "threshold": threshold}))
+
+
+def _ranking_sweep_request(seed: int, *, interval: bool) -> RankingMeasurementRequest:
+    if interval:
+        return _low_resample_ranking_request()
+    request = _ranking_request()
+    queries = request.queries if seed % 2 == 0 else tuple(reversed(request.queries))
+    if seed % 5 == 0:
+        queries = tuple(query.model_copy(update={"query": "same question"}) for query in queries)
+    return request.model_copy(update={"queries": queries, "k": 1 + seed % 2})
+
+
+def _ranking_sweep_result(seed: int, *, interval: bool) -> RankingMeasurementResult:
+    request = _ranking_sweep_request(seed, interval=interval)
+    minimum = len(request.queries) if interval else len(request.queries) + 1
+    controls = request.controls.model_copy(
+        update={"min_samples": minimum, "bootstrap_resamples": 1, "bootstrap_seed": seed}
+    )
+    return measure(request.model_copy(update={"controls": controls}))
+
+
+def _agreement_sweep_result(seed: int, *, interval: bool) -> AgreementMeasurementResult:
+    request = _low_resample_agreement_request() if interval else _agreement_request()
+    offset = seed % len(request.ratings)
+    ratings = request.ratings[offset:] + request.ratings[:offset]
+    minimum = len(ratings) if interval else len(ratings) + 1
+    controls = request.controls.model_copy(
+        update={"min_samples": minimum, "bootstrap_resamples": 1, "bootstrap_seed": seed}
+    )
+    return measure(request.model_copy(update={"ratings": ratings, "controls": controls}))
 
 
 def test_should_return_binary_specific_report_without_universal_score(
@@ -306,6 +496,76 @@ def test_should_return_existing_agreement_report_with_declared_scale() -> None:
     assert payload["report"]["scale"] == ["low", "middle", "high"]
     assert payload["report"]["n_items"] == 3
     assert payload["report"]["weighted_agreement_interval"]["kind"] == "interval"
+
+
+def test_should_accept_binary_percentile_interval_outside_point() -> None:
+    # Given one native low-resample percentile bootstrap
+    result = measure(_low_resample_binary_request())
+
+    # When its one-resample interval lands above the original mean
+    interval = result.report.accuracy_interval
+
+    # Then ordered in-domain bounds replay even though they do not bracket the point
+    assert (interval.point, interval.low, interval.high) == (1 / 3, 1.0, 1.0)
+    assert BinaryMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_should_accept_ranking_percentile_interval_outside_point() -> None:
+    # Given one native low-resample ranking bootstrap
+    result = measure(_low_resample_ranking_request())
+
+    # When its one-resample interval does not contain mean nDCG
+    interval = result.report.ndcg_interval
+
+    # Then the serialized aggregate remains the point and the ordered bounds replay
+    assert interval.point == result.report.mean_ndcg_at_k
+    assert interval.low == interval.high == pytest.approx(0.420619835714305)
+    assert RankingMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_should_accept_agreement_percentile_interval_outside_point() -> None:
+    # Given one native low-resample agreement bootstrap
+    result = measure(_low_resample_agreement_request())
+
+    # When its one-resample interval lands below weighted agreement
+    interval = result.report.weighted_agreement_interval
+
+    # Then the aggregate point stays exact while the ordered bounds replay
+    assert (interval.point, interval.low, interval.high) == (7 / 12, 0.5, 0.5)
+    assert AgreementMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_should_still_require_binary_interval_point_to_equal_accuracy() -> None:
+    # Given an ordered native interval whose point is changed away from accuracy
+    result = measure(_low_resample_binary_request())
+    interval = replace(result.report.accuracy_interval, point=0.25)
+    report = result.report.model_copy(update={"accuracy_interval": interval})
+
+    # When / Then the family result boundary retains exact point-to-aggregate replay
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        result.model_copy(update={"report": report})
+
+
+def test_should_still_require_ranking_interval_point_to_equal_mean_ndcg() -> None:
+    # Given an ordered native interval whose point is changed away from mean nDCG
+    result = measure(_low_resample_ranking_request())
+    interval = replace(result.report.ndcg_interval, point=0.25)
+    report = result.report.model_copy(update={"ndcg_interval": interval})
+
+    # When / Then the family result boundary retains exact point-to-aggregate replay
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        result.model_copy(update={"report": report})
+
+
+def test_should_still_require_agreement_interval_point_to_equal_weighted_mean() -> None:
+    # Given an ordered native interval whose point is changed away from weighted agreement
+    result = measure(_low_resample_agreement_request())
+    interval = replace(result.report.weighted_agreement_interval, point=0.25)
+    report = result.report.model_copy(update={"weighted_agreement_interval": interval})
+
+    # When / Then the family result boundary retains exact point-to-aggregate replay
+    with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
+        result.model_copy(update={"report": report})
 
 
 def test_should_parse_measurement_union_before_optional_execution() -> None:
@@ -612,6 +872,72 @@ def test_should_reject_reliability_bins_out_of_score_order() -> None:
         BinaryMeasurementResult.model_validate_json(json.dumps(payload))
 
 
+@pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
+def test_should_reject_distinct_rows_claimed_inside_one_uniform_bin(boundary: str) -> None:
+    # Given two ordered, internally coherent rows whose means occupy the same uniform bin
+    result = measure(_binary_request())
+    error = PydanticSerializationError if boundary == "serialize" else AssayError
+
+    # When / Then every replay boundary requires each row to represent a distinct bin
+    with pytest.raises(error, match=r"assay\.invalid_request"):
+        _replay_same_bin_calibration(boundary, result)
+
+
+def test_should_assign_an_exact_uniform_edge_to_sklearns_lower_bin() -> None:
+    # Given native scores with mean 0.5 in the lower of two populated uniform bins
+    request = _binary_request().model_copy(
+        update={
+            "y_true": (0, 1, 0),
+            "y_score": (0.5, 0.5, 0.75),
+            "controls": {**_binary_request().controls.model_dump(), "min_samples": 4},
+        }
+    )
+
+    # When the exact-edge calibration result crosses JSON replay
+    result = measure(request)
+
+    # Then sklearn's left-edge convention keeps the 0.5 and 0.75 rows distinct
+    assert tuple(row.mean_predicted for row in result.report.calibration.bins) == (0.5, 0.75)
+    assert BinaryMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_should_accept_native_bin_mean_rounded_onto_prior_edge() -> None:
+    # Given upper-bin scores one ULP above 1/3 whose native mean rounds back to the edge
+    upper = math.nextafter(1 / 3, math.inf)
+    controls = {**_binary_request().controls.model_dump(), "ece_bins": 3, "min_samples": 5}
+    request = _binary_request().model_copy(
+        update={"y_true": (0, 1, 0, 1), "y_score": (0.0, upper, upper, upper), "controls": controls}
+    )
+
+    # When the result replays without the omitted raw score assignments
+    result = measure(request)
+
+    # Then count-aware rounding keeps the two native populated bins distinct
+    assert tuple(row.mean_predicted for row in result.report.calibration.bins) == (0.0, 1 / 3)
+    assert BinaryMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_should_accept_native_adjacent_bin_means_rounded_out_of_order() -> None:
+    # Given distinct adjacent bins whose native accumulation reverses their reported means
+    upper = math.nextafter(1 / 3, math.inf)
+    controls = {**_binary_request().controls.model_dump(), "ece_bins": 3, "min_samples": 22}
+    request = _binary_request().model_copy(
+        update={
+            "y_true": (0, *([1] * 20)),
+            "y_score": (1 / 3, *([upper] * 20)),
+            "controls": controls,
+        }
+    )
+
+    # When the native result crosses JSON replay
+    result = measure(request)
+
+    # Then compatible uniform-bin assignment, not raw mean order, proves distinctness
+    means = tuple(row.mean_predicted for row in result.report.calibration.bins)
+    assert means == (1 / 3, 0.33333333333333326)
+    assert BinaryMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
 def test_should_reject_zero_average_precision_with_observed_positives() -> None:
     # Given both observed classes but a claimed zero average precision
     payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
@@ -624,6 +950,26 @@ def test_should_reject_zero_average_precision_with_observed_positives() -> None:
     # When / Then replay rejects an AP value impossible when positives exist
     with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
         BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+@pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
+def test_should_reject_nonperfect_ap_from_perfect_threshold_counts(boundary: str) -> None:
+    # Given perfect threshold counts but a materially imperfect average precision
+    result = measure(_binary_request())
+    error = PydanticSerializationError if boundary == "serialize" else AssayError
+
+    # When / Then every replay boundary requires complete positive-before-negative ordering
+    with pytest.raises(error, match=r"assay\.invalid_request"):
+        _replay_binary(boundary, result, {"pr_auc": 0.75})
+
+
+def test_should_accept_native_perfect_threshold_average_precision() -> None:
+    # Given a native classifier whose chosen threshold separates both classes perfectly
+    result = measure(_binary_request())
+
+    # When / Then its average precision is one and the result replays
+    assert result.report.classification.pr_auc == 1.0
+    assert BinaryMeasurementResult.model_validate_json(result.model_dump_json()) == result
 
 
 def test_should_reject_roc_auc_outside_threshold_count_bounds() -> None:
@@ -858,6 +1204,50 @@ def test_should_reject_ndcg_zero_state_that_disagrees_with_top_k_hits() -> None:
         _replay_ranking("json", result, changes)
 
 
+@pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
+@pytest.mark.parametrize(("position", "forged_ap"), [(1, 0.75), (2, 0.75)])
+def test_should_reject_one_relevant_ap_that_disagrees_with_reciprocal_rank(
+    boundary: str, position: int, forged_ap: float
+) -> None:
+    # Given one relevant document and an AP unequal to its reciprocal rank
+    result = _one_relevant_result(position)
+    changes = _ranking_changes(result, {"average_precision": forged_ap})
+    error = PydanticSerializationError if boundary == "serialize" else AssayError
+
+    # When / Then every replay boundary requires AP to equal reciprocal rank
+    with pytest.raises(error, match=r"assay\.invalid_ranking_request"):
+        _replay_ranking(boundary, result, changes)
+
+
+@pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
+@pytest.mark.parametrize(("position", "forged_ndcg"), [(1, 0.75), (2, 0.75)])
+def test_should_reject_one_relevant_ndcg_that_disagrees_with_hit_position(
+    boundary: str, position: int, forged_ndcg: float
+) -> None:
+    # Given one relevant document and nDCG inconsistent with its reciprocal-rank position
+    result = _one_relevant_result(position)
+    changes = _ranking_changes(result, {"ndcg_at_k": forged_ndcg})
+    error = PydanticSerializationError if boundary == "serialize" else AssayError
+
+    # When / Then every replay boundary derives one-relevant nDCG from the hit position
+    with pytest.raises(error, match=r"assay\.invalid_ranking_request"):
+        _replay_ranking(boundary, result, changes)
+
+
+def test_should_accept_native_one_relevant_rank_boundaries() -> None:
+    # Given one relevant document at ranks one, two, and beyond k
+    results = tuple(_one_relevant_result(position) for position in (1, 2, 3))
+
+    # When / Then trec_eval's AP, reciprocal rank, and nDCG values replay exactly
+    rows = tuple(result.report.per_query[0] for result in results)
+    assert tuple(row.average_precision for row in rows) == (1.0, 0.5, 1 / 3)
+    assert tuple(row.reciprocal_rank for row in rows) == (1.0, 0.5, 1 / 3)
+    assert tuple(row.ndcg_at_k for row in rows) == pytest.approx((1.0, 1 / math.log2(3), 0.0))
+    assert all(
+        type(result).model_validate_json(result.model_dump_json()) == result for result in results
+    )
+
+
 def test_should_measure_and_replay_duplicate_query_text() -> None:
     # Given two distinct ranking rows that use the same human-readable query text
     request = _ranking_request()
@@ -966,18 +1356,34 @@ def test_should_reject_constructed_weighted_contradiction_when_serializing() -> 
 
 
 @pytest.mark.parametrize("field", ["quadratic_kappa", "kendall_tau_b"])
-def test_should_reject_nonperfect_statistic_from_all_exact_ratings(field: str) -> None:
-    # Given all ratings match but one correlation statistic claims 0.5
+@pytest.mark.parametrize("value", [0.5, 1.0 - 1e-12])
+def test_should_reject_nonperfect_statistic_from_all_exact_ratings(
+    field: str, value: float
+) -> None:
+    # Given all ratings match but one statistic is materially below perfect
     result = _constant_agreement_result()
     payload = result.model_dump(mode="json", by_alias=True)
     report = payload["report"]
     assert isinstance(report, dict)
-    report[field] = 0.5
+    report[field] = value
     report[f"{'kappa' if field == 'quadratic_kappa' else 'tau'}_undefined_reason"] = None
 
     # When / Then replay refuses a defined all-exact statistic below one
     with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
         AgreementMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_accept_native_all_exact_tau_one_ulp_below_one() -> None:
+    # Given tied all-exact ratings whose native tau rounds one ULP below one
+    result = _rounded_tau_agreement_result()
+
+    # When the result crosses the JSON replay boundary
+    replayed = AgreementMeasurementResult.model_validate_json(result.model_dump_json())
+
+    # Then the existing summary tolerance recognizes the statistic as perfect
+    assert result.report.quadratic_kappa == 1.0
+    assert result.report.kendall_tau_b == 0.9999999999999999
+    assert replayed == result
 
 
 def _constant_agreement_result() -> AgreementMeasurementResult:
@@ -1111,6 +1517,66 @@ def test_should_reject_noncollapsed_agreement_interval_for_all_exact_items() -> 
     # When / Then replay requires its percentile interval to collapse at one
     with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
         _replay_agreement("json", result, {"weighted_agreement_interval": forged})
+
+
+def test_should_replay_one_hundred_native_binary_intervals() -> None:
+    # Given 100 deterministic native binary interval reports
+    for seed in range(100):
+        result = _binary_sweep_result(seed, interval=True)
+
+        # When / Then every report crosses exact JSON replay without false rejection
+        assert result.report.accuracy_interval.kind == "interval"
+        assert BinaryMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_should_replay_one_hundred_native_ranking_intervals() -> None:
+    # Given 100 deterministic native ranking interval reports
+    for seed in range(100):
+        result = _ranking_sweep_result(seed, interval=True)
+
+        # When / Then every report crosses exact JSON replay without false rejection
+        assert result.report.ndcg_interval.kind == "interval"
+        assert RankingMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_should_replay_one_hundred_native_agreement_intervals() -> None:
+    # Given 100 deterministic native agreement interval reports
+    for seed in range(100):
+        result = _agreement_sweep_result(seed, interval=True)
+
+        # When / Then every report crosses exact JSON replay without false rejection
+        assert result.report.weighted_agreement_interval.kind == "interval"
+        assert AgreementMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_should_replay_four_hundred_thirty_four_native_binary_abstentions() -> None:
+    # Given 434 deterministic native binary abstention reports
+    for seed in range(434):
+        result = _binary_sweep_result(seed, interval=False)
+
+        # When / Then each result retains its honest abstention through replay
+        assert result.report.accuracy_interval.kind == "abstention"
+        assert BinaryMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_should_replay_four_hundred_thirty_three_native_ranking_abstentions() -> None:
+    # Given 433 deterministic native ranking abstentions, including repeated query text
+    for seed in range(433):
+        result = _ranking_sweep_result(seed, interval=False)
+
+        # When / Then each result retains its honest abstention through replay
+        assert result.report.ndcg_interval.kind == "abstention"
+        assert RankingMeasurementResult.model_validate_json(result.model_dump_json()) == result
+
+
+def test_should_replay_four_hundred_thirty_three_native_agreement_abstentions() -> None:
+    # Given 433 deterministic native agreement abstention reports
+    for seed in range(433):
+        result = _agreement_sweep_result(seed, interval=False)
+
+        # When / Then each result retains its honest abstention through replay
+        assert result.report.weighted_agreement_interval.kind == "abstention"
+        assert AgreementMeasurementResult.model_validate_json(result.model_dump_json()) == result
 
 
 def test_should_redact_finite_integer_overflow_in_measurement_json() -> None:

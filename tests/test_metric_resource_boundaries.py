@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 import warnings
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -11,12 +12,48 @@ import pytest
 import scipy.stats
 import sklearn.calibration
 
-from assay import BinaryMeasurementRequest, BinaryMetricControls, _optional, measure
-from assay.calibration import calibration_report
+from assay import (
+    BinaryMeasurementRequest,
+    BinaryMeasurementResult,
+    BinaryMetricControls,
+    _optional,
+    measure,
+)
+from assay.calibration import CalibrationReport, ReliabilityBin, calibration_report
 from assay.errors import InvalidRankingRequest, InvalidScoreRequest, InvalidSettings
-from assay.metrics import confusion_counts
+from assay.measurement import BinaryMeasurementReport
+from assay.metrics import ClassificationScores, ConfusionCounts, confusion_counts
 from assay.ranking import ndcg_at_k
-from assay.uncertainty import mean_interval
+from assay.uncertainty import Abstention, mean_interval
+
+_MAXIMUM_BIN_COUNT = 10_000
+_MAXIMUM_BIN_REPLAY_SECONDS = 3.0
+
+
+def _maximum_bin_rows() -> tuple[ReliabilityBin, ...]:
+    midpoint = _MAXIMUM_BIN_COUNT // 2
+    return tuple(
+        ReliabilityBin(
+            mean_predicted=(index + 0.5) / _MAXIMUM_BIN_COUNT,
+            fraction_positive=float(index >= midpoint),
+            count=1,
+        )
+        for index in range(_MAXIMUM_BIN_COUNT)
+    )
+
+
+def _maximum_bin_report() -> BinaryMeasurementReport:
+    bins = _maximum_bin_rows()
+    ece = sum(abs(row.mean_predicted - row.fraction_positive) for row in bins) / len(bins)
+    brier = math.fsum((row.mean_predicted - row.fraction_positive) ** 2 for row in bins) / len(bins)
+    scores = ClassificationScores(
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, ConfusionCounts(5_000, 0, 5_000, 0), 0.0
+    )
+    calibration = CalibrationReport(ece=ece, brier=brier, bins=bins)
+    abstention = Abstention("abstention", "sample count below floor", 10_000, 10_001)
+    return BinaryMeasurementReport(
+        classification=scores, calibration=calibration, accuracy_interval=abstention
+    )
 
 
 @pytest.mark.parametrize(
@@ -204,3 +241,29 @@ def test_should_revalidate_constructed_request_before_optional_dependency_load(
     with pytest.raises(InvalidSettings, match=r"^assay\.invalid_settings$"):
         measure(request)
     assert not called
+
+
+def test_should_replay_maximum_calibration_shape_with_bounded_cpu() -> None:
+    # Given a coherent public report at the documented 10,000-bin boundary
+    report = _maximum_bin_report()
+
+    # When the result validates every populated bin at its public constructor
+    started = time.perf_counter()
+    result = BinaryMeasurementResult(
+        metric="binary",
+        metric_version="classification.2026-08",
+        controls={
+            "threshold": 0.5,
+            "min_samples": 10_001,
+            "bootstrap_resamples": 1,
+            "confidence_level": 0.95,
+            "ece_bins": 10_000,
+            "bootstrap_seed": 0,
+        },
+        report=report,
+    )
+    elapsed = time.perf_counter() - started
+
+    # Then validation is bounded well below the quadratic implementation's cost
+    assert len(result.report.calibration.bins) == _MAXIMUM_BIN_COUNT
+    assert elapsed < _MAXIMUM_BIN_REPLAY_SECONDS
