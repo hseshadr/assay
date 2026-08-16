@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -110,7 +111,6 @@ def _typecheck_typescript(
     target = tmp_path / f"example-{index}.ts"
     target.write_text(source.replace('"@edgeproc/assay"', f'"{module}"'), encoding="utf-8")
     command = [
-        "corepack",
         "pnpm",
         "--dir",
         "ts",
@@ -272,6 +272,20 @@ def test_should_typecheck_typescript_examples(tmp_path: Path) -> None:
     assert all(result.returncode == 0 for result in results), "\n".join(
         result.stdout + result.stderr for result in results
     )
+
+
+def test_should_use_action_installed_pnpm_without_corepack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given a conflicting Corepack beside the action-installed pnpm launcher
+    corepack = tmp_path / "corepack"
+    corepack.write_text("#!/bin/sh\nexit 86\n", encoding="utf-8")
+    corepack.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    # When a documentation example is typechecked
+    result = _typecheck_typescript("const value: number = 1;\n", tmp_path, 999)
+    # Then the pinned direct pnpm interface remains authoritative
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("stale", _STALE)

@@ -218,3 +218,19 @@ audits/artifact installs, and ended with no generated output or repository drift
 
 The compatibility ref and draft PR exist remotely. At this checkpoint there is still no Assay
 tag, GitHub release, registry package, merge, or production integration claim.
+
+## Hosted direct-pnpm correction
+
+The replacement PR head next ran CI `31977685346` and Security `31977685389`. Security was fully
+green and six CI jobs were green; Python failed only
+`tests/test_docs_contract.py::test_should_typecheck_typescript_examples`. Its subprocess invoked
+the bundled Node 22.13 Corepack, whose stale signing-key set rejected current pnpm metadata, even
+though `pnpm/action-setup` had already placed the exact audited pnpm `11.5.0` launcher on `PATH`.
+No failed job was rerun.
+
+A new behavior regression first installed a deliberately failing `corepack` shim beside the real
+direct pnpm launcher and reproduced exit `86`. The documentation typecheck helper now uses direct
+`pnpm`, matching every production build script and the action-installed tool boundary. Focused RED
+was `1 failed`; focused GREEN is `2/2`, the full documentation contract is `23/23`, and Ruff,
+strict mypy, and Xenon A remain green. No production runtime, artifact, workflow, or dependency
+surface changed.
