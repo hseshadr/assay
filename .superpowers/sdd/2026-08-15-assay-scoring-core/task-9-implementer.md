@@ -106,7 +106,7 @@ PATH=<Node-22.13.0-bin>:<pnpm-11.5.0-wrapper>:<fixed-system-path> \
 It exited `0` and cleaned every generated release and publisher output. Evidence within that one
 run:
 
-- Python: `798 passed in 523.53s`, zero warnings, branch-aware coverage `94.30%`; Ruff, format,
+- Python: `808 passed in 526.34s`, zero warnings, branch-aware coverage `94.30%`; Ruff, format,
   strict mypy, Xenon Grade A, and the 15-line shipped-function contract all green.
 - TypeScript: `12/12` files and `160/160` tests; statements `98.19%`, branches `96.11%`, functions
   `100%`, lines `99.44%`; Biome, typecheck, and build green.
@@ -123,15 +123,15 @@ run:
 
 Every heavy scenario uses five independent child processes, nearest-rank percentiles, per-child
 timeouts, and actual per-child high-water RSS. The CI benchmark job also has a 15-minute bound.
-These reports contain exact source SHA `814fec1a828a43fee48918f1b4f2e9c6ff207446`:
+These reports contain exact source SHA `bb207d6f06f98944fd7eabaa7ae49d440fbebf94`:
 
 | Workload | Count | Samples | p50 ms | p95 ms | p99 ms | Peak RSS MiB |
 |---|---:|---:|---:|---:|---:|---:|
-| Python composition batch | 2,000 | 5 | 178.941 | 180.042 | 180.042 | 38.422 |
-| Python minimum compose + replay | 150,000 | 5 | 10,699.315 | 10,845.148 | 10,845.148 | 898.547 |
-| Python binary measurement | 10,000 | 5 | 525.991 | 807.340 | 807.340 | 130.938 |
-| TypeScript composition batch | 2,000 | 5 | 95.215 | 95.454 | 95.454 | 57.969 |
-| TypeScript minimum compose + replay | 150,000 | 5 | 2,620.738 | 2,638.527 | 2,638.527 | 811.234 |
+| Python composition batch | 2,000 | 5 | 180.605 | 183.655 | 183.655 | 38.438 |
+| Python minimum compose + replay | 150,000 | 5 | 10,761.842 | 10,905.346 | 10,905.346 | 898.500 |
+| Python binary measurement | 10,000 | 5 | 542.519 | 785.181 | 785.181 | 130.812 |
+| TypeScript composition batch | 2,000 | 5 | 95.757 | 95.867 | 95.867 | 58.344 |
+| TypeScript minimum compose + replay | 150,000 | 5 | 2,616.666 | 2,676.489 | 2,676.489 | 810.578 |
 
 The binary workload explicitly uses 99 resamples: 990,000 bootstrap work cells, below the
 10,000,000-cell cap.
@@ -143,7 +143,7 @@ The source-date epoch is derived only from the latest commit touching packaged P
 this report-only commit cannot perturb the wheel or sdist. The exact envelope is:
 
 ```text
-b5464cdf2fac0b8525451dc5d96f9f9446e9b205d875c57be838fc6113b4c5c9  npm/edgeproc-assay-0.5.0-dev.0.tgz
+04a6ac4a6a2004b25c3b680f512f65510b3bdd9954e5b7157363ba46a51cb7cc  npm/edgeproc-assay-0.5.0-dev.0.tgz
 0166b9691d43cd48194b7bd04227834c4a40feba5f83d3b75d83efe951c78913  python/assay_engine-0.5.0.dev0-py3-none-any.whl
 cd0e7593513ff587389df34813b29f09b054f5fc4c9191e86ea0e4ffc28cb0fb  python/assay_engine-0.5.0.dev0.tar.gz
 ```
@@ -181,7 +181,7 @@ builds use the locked, no-isolation path.
 
 - actionlint `1.7.12`: green.
 - zizmor `1.29.0`, pedantic, low severity, offline, strict collection over `.github`: no findings.
-- Gitleaks `8.30.1`: 180 commits / approximately 2.49 MB full history and approximately 4.03 MB
+- Gitleaks `8.30.1`: 182 commits / approximately 2.50 MB full history and approximately 4.06 MB
   current tree scanned; no leaks.
 - The sole historical false positive is ignored only by its exact fingerprint, with rationale
   `documented Ed25519 public key test vector; not secret`. Tests reject broad rule, path, or history
@@ -191,8 +191,30 @@ builds use the locked, no-isolation path.
 - ShellCheck `0.11.0` over `examples/*.sh` and `scripts/*.sh`: green.
 - Dependabot uses a seven-day cooldown for GitHub Actions, npm, and pip.
 
-## Explicitly deferred remote evidence
+## Hosted PR correction evidence
 
-This task stops at the authorized clean local candidate. Hosted run/check IDs, pull requests,
-protection changes, remote compatibility-ref verification, merge SHA/tree parity, tags, releases,
-and registry publication are not claimed. Existing tags and all registries were left unchanged.
+Draft PR `#39` first ran CI `31964461610` and Security `31964461661` at source `7dd6a6b`.
+No failed job was rerun. Two deterministic host-boundary failures were reproduced locally before
+the replacement source was written:
+
+- npm packing produced byte-identical tar content and metadata, but gzip header byte 9 identified
+  macOS as `0x13` and Ubuntu as `0x03`. The new fail-closed normalizer validates the fixed gzip
+  header, atomically canonicalizes only the informational OS byte to `0x03`, and runs on every
+  first-party Assay pack path before verification or manifest generation. Synthetic header and
+  real package regressions were RED before implementation and are now green. The canonical final
+  npm digest is `04a6ac4a6a2004b25c3b680f512f65510b3bdd9954e5b7157363ba46a51cb7cc`.
+- The pinned Gitleaks action found no leak but generated untracked `results.sarif`, causing the
+  later full-tree assertion to fail. Both action call sites now remove only that known file under
+  `always()`. The security lane then performs the direct full-history/tree scans, asserts SARIF
+  absence, checks tracked diffs, and requires empty full porcelain status. Tests enumerate both
+  call sites and prove unrelated files are preserved.
+
+Focused RED was `4 failed` for the missing normalizer, noncanonical release digest, and both SARIF
+lanes; the tightened header/tree RED was `8 failed`. Focused GREEN is `12 passed`, the TypeScript
+artifact suite is `3/3`, full Python is `808/808`, and full TypeScript is `160/160`. The immutable
+replacement release candidate at `bb207d6f06f98944fd7eabaa7ae49d440fbebf94` exited `0`, killed
+`120/120` mutations, restored both complete suites byte-exactly, passed all benchmarks/security/
+audits/artifact installs, and ended with no generated output or repository drift.
+
+The compatibility ref and draft PR exist remotely. At this checkpoint there is still no Assay
+tag, GitHub release, registry package, merge, or production integration claim.
