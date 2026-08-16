@@ -151,8 +151,8 @@ def test_should_refuse_legacy_security_command_without_writes(
     captured = capsys.readouterr()
 
     # Then
-    assert status == 1
-    assert "assay.scoring_core_pending" in captured.err
+    assert status == 2
+    assert captured.err == "FAIL: assay.command_moved_to_avow; use `avow keygen ...`\n"
     assert not private_key.exists()
     assert not public_key.exists()
 

@@ -6,7 +6,11 @@ import pytest
 
 from assay.errors import (
     AssayError,
+    CliExtraMissing,
     CliInputInvalid,
+    CliOutputInvalid,
+    CommandMovedToAvow,
+    CommandReplaced,
     EmptyRelevantSet,
     InsufficientSamples,
     InvalidAgreementRequest,
@@ -15,12 +19,15 @@ from assay.errors import (
     InvalidSettings,
     MetricsExtraMissing,
     ReplayRefused,
-    ScoringCorePending,
     UnknownMetric,
 )
 
 _ASSAY_CODES = [
+    (CliExtraMissing, "assay.cli_extra_missing"),
     (CliInputInvalid, "assay.cli_input_invalid"),
+    (CliOutputInvalid, "assay.cli_output_invalid"),
+    (CommandMovedToAvow, "assay.command_moved_to_avow"),
+    (CommandReplaced, "assay.command_replaced"),
     (InvalidScoreRequest, "assay.invalid_request"),
     (InvalidRankingRequest, "assay.invalid_ranking_request"),
     (InvalidAgreementRequest, "assay.invalid_agreement_request"),
@@ -30,7 +37,6 @@ _ASSAY_CODES = [
     (MetricsExtraMissing, "assay.metrics_extra_missing"),
     (InvalidSettings, "assay.invalid_settings"),
     (ReplayRefused, "assay.replay_refused"),
-    (ScoringCorePending, "assay.scoring_core_pending"),
 ]
 
 

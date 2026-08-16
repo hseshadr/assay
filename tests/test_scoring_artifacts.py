@@ -32,6 +32,15 @@ _LEGACY_KEY_PHRASES = (
     "public key",
     "signing key",
 )
+_MIGRATION_BOUNDARY_FILES = frozenset(
+    {
+        "src/assay/cli.py",
+        "src/assay/errors.py",
+        "tests/test_cli_migration.py",
+        "tests/test_errors.py",
+        "tests/test_repository_identity.py",
+    }
+)
 
 
 @pytest.fixture(scope="module")
@@ -81,6 +90,12 @@ def _words(text: str) -> Iterator[str]:
     yield from re.findall(r"[a-z]+", text.lower())
 
 
+def _without_required_migration_words(name: str, text: str) -> str:
+    if name not in _MIGRATION_BOUNDARY_FILES:
+        return text
+    return text.replace("avow", "").replace("ledger", "")
+
+
 def test_should_exclude_legacy_product_assets_from_the_sdist(
     built_artifacts: tuple[Path, Path],
 ) -> None:
@@ -119,6 +134,7 @@ def test_should_scan_every_sdist_text_for_legacy_product_copy(
     for name, text in texts:
         assert text.count(_BOUNDARY) == (1 if name in boundary_files else 0)
         remainder = text.replace(_BOUNDARY, "").lower()
+        remainder = _without_required_migration_words(name, remainder)
         assert not set(_LEGACY_PRODUCT_WORDS) & set(_words(remainder))
         legacy_key_phrases = tuple(phrase for phrase in _LEGACY_KEY_PHRASES if phrase in remainder)
         assert not legacy_key_phrases, (name, legacy_key_phrases)

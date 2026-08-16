@@ -92,6 +92,10 @@ ignore = ["S101", "PLR0913"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "PLR2004", "C901", "PLR0911", "PLR0912"]
+"tests/test_cli.py" = ["S603", "S607"]
+"tests/test_cli_migration.py" = ["S603", "S607"]
+"tests/test_cli_privacy.py" = ["S603", "S607"]
+"tests/test_measurement.py" = ["S603", "S607"]
 # Domain errors use semantic names such as InvalidRankingRequest. They are the stable,
 # coded interface consumed across Assay's calculators, CLI, and tests.
 "src/assay/errors.py" = ["N818"]

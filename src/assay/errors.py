@@ -6,7 +6,11 @@ from enum import StrEnum
 
 __all__ = [
     "AssayError",
+    "CliExtraMissing",
     "CliInputInvalid",
+    "CliOutputInvalid",
+    "CommandMovedToAvow",
+    "CommandReplaced",
     "ContractCode",
     "ContractValidationError",
     "EmptyRelevantSet",
@@ -18,7 +22,6 @@ __all__ = [
     "InvalidSettings",
     "MetricsExtraMissing",
     "ReplayRefused",
-    "ScoringCorePending",
     "UnknownMetric",
 ]
 
@@ -79,6 +82,30 @@ class CliInputInvalid(AssayError):
     code: str = "assay.cli_input_invalid"
 
 
+class CliExtraMissing(AssayError):
+    """A current command was invoked without Assay's optional CLI dependency."""
+
+    code: str = "assay.cli_extra_missing"
+
+
+class CliOutputInvalid(AssayError):
+    """A CLI destination is unsafe or cannot be installed atomically."""
+
+    code: str = "assay.cli_output_invalid"
+
+
+class CommandMovedToAvow(AssayError):
+    """A historical evidence command now belongs to Avow."""
+
+    code: str = "assay.command_moved_to_avow"
+
+
+class CommandReplaced(AssayError):
+    """A mixed historical scoring command has an explicit replacement."""
+
+    code: str = "assay.command_replaced"
+
+
 class InvalidScoreRequest(AssayError):
     """A score request cannot produce a meaningful result."""
 
@@ -137,9 +164,3 @@ class ReplayRefused(AssayError):
     """A historical score cannot be reproduced from its inputs."""
 
     code: str = "assay.replay_refused"
-
-
-class ScoringCorePending(AssayError):
-    """The transitional CLI has no scoring command until the core lands."""
-
-    code: str = "assay.scoring_core_pending"
