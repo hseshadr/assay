@@ -61,11 +61,13 @@ function row(
 function resultInterval(request: MinimumRequest): Interval | null {
   if (!request.components.some((component) => component.interval !== null))
     return null;
-  const candidates = request.components.map((component) =>
-    bounds(component, request),
-  );
-  const low = Math.min(...candidates.map((candidate) => candidate[0]));
-  const high = Math.min(...candidates.map((candidate) => candidate[1]));
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.POSITIVE_INFINITY;
+  for (const component of request.components) {
+    const [candidateLow, candidateHigh] = bounds(component, request);
+    low = Math.min(low, candidateLow);
+    high = Math.min(high, candidateHigh);
+  }
   return low === high ? null : { low, high };
 }
 

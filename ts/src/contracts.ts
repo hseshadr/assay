@@ -831,11 +831,14 @@ function validMinimumRow(row: ExplainedComponent): boolean {
 
 function minimumBounds(rows: ReadonlyArray<ExplainedComponent>): Bounds {
   if (!hasIntervals(rows)) return null;
-  const bounds = rows.map(rowBounds);
-  return [
-    Math.min(...bounds.map(([low]) => low)),
-    Math.min(...bounds.map(([, high]) => high)),
-  ];
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.POSITIVE_INFINITY;
+  for (const row of rows) {
+    const [rowLow, rowHigh] = rowBounds(row);
+    low = Math.min(low, rowLow);
+    high = Math.min(high, rowHigh);
+  }
+  return [low, high];
 }
 
 function firstMinimum(

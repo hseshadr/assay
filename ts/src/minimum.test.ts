@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { type MinimumRequest, minimum, parseRequest } from "./index.js";
@@ -124,6 +126,40 @@ describe("minimum", () => {
 
     expect(minimum(deterministic).interval).toBeNull();
     expect(minimum(clamped).interval).toBeNull();
+  });
+
+  it("composes a 150k-component accepted request without an argument-limit failure", () => {
+    const count = 150_000;
+    const request = parseRequest({
+      method: "minimum",
+      method_version: "large.v1",
+      components: Array.from({ length: count }, (_, index) => ({
+        id: `item_${index}`,
+        label: "Item",
+        value: 0.5,
+        scale: { minimum: 0, maximum: 1, direction: "higher_is_better" },
+        interval: index === 0 ? { low: 0.4, high: 0.6 } : null,
+      })),
+      clamp: "reject",
+    });
+    if (request.method !== "minimum") throw new Error("wrong request");
+
+    const result = minimum(request);
+
+    expect(result.components).toHaveLength(count);
+    expect(result.selected_component_id).toBe("item_0");
+    expect(result.score).toBe(0.5);
+    expect(result.interval).toEqual({ low: 0.4, high: 0.5 });
+  }, 60_000);
+
+  it("keeps composition and result replay minimum scans bounded-arity", () => {
+    const implementations = ["minimum.ts", "contracts.ts"].map((name) =>
+      readFileSync(new URL(name, import.meta.url), "utf8"),
+    );
+
+    for (const source of implementations) {
+      expect(source).not.toMatch(/Math\.min\(\.\.\./u);
+    }
   });
 
   it("rejects a request for a different method", () => {

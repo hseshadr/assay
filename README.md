@@ -71,7 +71,7 @@ request = WeightedMeanRequest(
 result = compose(request)
 print(result.score)
 for component in result.components:
-    print(component.id, component.normalized_value, component.contribution)
+    print(component.id, component.normalized, component.contribution)
 PY
 ```
 
