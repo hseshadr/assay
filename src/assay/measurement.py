@@ -730,8 +730,21 @@ class _AgreementReportProof(_ProofModel):
 def _require_agreement_bounds(report: _AgreementReportProof) -> None:
     if report.weighted_agreement < report.percent_agreement:
         raise ValueError
+    if len(report.scale) == _BINARY_CLASS_COUNT:
+        _require_binary_scale_agreement(report)
     if report.n_exact_matches != report.n_items:
         return
+    _require_all_exact_statistics(report)
+
+
+def _require_binary_scale_agreement(report: _AgreementReportProof) -> None:
+    if report.weighted_agreement != report.percent_agreement:
+        raise ValueError
+
+
+def _require_all_exact_statistics(report: _AgreementReportProof) -> None:
+    if (report.quadratic_kappa is None) != (report.kendall_tau_b is None):
+        raise ValueError
     _require_perfect_if_defined(report.quadratic_kappa)
     _require_perfect_if_defined(report.kendall_tau_b)
 

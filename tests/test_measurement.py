@@ -155,6 +155,52 @@ def _constructed_agreement(result: AgreementMeasurementResult) -> AgreementMeasu
     return AgreementMeasurementResult.model_construct(**data, report=forged)
 
 
+def _two_level_agreement_result() -> AgreementMeasurementResult:
+    ratings = (
+        OrdinalRating(item="exact", rater_a="low", rater_b="low"),
+        OrdinalRating(item="miss", rater_a="high", rater_b="low"),
+    )
+    controls = _agreement_request().controls.model_copy(update={"min_samples": 3})
+    request = _agreement_request().model_copy(
+        update={"scale": ("low", "high"), "ratings": ratings, "controls": controls}
+    )
+    return measure(request)
+
+
+def _varying_exact_agreement_result() -> AgreementMeasurementResult:
+    ratings = tuple(
+        OrdinalRating(item=band, rater_a=band, rater_b=band) for band in ("low", "middle", "high")
+    )
+    return measure(_agreement_request().model_copy(update={"ratings": ratings}))
+
+
+def _agreement_payload(
+    result: AgreementMeasurementResult, changes: dict[str, object]
+) -> dict[str, object]:
+    payload = result.model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    report.update(changes)
+    return payload
+
+
+def _replay_agreement(
+    boundary: str, result: AgreementMeasurementResult, changes: dict[str, object]
+) -> object:
+    payload = _agreement_payload(result, changes)
+    if boundary == "constructor":
+        data = result.model_dump(exclude={"report"})
+        return AgreementMeasurementResult(**data, report=payload["report"])
+    if boundary == "json":
+        return AgreementMeasurementResult.model_validate_json(json.dumps(payload))
+    if boundary == "copy":
+        return result.model_copy(update={"report": payload["report"]})
+    report = result.report.model_copy(update=changes)
+    data = result.model_dump(exclude={"report"})
+    forged = AgreementMeasurementResult.model_construct(**data, report=report)
+    return forged.model_dump_json(by_alias=True)
+
+
 def test_should_return_binary_specific_report_without_universal_score(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -604,24 +650,52 @@ def _constant_agreement_result() -> AgreementMeasurementResult:
     return measure(request)
 
 
+@pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
+def test_should_reject_weighted_gain_from_mismatch_on_two_level_scale(boundary: str) -> None:
+    # Given a binary scale where one exact row and one mismatch can only average to 0.5
+    result = _two_level_agreement_result()
+    error = PydanticSerializationError if boundary == "serialize" else AssayError
+
+    # When / Then every replay boundary rejects a claimed weighted agreement of 0.9
+    with pytest.raises(error, match=r"assay\.invalid_agreement_request"):
+        _replay_agreement(boundary, result, {"weighted_agreement": 0.9})
+
+
+@pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
+@pytest.mark.parametrize("mode", ["constant", "varying"])
+def test_should_reject_mixed_defined_state_from_all_exact_statistics(
+    boundary: str, mode: str
+) -> None:
+    # Given an all-exact result mixing one defined statistic with one undefined statistic
+    result = (
+        _constant_agreement_result() if mode == "constant" else _varying_exact_agreement_result()
+    )
+    changes = (
+        {"quadratic_kappa": 1.0, "kappa_undefined_reason": None}
+        if mode == "constant"
+        else {"kendall_tau_b": None, "tau_undefined_reason": "statistic undefined"}
+    )
+    error = PydanticSerializationError if boundary == "serialize" else AssayError
+
+    # When / Then every replay boundary refuses the impossible mixed state
+    with pytest.raises(error, match=r"assay\.invalid_agreement_request"):
+        _replay_agreement(boundary, result, changes)
+
+
 def test_should_accept_degenerate_and_varying_all_exact_agreement_results() -> None:
     # Given valid all-exact results with constant and varying ratings
     constant = _constant_agreement_result()
-    varying_request = _agreement_request().model_copy(
-        update={
-            "ratings": tuple(
-                OrdinalRating(item=band, rater_a=band, rater_b=band)
-                for band in ("low", "middle", "high")
-            )
-        }
-    )
-    varying = measure(varying_request)
+    varying = _varying_exact_agreement_result()
 
     # When / Then undefined degeneracy and defined perfect correlation both replay
     assert constant.report.quadratic_kappa is None
     assert constant.report.kendall_tau_b is None
+    assert constant.report.kappa_undefined_reason is not None
+    assert constant.report.tau_undefined_reason is not None
     assert varying.report.quadratic_kappa == 1.0
     assert varying.report.kendall_tau_b == 1.0
+    assert varying.report.kappa_undefined_reason is None
+    assert varying.report.tau_undefined_reason is None
     assert all(
         type(result).model_validate_json(result.model_dump_json(by_alias=True)) == result
         for result in (constant, varying)
