@@ -545,6 +545,32 @@ def _append_tar_link(path: Path, *, link_type: bytes) -> None:
     replacement.replace(path)
 
 
+def _rewrite_tar_member_names(path: Path, mode: str) -> None:
+    replacement = path.with_suffix(".replacement")
+    with tarfile.open(path, "r:gz") as source, tarfile.open(replacement, "w:gz") as target:
+        for member in source.getmembers():
+            payload = source.extractfile(member)
+            if mode == "npm-alias" and member.name == "package/LICENSE":
+                member.name = "package/./LICENSE"
+            elif mode == "sdist-root":
+                member.name = f"wrong-root-9.9.9/{member.name.partition('/')[2]}"
+            target.addfile(member, payload)
+    replacement.replace(path)
+
+
+def _rewrite_wheel_dist_info(path: Path) -> None:
+    replacement = path.with_suffix(".replacement")
+    with zipfile.ZipFile(path) as source:
+        records = tuple((record, source.read(record.filename)) for record in source.infolist())
+    with zipfile.ZipFile(replacement, "w") as target:
+        for record, payload in records:
+            if ".dist-info/" in record.filename:
+                suffix = record.filename.partition("/")[2]
+                record.filename = f"assay_engine-9.9.9.dist-info/{suffix}"
+            target.writestr(record, payload)
+    replacement.replace(path)
+
+
 @pytest.mark.parametrize(
     ("relative", "link_type"),
     [
@@ -564,6 +590,43 @@ def test_should_reject_every_nonregular_tar_member(
     verifier = _load_module("scripts.verify_release_artifacts")
     # Then symlinks, hardlinks, devices, and other non-regular entries fail closed
     with pytest.raises(ValueError, match="non-regular tar member"):
+        verifier.verify_release_bundle(root)
+
+
+@pytest.mark.parametrize(
+    ("relative", "mode"),
+    [
+        ("python/assay_engine-0.5.0.dev0.tar.gz", "sdist-root"),
+        ("npm/edgeproc-assay-0.5.0-dev.0.tgz", "npm-alias"),
+    ],
+)
+def test_should_reject_noncanonical_or_wrong_root_tar_members(
+    release_bundle: Path, tmp_path: Path, relative: str, mode: str
+) -> None:
+    # Given a re-manifested archive whose raw member spelling is outside the exact allowlist
+    root = tmp_path / "release"
+    shutil.copytree(release_bundle, root)
+    _rewrite_tar_member_names(root / relative, mode)
+    _rewrite_manifest(root)
+    # When the complete release bundle is verified
+    # Then aliases and an identity-incoherent sdist root both fail closed
+    verifier = _load_module("scripts.verify_release_artifacts")
+    with pytest.raises(ValueError, match=r"membership mismatch|unexpected tar member"):
+        verifier.verify_release_bundle(root)
+
+
+def test_should_bind_wheel_dist_info_root_to_the_release_identity(
+    release_bundle: Path, tmp_path: Path
+) -> None:
+    # Given valid wheel contents moved under another version's dist-info root
+    root = tmp_path / "release"
+    shutil.copytree(release_bundle, root)
+    _rewrite_wheel_dist_info(next((root / "python").glob("*.whl")))
+    _rewrite_manifest(root)
+    # When exact wheel membership is verified
+    # Then embedded metadata cannot excuse a wrong dist-info identity
+    verifier = _load_module("scripts.verify_release_artifacts")
+    with pytest.raises(ValueError, match="wheel membership mismatch"):
         verifier.verify_release_bundle(root)
 
 
@@ -755,7 +818,24 @@ def test_should_bound_served_artifacts_to_the_reviewed_local_size(
     monkeypatch.setattr(verifier.time, "monotonic", lambda: 0.0)
     # When actual served bytes are read
     # Then both absent and lying lengths fail before unbounded memory or disk use
-    with pytest.raises(ValueError, match="registry artifact size mismatch"):
+    with pytest.raises(ValueError, match="registry artifact size"):
+        verifier.read_served_bytes("https://registry.npmjs.org/artifact", 5.0, 4)
+
+
+def test_should_require_served_artifact_content_length_even_when_body_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given registry bytes whose body matches but whose length is undeclared
+    verifier = _load_module("scripts.verify_published_release")
+    monkeypatch.setattr(
+        verifier.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _Response(b"abcd"),
+    )
+    monkeypatch.setattr(verifier.time, "monotonic", lambda: 0.0)
+    # When final verification downloads the artifact
+    # Then a missing declaration fails closed rather than trusting the body alone
+    with pytest.raises(ValueError, match="registry artifact size is missing"):
         verifier.read_served_bytes("https://registry.npmjs.org/artifact", 5.0, 4)
 
 
@@ -821,6 +901,9 @@ def test_should_remove_every_generated_release_output_when_the_local_gate_exits(
     assert 'rm -rf -- "$artifact_root" "$publisher_root"' in source
     assert 'artifact_root="${ASSAY_ARTIFACT_ROOT:-dist/release}"' in source
     assert 'publisher_root="${ASSAY_PUBLISHER_ROOT:-dist/publish-tools}"' in source
+    assert "${CI:-false}" not in source
+    assert "git diff --exit-code" in source
+    assert "git status --porcelain=v1 --untracked-files=all" in source
 
 
 def test_should_describe_only_current_assay_mutation_surfaces() -> None:

@@ -83,19 +83,22 @@ def _read_json(url: str, deadline: float) -> object:
     return payload
 
 
-def _declared_artifact_size(response: _Response) -> int | None:
+def _declared_artifact_size(response: _Response) -> int:
     raw = response.headers.get("Content-Length")
     if raw is None:
-        return None
+        raise ValueError("registry artifact size is missing")
     try:
-        return int(raw)
+        size = int(raw)
     except (TypeError, ValueError) as error:
         raise ValueError("registry artifact size is malformed") from error
+    if size < 0:
+        raise ValueError("registry artifact size is malformed")
+    return size
 
 
 def _read_exact(response: _Response, expected_size: int) -> bytes:
     declared = _declared_artifact_size(response)
-    if declared is not None and declared != expected_size:
+    if declared != expected_size:
         raise ValueError("registry artifact size mismatch")
     payload = response.read(expected_size + 1)
     if len(payload) != expected_size:

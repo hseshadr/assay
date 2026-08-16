@@ -71,6 +71,16 @@ jobs:
           path: publish-tools/
           if-no-files-found: error
           retention-days: 1
+      - name: Always clean release outputs and verify tree
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          rm -rf -- release publish-tools
+          test ! -e release
+          test ! -e publish-tools
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
   preflight-python:
     name: Check PyPI release state
@@ -196,7 +206,7 @@ jobs:
             current_channel="__ABSENT__"
             current_publish_tag="__ABSENT__"
           elif test "$status" = 200; then
-            jq -e 'if type != "object" or (."dist-tags" | type != "object") then error("malformed registry state") else . end' /tmp/npm-package.json >/dev/null
+            jq -e 'if type != "object" or (.name == "@edgeproc/assay") != true or (."dist-tags" | type != "object") then error("malformed registry state") else . end' /tmp/npm-package.json >/dev/null
             current_channel="$(jq -er --arg tag "$NPM_CHANNEL" '."dist-tags" as $tags | if $tags | has($tag) then $tags[$tag] | if type == "string" then . else error("malformed tag") end else "__ABSENT__" end' /tmp/npm-package.json)"
             current_publish_tag="$(jq -er --arg tag "$NPM_PUBLISH_TAG" '."dist-tags" as $tags | if $tags | has($tag) then $tags[$tag] | if type == "string" then . else error("malformed tag") end else "__ABSENT__" end' /tmp/npm-package.json)"
           else

@@ -18,6 +18,7 @@ from typing import cast
 
 _PYTHON_PRERELEASE = re.compile(r"^(\d+\.\d+\.\d+)\.dev(\d+)$")
 _ARGUMENT_COUNT = 2
+_MIN_TAR_PARTS = 2
 _NODE_PROBE = """
 import { compose, parseRequest } from '@edgeproc/assay';
 const request = parseRequest({method:'minimum',method_version:'artifact-v1',components:[
@@ -186,18 +187,17 @@ def _source_members() -> frozenset[str]:
     return frozenset(f"assay/{path.relative_to(root)}" for path in paths)
 
 
-def _wheel_member_valid(member: str, sources: frozenset[str]) -> bool:
-    metadata = re.compile(
-        r"assay_engine-[^/]+\.dist-info/(?:METADATA|WHEEL|entry_points\.txt|RECORD|licenses/LICENSE)"
-    )
-    return member in sources or metadata.fullmatch(member) is not None
+def _wheel_metadata_members(version: str) -> frozenset[str]:
+    root = f"assay_engine-{version}.dist-info"
+    names = ("METADATA", "WHEEL", "entry_points.txt", "RECORD", "licenses/LICENSE")
+    return frozenset(f"{root}/{name}" for name in names)
 
 
-def _validate_wheel_members(path: Path) -> None:
+def _validate_wheel_members(path: Path, version: str) -> None:
     with zipfile.ZipFile(path) as archive:
         members = _wheel_names(tuple(archive.infolist()))
-    sources = _source_members()
-    if not sources <= members or any(not _wheel_member_valid(item, sources) for item in members):
+    expected = _source_members() | _wheel_metadata_members(version)
+    if members != expected:
         raise ValueError("wheel membership mismatch")
 
 
@@ -215,13 +215,27 @@ def _regular_zip_record(record: zipfile.ZipInfo) -> bool:
     return not record.is_dir() and (stat.S_IFMT(mode) in (0, stat.S_IFREG))
 
 
-def _tar_member_path(member: tarfile.TarInfo) -> tuple[str, ...]:
-    path = Path(member.name)
-    if path.is_absolute() or ".." in path.parts or "\\" in member.name:
+def _reject_unsafe_tar_name(name: str) -> None:
+    if not name:
         raise ValueError("unexpected tar member")
+    if name.startswith("/"):
+        raise ValueError("unexpected tar member")
+    if "\\" in name:
+        raise ValueError("unexpected tar member")
+
+
+def _tar_name_parts(name: str) -> tuple[str, ...]:
+    _reject_unsafe_tar_name(name)
+    parts = tuple(name.split("/"))
+    if any(part in ("", ".", "..") for part in parts):
+        raise ValueError("unexpected tar member")
+    return parts
+
+
+def _tar_member_path(member: tarfile.TarInfo) -> tuple[str, ...]:
     if not member.isfile():
         raise ValueError("non-regular tar member")
-    return path.parts
+    return _tar_name_parts(member.name)
 
 
 def _tar_file_members(path: Path) -> tuple[tuple[str, ...], ...]:
@@ -232,12 +246,22 @@ def _tar_file_members(path: Path) -> tuple[tuple[str, ...], ...]:
     return members
 
 
-def _validate_sdist_members(path: Path) -> None:
+def _validate_sdist_members(path: Path, version: str) -> None:
     expected = {"LICENSE", "README.md", "pyproject.toml", "PKG-INFO"}
     expected.update(f"src/{item}" for item in _source_members())
-    actual = {"/".join(parts[1:]) for parts in _tar_file_members(path)}
+    members = _tar_file_members(path)
+    root = f"assay_engine-{version}"
+    actual = {_sdist_member_name(parts, root) for parts in members}
     if actual != expected:
         raise ValueError("sdist membership mismatch")
+
+
+def _sdist_member_name(parts: tuple[str, ...], root: str) -> str:
+    if len(parts) < _MIN_TAR_PARTS:
+        raise ValueError("sdist membership mismatch")
+    if parts[0] != root:
+        raise ValueError("sdist membership mismatch")
+    return "/".join(parts[1:])
 
 
 def _validate_npm_members(path: Path) -> None:
@@ -247,8 +271,9 @@ def _validate_npm_members(path: Path) -> None:
 
 
 def _validate_memberships(artifacts: Artifacts) -> None:
-    _validate_wheel_members(artifacts.wheel)
-    _validate_sdist_members(artifacts.sdist)
+    version, _npm_version = _source_versions()
+    _validate_wheel_members(artifacts.wheel, version)
+    _validate_sdist_members(artifacts.sdist, version)
     _validate_npm_members(artifacts.npm)
 
 

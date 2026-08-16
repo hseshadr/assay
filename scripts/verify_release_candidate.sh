@@ -58,6 +58,5 @@ shellcheck examples/*.sh scripts/*.sh
 cleanup
 trap - EXIT
 git diff --check
-if [[ "${CI:-false}" == "true" ]]; then
-  git diff --exit-code
-fi
+git diff --exit-code
+test -z "$(git status --porcelain=v1 --untracked-files=all)"

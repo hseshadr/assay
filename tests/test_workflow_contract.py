@@ -694,6 +694,7 @@ def test_should_make_the_privileged_channel_recheck_authoritative_and_fail_close
     assert "__ABSENT__" in command
     assert "has($tag)" in command
     assert 'type != "object"' in command
+    assert '.name == "@edgeproc/assay"' in command
     assert '// ""' not in command
     assert "EXPECTED_CHANNEL_VERSION" in command
     assert "EXPECTED_PUBLISH_TAG_VERSION" in command
@@ -721,6 +722,22 @@ def test_should_rebuild_uploadable_artifacts_after_the_clean_local_gate() -> Non
     rebuild = commands.index("bash scripts/build_release_artifacts.sh release")
     stage = commands.index("bash scripts/stage_npm_publisher.sh publish-tools")
     assert gate < rebuild < stage
+
+
+def test_should_always_clean_and_prove_the_publish_build_tree() -> None:
+    # Given the build lane recreates ignored release and publisher artifacts after the local gate
+    build = _job(_workflow("publish.yml"), "build")
+    steps = _steps(build)
+    cleanup = steps[-1]
+    # Then an unconditional final step removes both outputs and proves source-tree cleanliness
+    assert cleanup.get("name") == "Always clean release outputs and verify tree"
+    assert cleanup.get("if") == "${{ always() }}"
+    command = str(cleanup.get("run", ""))
+    assert "rm -rf -- release publish-tools" in command
+    assert "test ! -e release" in command
+    assert "test ! -e publish-tools" in command
+    assert "git diff --exit-code" in command
+    assert "git status --porcelain=v1 --untracked-files=all" in command
 
 
 def test_should_keep_npm_prereleases_off_the_latest_channel() -> None:
