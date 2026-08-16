@@ -1,10 +1,15 @@
-"""Strict three-family measurement contracts and optional metric dispatch."""
+"""Strict three-family measurement contracts and optional metric dispatch.
+
+Result replay proves wire shape and necessary coherence among serialized fields. It cannot
+recompute a metric methodology without the raw labels, rankings, scores, or rater assignments.
+"""
 
 from __future__ import annotations
 
 import math
 import re
 from collections.abc import Mapping
+from itertools import pairwise
 from typing import Annotated, ClassVar, Final, Literal, Self, cast, overload
 
 from pydantic import (
@@ -613,6 +618,21 @@ def _summaries_match(observed: tuple[float, ...], expected: tuple[float, ...]) -
     return all(_summary_matches(actual, wanted) for actual, wanted in pairs)
 
 
+def _exceeds(value: float, bound: float) -> bool:
+    return value > bound and not _summary_matches(value, bound)
+
+
+def _zero_states_match(first: float, second: float) -> bool:
+    return (first == 0.0) == (second == 0.0)
+
+
+def _require_collapsed_interval(estimate: _EstimateProof, point: float) -> None:
+    if not isinstance(estimate, _IntervalProof):
+        return
+    if not _summaries_match((estimate.low, estimate.high), (point, point)):
+        raise ValueError
+
+
 def _positive_population(calibration: _CalibrationProof) -> float:
     return math.fsum(row.fraction_positive * row.count for row in calibration.bins)
 
@@ -634,6 +654,85 @@ def _require_calibration_ece(report: _BinaryReportProof, total: int) -> None:
         raise ValueError
 
 
+def _require_binary_classes(report: _BinaryReportProof) -> None:
+    counts = report.classification.counts
+    if counts.true_positives + counts.false_negatives == 0:
+        raise ValueError
+    if counts.true_negatives + counts.false_positives == 0:
+        raise ValueError
+
+
+def _require_integer_bin_populations(report: _BinaryReportProof) -> None:
+    for row in report.calibration.bins:
+        positives = round(row.fraction_positive * row.count)
+        if not _summary_matches(row.fraction_positive, positives / row.count):
+            raise ValueError
+
+
+def _minimum_bin_brier(row: _ReliabilityBinProof) -> float:
+    gap = row.mean_predicted - row.fraction_positive
+    if gap == 0.0:
+        return 0.0
+    population = 1.0 - row.fraction_positive if gap > 0.0 else row.fraction_positive
+    return gap * gap / population
+
+
+def _require_calibration_loss(report: _BinaryReportProof) -> None:
+    calibration = report.calibration
+    total = sum(row.count for row in calibration.bins)
+    floor = math.fsum(row.count * _minimum_bin_brier(row) for row in calibration.bins) / total
+    if _exceeds(calibration.ece, math.sqrt(calibration.brier)):
+        raise ValueError
+    if _exceeds(floor, calibration.brier):
+        raise ValueError
+
+
+def _require_calibration_order(report: _BinaryReportProof) -> None:
+    means = tuple(row.mean_predicted for row in report.calibration.bins)
+    if any(first >= second for first, second in pairwise(means)):
+        raise ValueError
+
+
+def _class_populations(counts: _CountsProof) -> tuple[int, int]:
+    positives = counts.true_positives + counts.false_negatives
+    negatives = counts.true_negatives + counts.false_positives
+    return positives, negatives
+
+
+def _require_roc_grid(report: _BinaryReportProof) -> None:
+    score = report.classification.roc_auc
+    positives, negatives = _class_populations(report.classification.counts)
+    half_pairs = 2 * positives * negatives
+    pair_credits = round(score * half_pairs)
+    if not _summary_matches(score, pair_credits / half_pairs):
+        raise ValueError
+
+
+def _roc_bounds(counts: _CountsProof) -> tuple[float, float]:
+    positives, negatives = _class_populations(counts)
+    pairs = positives * negatives
+    lower = counts.true_positives * counts.true_negatives / pairs
+    flexible = counts.true_positives * counts.false_positives
+    flexible += counts.false_negatives * counts.true_negatives
+    return lower, (counts.true_positives * counts.true_negatives + flexible) / pairs
+
+
+def _require_auc_coherence(report: _BinaryReportProof) -> None:
+    scores = report.classification
+    if scores.pr_auc == 0.0:
+        raise ValueError
+    _require_roc_grid(report)
+    lower, upper = _roc_bounds(scores.counts)
+    if _exceeds(lower, scores.roc_auc) or _exceeds(scores.roc_auc, upper):
+        raise ValueError
+
+
+def _require_binary_interval(report: _BinaryReportProof) -> None:
+    accuracy = report.classification.accuracy
+    if accuracy in (0.0, 1.0):
+        _require_collapsed_interval(report.accuracy_interval, accuracy)
+
+
 class _BinaryReportProof(_ProofModel):
     classification: _ClassificationProof
     calibration: _CalibrationProof
@@ -642,9 +741,15 @@ class _BinaryReportProof(_ProofModel):
     @model_validator(mode="after")
     def _require_same_population(self) -> Self:
         total = _count_total(self.classification.counts)
+        _require_binary_classes(self)
         _require_calibration_total(self, total)
         _require_calibration_positives(self)
+        _require_integer_bin_populations(self)
         _require_calibration_ece(self, total)
+        _require_calibration_loss(self)
+        _require_calibration_order(self)
+        _require_auc_coherence(self)
+        _require_binary_interval(self)
         return self
 
 
@@ -661,7 +766,66 @@ class _QueryProof(_ProofModel):
     def _require_f1_summary(self) -> Self:
         if not _summary_matches(self.f1_at_k, _harmonic(self.precision_at_k, self.recall_at_k)):
             raise ValueError
+        _require_query_zero_states(self)
         return self
+
+
+def _require_query_zero_states(row: _QueryProof) -> None:
+    if not _zero_states_match(row.precision_at_k, row.recall_at_k):
+        raise ValueError
+    if not _zero_states_match(row.precision_at_k, row.ndcg_at_k):
+        raise ValueError
+    if not _zero_states_match(row.reciprocal_rank, row.average_precision):
+        raise ValueError
+
+
+def _reciprocal_position(value: float) -> int | None:
+    if value == 0.0:
+        return None
+    position = round(1.0 / value)
+    if not 0 < position <= MAX_ITEMS or not _summary_matches(value, 1.0 / position):
+        raise ValueError
+    return position
+
+
+def _precision_hits(row: _QueryProof, k: int) -> int:
+    hits = round(row.precision_at_k * k)
+    if not _summary_matches(row.precision_at_k, hits / k):
+        raise ValueError
+    return hits
+
+
+def _require_recall_population(row: _QueryProof, hits: int) -> None:
+    if hits == 0:
+        return
+    relevant = round(hits / row.recall_at_k)
+    valid = hits <= relevant <= MAX_ITEMS
+    if not valid or not _summary_matches(row.recall_at_k, hits / relevant):
+        raise ValueError
+
+
+def _require_hit_position(row: _QueryProof, hits: int, k: int) -> None:
+    position = _reciprocal_position(row.reciprocal_rank)
+    if hits == 0:
+        _require_position_after_cut(position, k)
+        return
+    _require_position_by(position, k - hits + 1)
+
+
+def _require_position_after_cut(position: int | None, k: int) -> None:
+    if position is not None and position <= k:
+        raise ValueError
+
+
+def _require_position_by(position: int | None, latest: int) -> None:
+    if position is None or position > latest:
+        raise ValueError
+
+
+def _require_query_counts(row: _QueryProof, k: int) -> None:
+    hits = _precision_hits(row, k)
+    _require_recall_population(row, hits)
+    _require_hit_position(row, hits, k)
 
 
 def _mean(values: tuple[float, ...]) -> float:
@@ -694,11 +858,26 @@ class _RankingReportProof(_ProofModel):
 
     @model_validator(mode="after")
     def _require_query_population(self) -> Self:
-        if self.n_queries != len(self.per_query):
-            raise ValueError
+        _require_query_rows(self)
         if not _summaries_match(_ranking_observed(self), _ranking_expected(self.per_query)):
             raise ValueError
+        _require_ranking_interval(self)
         return self
+
+
+def _require_query_rows(report: _RankingReportProof) -> None:
+    if report.n_queries != len(report.per_query):
+        raise ValueError
+    if len({row.query for row in report.per_query}) != report.n_queries:
+        raise ValueError
+    for row in report.per_query:
+        _require_query_counts(row, report.k)
+
+
+def _require_ranking_interval(report: _RankingReportProof) -> None:
+    values = _query_values(report.per_query, "ndcg_at_k")
+    if len(set(values)) == 1:
+        _require_collapsed_interval(report.ndcg_interval, values[0])
 
 
 class _AgreementReportProof(_ProofModel):
@@ -724,21 +903,43 @@ class _AgreementReportProof(_ProofModel):
         _require_agreement_bounds(self)
         _require_reason_pair(self.quadratic_kappa, self.kappa_undefined_reason)
         _require_reason_pair(self.kendall_tau_b, self.tau_undefined_reason)
+        _require_agreement_interval(self)
         return self
 
 
 def _require_agreement_bounds(report: _AgreementReportProof) -> None:
-    if report.weighted_agreement < report.percent_agreement:
+    lower = report.percent_agreement
+    if _exceeds(lower, report.weighted_agreement):
         raise ValueError
-    if len(report.scale) == _BINARY_CLASS_COUNT:
-        _require_binary_scale_agreement(report)
+    if _exceeds(report.weighted_agreement, _maximum_weighted_agreement(report)):
+        raise ValueError
+    _require_weight_lattice(report)
+    _require_kappa_coherence(report)
     if report.n_exact_matches != report.n_items:
         return
     _require_all_exact_statistics(report)
 
 
-def _require_binary_scale_agreement(report: _AgreementReportProof) -> None:
-    if report.weighted_agreement != report.percent_agreement:
+def _maximum_weighted_agreement(report: _AgreementReportProof) -> float:
+    distance = len(report.scale) - 1
+    mismatch = 1.0 - 1.0 / (distance * distance)
+    exact = report.percent_agreement
+    return exact + (1.0 - exact) * mismatch
+
+
+def _require_weight_lattice(report: _AgreementReportProof) -> None:
+    distance = len(report.scale) - 1
+    units = report.n_items * distance * distance
+    cost = round((1.0 - report.weighted_agreement) * units)
+    if not _summary_matches(report.weighted_agreement, 1.0 - cost / units):
+        raise ValueError
+
+
+def _require_kappa_coherence(report: _AgreementReportProof) -> None:
+    kappa = report.quadratic_kappa
+    if report.n_exact_matches != report.n_items and kappa is None:
+        raise ValueError
+    if kappa is not None and _exceeds(kappa, report.weighted_agreement):
         raise ValueError
 
 
@@ -747,6 +948,11 @@ def _require_all_exact_statistics(report: _AgreementReportProof) -> None:
         raise ValueError
     _require_perfect_if_defined(report.quadratic_kappa)
     _require_perfect_if_defined(report.kendall_tau_b)
+
+
+def _require_agreement_interval(report: _AgreementReportProof) -> None:
+    if report.weighted_agreement in (0.0, 1.0):
+        _require_collapsed_interval(report.weighted_agreement_interval, report.weighted_agreement)
 
 
 def _require_perfect_if_defined(value: float | None) -> None:

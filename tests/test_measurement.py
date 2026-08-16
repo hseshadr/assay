@@ -201,6 +201,49 @@ def _replay_agreement(
     return forged.model_dump_json(by_alias=True)
 
 
+def _single_ranking_result(
+    query: RankingQueryInput | None = None, *, k: int = 2, min_samples: int = 2
+) -> RankingMeasurementResult:
+    request = _ranking_request()
+    selected = request.queries[0] if query is None else query
+    controls = request.controls.model_copy(update={"min_samples": min_samples})
+    return measure(
+        request.model_copy(update={"queries": (selected,), "k": k, "controls": controls})
+    )
+
+
+def _ranking_changes(
+    result: RankingMeasurementResult, row_changes: dict[str, object]
+) -> dict[str, object]:
+    row = result.report.per_query[0].model_copy(update=row_changes)
+    return {
+        "per_query": (row,),
+        "mean_precision_at_k": row.precision_at_k,
+        "mean_recall_at_k": row.recall_at_k,
+        "mean_f1_at_k": row.f1_at_k,
+        "mean_ndcg_at_k": row.ndcg_at_k,
+        "mrr": row.reciprocal_rank,
+        "mean_average_precision": row.average_precision,
+    }
+
+
+def _replay_ranking(
+    boundary: str, result: RankingMeasurementResult, changes: dict[str, object]
+) -> object:
+    report = result.report.model_copy(update=changes)
+    data = result.model_dump(exclude={"report"})
+    if boundary == "constructor":
+        return RankingMeasurementResult(**data, report=report)
+    if boundary == "json":
+        payload = result.model_dump(mode="json", by_alias=True)
+        payload["report"] = report.model_dump(mode="json")
+        return RankingMeasurementResult.model_validate_json(json.dumps(payload))
+    if boundary == "copy":
+        return result.model_copy(update={"report": report})
+    forged = RankingMeasurementResult.model_construct(**data, report=report)
+    return forged.model_dump_json(by_alias=True)
+
+
 def test_should_return_binary_specific_report_without_universal_score(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -470,6 +513,165 @@ def test_should_reject_binary_calibration_population_that_disagrees_with_counts(
         BinaryMeasurementResult.model_validate(payload)
 
 
+def test_should_reject_binary_result_without_both_observed_classes() -> None:
+    # Given a result whose counts and bins consistently claim four positives and no negatives
+    payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    classification = report["classification"]
+    calibration = report["calibration"]
+    assert isinstance(classification, dict)
+    assert isinstance(calibration, dict)
+    classification["counts"] = {
+        "true_positives": 4,
+        "false_positives": 0,
+        "true_negatives": 0,
+        "false_negatives": 0,
+    }
+    bins = calibration["bins"]
+    assert isinstance(bins, list)
+    for row in bins:
+        assert isinstance(row, dict)
+        row["fraction_positive"] = 1.0
+    calibration.update({"ece": 0.5, "brier": 0.335})
+
+    # When / Then replay refuses a population on which the reported AUCs cannot exist
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate(payload)
+
+
+def test_should_reject_fractional_positive_count_inside_calibration_bin() -> None:
+    # Given two size-two bins each claiming half of a positive observation
+    payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    calibration = report["calibration"]
+    assert isinstance(calibration, dict)
+    bins = calibration["bins"]
+    assert isinstance(bins, list)
+    assert all(isinstance(row, dict) for row in bins)
+    bins[0]["fraction_positive"] = 0.25
+    bins[1]["fraction_positive"] = 0.75
+    calibration["ece"] = 0.0
+
+    # When / Then replay rejects bin fractions that imply non-integer populations
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_reject_calibration_error_larger_than_brier_root() -> None:
+    # Given native reliability bins and ECE but a Brier score too small to support that gap
+    payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    calibration = report["calibration"]
+    assert isinstance(calibration, dict)
+    calibration["brier"] = 0.01
+
+    # When / Then replay enforces the necessary ECE-squared lower bound on Brier loss
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_reject_brier_below_per_bin_feasibility_floor() -> None:
+    # Given two bins with one positive each and a loss below their best possible scores
+    payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    calibration = report["calibration"]
+    assert isinstance(calibration, dict)
+    bins = calibration["bins"]
+    assert isinstance(bins, list)
+    for row in bins:
+        assert isinstance(row, dict)
+        row["fraction_positive"] = 0.5
+    calibration.update({"ece": 0.25, "brier": 0.08})
+
+    # When / Then replay rejects loss below the bin-derived minimum of 0.125
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_reject_reliability_bins_out_of_score_order() -> None:
+    # Given two populated calibration bins presented in descending prediction order
+    payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    calibration = report["calibration"]
+    assert isinstance(calibration, dict)
+    bins = calibration["bins"]
+    assert isinstance(bins, list)
+    assert isinstance(bins[0], dict)
+    assert isinstance(bins[1], dict)
+    bins[0]["mean_predicted"] = 0.75
+    bins[1]["mean_predicted"] = 0.25
+    calibration.update({"ece": 0.75, "brier": 0.625})
+
+    # When / Then replay preserves calibration_curve's increasing bin order
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_reject_zero_average_precision_with_observed_positives() -> None:
+    # Given both observed classes but a claimed zero average precision
+    payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    classification = report["classification"]
+    assert isinstance(classification, dict)
+    classification["pr_auc"] = 0.0
+
+    # When / Then replay rejects an AP value impossible when positives exist
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_reject_roc_auc_outside_threshold_count_bounds() -> None:
+    # Given perfect threshold counts but a claimed chance-level ROC AUC
+    payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    classification = report["classification"]
+    assert isinstance(classification, dict)
+    classification["roc_auc"] = 0.5
+
+    # When / Then replay uses the known threshold ordering to require ROC AUC one
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_reject_roc_auc_outside_the_finite_pair_grid() -> None:
+    # Given mixed threshold counts but an AUC not representable by four positive-negative pairs
+    controls = _binary_request().controls.model_copy(update={"min_samples": 5})
+    request = _binary_request().model_copy(
+        update={"y_score": (0.9, 0.8, 0.7, 0.6), "threshold": 0.75, "controls": controls}
+    )
+    payload = measure(request).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    classification = report["classification"]
+    assert isinstance(classification, dict)
+    classification["roc_auc"] = 0.3
+
+    # When / Then replay requires integer or half-credit ordering over the four pairs
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_reject_noncollapsed_accuracy_interval_for_constant_correctness() -> None:
+    # Given a perfect native classifier whose per-sample correctness is constant one
+    payload = measure(_binary_request()).model_dump(mode="json", by_alias=True)
+    report = payload["report"]
+    assert isinstance(report, dict)
+    interval = report["accuracy_interval"]
+    assert isinstance(interval, dict)
+    interval["low"] = 0.9
+
+    # When / Then replay requires its percentile interval to collapse at one
+    with pytest.raises(AssayError, match=r"^assay\.invalid_request$"):
+        BinaryMeasurementResult.model_validate_json(json.dumps(payload))
+
+
 def test_should_reject_result_claiming_over_budget_bootstrap_work() -> None:
     # Given a valid 30-item result edited to claim one million resamples
     request = _binary_request().model_copy(
@@ -554,6 +756,131 @@ def test_should_reject_ranking_aggregate_that_disagrees_with_query_rows(field: s
     # When / Then replay refuses every contradictory aggregate with one family code
     with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
         RankingMeasurementResult.model_validate_json(json.dumps(payload))
+
+
+@pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
+def test_should_reject_fractional_precision_hit_count(boundary: str) -> None:
+    # Given a one-query result claiming 0.6 precision at k=2, or 1.2 relevant hits
+    result = _single_ranking_result()
+    changes = _ranking_changes(result, {"precision_at_k": 0.6, "f1_at_k": 0.75})
+    error = PydanticSerializationError if boundary == "serialize" else AssayError
+
+    # When / Then every replay boundary rejects the non-integer hit numerator
+    with pytest.raises(error, match=r"assay\.invalid_ranking_request"):
+        _replay_ranking(boundary, result, changes)
+
+
+@pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
+def test_should_reject_zero_precision_with_nonzero_recall(boundary: str) -> None:
+    # Given a row claiming no top-k hits but nonzero recall from those same hits
+    result = _single_ranking_result()
+    changes = _ranking_changes(
+        result,
+        {"precision_at_k": 0.0, "recall_at_k": 1.0, "f1_at_k": 0.0, "ndcg_at_k": 0.0},
+    )
+    error = PydanticSerializationError if boundary == "serialize" else AssayError
+
+    # When / Then every replay boundary rejects the contradictory shared numerator
+    with pytest.raises(error, match=r"assay\.invalid_ranking_request"):
+        _replay_ranking(boundary, result, changes)
+
+
+def test_should_accept_native_trec_eval_fraction_and_late_hit_boundaries() -> None:
+    # Given one query with 2/3 precision and another whose only hit falls after k
+    cut = RankingQueryInput(
+        query="cut",
+        judgments=tuple(RelevanceInput(doc_id=doc, gain=1) for doc in ("a", "b", "c", "d")),
+        ranked=("a", "x", "b"),
+    )
+    late = RankingQueryInput(
+        query="late",
+        judgments=(RelevanceInput(doc_id="a", gain=1),),
+        ranked=("x", "y", "a"),
+    )
+    results = (_single_ranking_result(cut, k=3), _single_ranking_result(late))
+
+    # When / Then exact trec_eval rows replay without inventing raw-input proof
+    assert results[0].report.per_query[0].precision_at_k == pytest.approx(2 / 3)
+    assert results[0].report.per_query[0].recall_at_k == pytest.approx(1 / 2)
+    assert results[1].report.per_query[0].reciprocal_rank == pytest.approx(1 / 3)
+    assert all(
+        type(result).model_validate_json(result.model_dump_json()) == result for result in results
+    )
+
+
+def test_should_reject_recall_without_an_integer_relevant_population() -> None:
+    # Given one hit at k=2 but recall 0.4, which would require 2.5 relevant documents
+    result = _single_ranking_result()
+    changes = _ranking_changes(result, {"recall_at_k": 0.4, "f1_at_k": 0.4444444444444445})
+
+    # When / Then replay rejects the impossible relevance-count denominator
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        _replay_ranking("json", result, changes)
+
+
+def test_should_reject_nonreciprocal_reciprocal_rank() -> None:
+    # Given a reciprocal-rank value of 0.4, which is not 1 divided by an integer position
+    result = _single_ranking_result()
+    changes = _ranking_changes(result, {"reciprocal_rank": 0.4})
+
+    # When / Then replay rejects a value no ranked position could produce
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        _replay_ranking("json", result, changes)
+
+
+def test_should_reject_first_hit_position_incompatible_with_top_k_hit_count() -> None:
+    # Given one top-two hit but a reciprocal rank claiming the first hit was at position three
+    result = _single_ranking_result()
+    changes = _ranking_changes(result, {"reciprocal_rank": 1 / 3})
+
+    # When / Then replay requires that hit to occur within the top-two window
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        _replay_ranking("json", result, changes)
+
+
+def test_should_reject_average_precision_zero_state_that_disagrees_with_rank() -> None:
+    # Given a row with a first relevant hit but a claimed zero average precision
+    result = _single_ranking_result()
+    changes = _ranking_changes(result, {"average_precision": 0.0})
+
+    # When / Then replay requires AP and reciprocal rank to agree on whether any hit exists
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        _replay_ranking("json", result, changes)
+
+
+def test_should_reject_ndcg_zero_state_that_disagrees_with_top_k_hits() -> None:
+    # Given a row claiming a top-k hit through precision but zero top-k gain through nDCG
+    result = _single_ranking_result()
+    changes = _ranking_changes(result, {"ndcg_at_k": 0.0})
+
+    # When / Then replay requires both top-k metrics to agree on whether a hit exists
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        _replay_ranking("json", result, changes)
+
+
+def test_should_reject_duplicate_query_identity_in_result_rows() -> None:
+    # Given two otherwise native rows that claim the same query identity
+    result = measure(_ranking_request())
+    first, second = result.report.per_query
+    duplicate = second.model_copy(update={"query": first.query})
+    report = result.report.model_copy(update={"per_query": (first, duplicate)})
+
+    # When / Then replay rejects a query voting twice under one identifier
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        result.model_copy(update={"report": report})
+
+
+def test_should_reject_noncollapsed_ndcg_interval_for_one_query() -> None:
+    # Given a one-query native result whose every resample has the same nDCG
+    result = _single_ranking_result(min_samples=1)
+    interval = result.report.ndcg_interval
+    assert interval.kind == "interval"
+    forged_interval = replace(interval, low=0.5)
+    report = result.report.model_copy(update={"ndcg_interval": forged_interval})
+
+    # When / Then replay requires the constant bootstrap interval to collapse
+    with pytest.raises(AssayError, match=r"^assay\.invalid_ranking_request$"):
+        result.model_copy(update={"report": report})
 
 
 def test_should_reject_forged_agreement_result_invariants() -> None:
@@ -662,6 +989,67 @@ def test_should_reject_weighted_gain_from_mismatch_on_two_level_scale(boundary: 
 
 
 @pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
+def test_should_reject_weight_above_the_scale_mismatch_bound(boundary: str) -> None:
+    # Given two exact rows and one adjacent miss on a three-level scale
+    result = _abstaining_agreement_result()
+    error = PydanticSerializationError if boundary == "serialize" else AssayError
+
+    # When / Then 0.99 is rejected because the greatest possible mean is 11/12
+    with pytest.raises(error, match=r"assay\.invalid_agreement_request"):
+        _replay_agreement(boundary, result, {"weighted_agreement": 0.99})
+
+
+@pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
+def test_should_reject_undefined_kappa_from_partial_agreement(boundary: str) -> None:
+    # Given a non-all-exact result claiming quadratic kappa cannot be defined
+    result = _abstaining_agreement_result()
+    changes = {"quadratic_kappa": None, "kappa_undefined_reason": "statistic undefined"}
+    error = PydanticSerializationError if boundary == "serialize" else AssayError
+
+    # When / Then every replay boundary requires the partial result's defined kappa
+    with pytest.raises(error, match=r"assay\.invalid_agreement_request"):
+        _replay_agreement(boundary, result, changes)
+
+
+def test_should_accept_maximum_adjacent_weight_and_constant_rater_tau_abstention() -> None:
+    # Given a native adjacent mismatch at the upper bound and partial constant-rater data
+    maximum = _abstaining_agreement_result()
+    ratings = (
+        OrdinalRating(item="a", rater_a="low", rater_b="low"),
+        OrdinalRating(item="b", rater_a="low", rater_b="middle"),
+        OrdinalRating(item="c", rater_a="low", rater_b="high"),
+    )
+    constant = measure(_agreement_request().model_copy(update={"ratings": ratings}))
+
+    # When / Then native rounding passes and tau alone may remain undefined
+    assert maximum.report.weighted_agreement == pytest.approx(11 / 12)
+    assert constant.report.quadratic_kappa == 0.0
+    assert constant.report.kendall_tau_b is None
+    assert all(
+        type(result).model_validate_json(result.model_dump_json()) == result
+        for result in (maximum, constant)
+    )
+
+
+def test_should_reject_quadratic_kappa_above_observed_weighted_agreement() -> None:
+    # Given partial agreement claiming chance correction improved the observed agreement
+    result = _abstaining_agreement_result()
+
+    # When / Then replay rejects kappa above its weighted observed agreement
+    with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
+        _replay_agreement("json", result, {"quadratic_kappa": 0.99})
+
+
+def test_should_reject_weight_not_reachable_from_ordinal_distance_squares() -> None:
+    # Given a three-item, three-level report whose 0.9 weight implies distance cost 1.2
+    result = _abstaining_agreement_result()
+
+    # When / Then replay rejects a mean outside the discrete quadratic-weight lattice
+    with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
+        _replay_agreement("json", result, {"weighted_agreement": 0.9})
+
+
+@pytest.mark.parametrize("boundary", ["constructor", "json", "copy", "serialize"])
 @pytest.mark.parametrize("mode", ["constant", "varying"])
 def test_should_reject_mixed_defined_state_from_all_exact_statistics(
     boundary: str, mode: str
@@ -700,6 +1088,18 @@ def test_should_accept_degenerate_and_varying_all_exact_agreement_results() -> N
         type(result).model_validate_json(result.model_dump_json(by_alias=True)) == result
         for result in (constant, varying)
     )
+
+
+def test_should_reject_noncollapsed_agreement_interval_for_all_exact_items() -> None:
+    # Given an all-exact result whose per-item weights are constant one
+    result = _constant_agreement_result()
+    interval = result.report.weighted_agreement_interval
+    assert interval.kind == "interval"
+    forged = {"kind": "interval", "point": 1.0, "low": 0.9, "high": 1.0}
+
+    # When / Then replay requires its percentile interval to collapse at one
+    with pytest.raises(AssayError, match=r"^assay\.invalid_agreement_request$"):
+        _replay_agreement("json", result, {"weighted_agreement_interval": forged})
 
 
 def test_should_redact_finite_integer_overflow_in_measurement_json() -> None:
