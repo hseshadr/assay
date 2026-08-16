@@ -14,6 +14,7 @@ from assay import (
     Operation,
     compose,
 )
+from assay.composite import inputs_hash
 from assay.errors import ContractCode, ContractValidationError
 
 
@@ -103,6 +104,26 @@ def test_should_propagate_add_and_subtract_interval_endpoints() -> None:
     assert result.interval == Interval(low=0.05000000000000002, high=0.35000000000000003)
 
 
+def test_should_propagate_interval_terms_in_declared_ieee_order() -> None:
+    # Given endpoint arithmetic whose low bound changes if terms are reversed
+    request = _request(
+        _term("small", 1.0, 1.0, interval=Interval(low=1.0, high=2.0)),
+        _term(
+            "large",
+            1e16,
+            1.0,
+            Operation.SUBTRACT,
+            interval=Interval(low=1e16, high=1.0000000000000002e16),
+        ),
+        intercept=1e16,
+    )
+    # When contribution endpoints advance strictly left-to-right
+    result = compose(request)
+    # Then rounding preserves the declared-order low rather than a reordered low
+    assert result.interval == Interval(low=-2.0, high=2.0)
+    assert result.components[0].contribution_interval == Interval(low=1.0, high=2.0)
+
+
 def test_should_clamp_only_after_all_terms_and_preserve_explanations() -> None:
     # Given a sum that exceeds one only before a later explicit subtraction
     request = _request(
@@ -138,3 +159,29 @@ def test_should_return_canonical_positive_zero_after_subtraction() -> None:
     assert result.score == 0.0
     assert math.copysign(1.0, result.score) == 1.0
     assert result.selected_component_id is None
+
+
+def test_should_hash_every_additive_request_field_class() -> None:
+    # Given one baseline and variants changing each ordered additive field class
+    term = _term("signal", 0.25, 0.5)
+    second = _term("second", 0.1, 0.2)
+    baseline = _request(term, second)
+    term_variants = (
+        term.model_copy(update={"id": "other"}),
+        term.model_copy(update={"label": "Other"}),
+        term.model_copy(update={"value": 0.5}),
+        term.model_copy(update={"coefficient": 0.75}),
+        term.model_copy(update={"operation": Operation.SUBTRACT}),
+        term.model_copy(update={"interval": Interval(low=0.1, high=0.3)}),
+    )
+    variants = (
+        baseline.model_copy(update={"method_version": "consumer-v2"}),
+        baseline.model_copy(update={"clamp": ClampPolicy.REJECT}),
+        baseline.model_copy(update={"intercept": 0.1}),
+        *(baseline.model_copy(update={"terms": (item, second)}) for item in term_variants),
+        baseline.model_copy(update={"terms": (second, term)}),
+    )
+    # When each complete request is hashed
+    hashes = {inputs_hash(baseline), *(inputs_hash(request) for request in variants)}
+    # Then version/policy/intercept/order and every term field affect the digest
+    assert len(hashes) == len(variants) + 1

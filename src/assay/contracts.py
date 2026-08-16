@@ -117,7 +117,11 @@ def _finite(value: object) -> float:
         number = math.nan
     if not math.isfinite(number):
         _fail(ContractCode.INVALID_NUMBER)
-    return number
+    return _canonical_zero(number)
+
+
+def _canonical_zero(value: float) -> float:
+    return 0.0 if value == 0.0 else value
 
 
 def _positive(value: object) -> float:
@@ -492,6 +496,7 @@ class ExplainedComponent(_ContractModel):
     operation: _ExplicitOperation
     coefficient: _NonnegativeCoefficient
     contribution: _FiniteNumber
+    contribution_interval: Interval | None
 
 
 class Method(_ContractModel):
@@ -595,6 +600,8 @@ class ScoreResult(_ContractModel):
     method: Method
     score: _FiniteNumber
     interval: Interval | None = None
+    clamp: _ExplicitClampPolicy | None
+    intercept: _FiniteNumber | None
     components: tuple[ExplainedComponent, ...]
     inputs_hash: _InputsHash
     selected_component_id: _StableIdentifier | None = None
@@ -602,7 +609,183 @@ class ScoreResult(_ContractModel):
     @model_validator(mode="after")
     def _validate_components(self) -> Self:
         _require_identifiers(self.components, ContractCode.EMPTY_COMPONENTS)
+        _require_result_invariants(self)
         return self
+
+
+_ContributionBounds = tuple[float, float] | None
+
+
+def _require_result(condition: bool) -> None:
+    if not condition:
+        _fail(ContractCode.INVALID_RESULT)
+
+
+def _result_number(value: float) -> float:
+    if not math.isfinite(value):
+        _fail(ContractCode.INVALID_RESULT)
+    return 0.0 if value == 0.0 else value
+
+
+def _result_add(values: tuple[float, ...], initial: float = 0.0) -> float:
+    total = initial
+    for value in values:
+        total = _result_number(total + value)
+    return total
+
+
+def _row_bounds(row: ExplainedComponent) -> tuple[float, float]:
+    if row.contribution_interval is None:
+        return row.contribution, row.contribution
+    return row.contribution_interval.low, row.contribution_interval.high
+
+
+def _matches_interval(actual: Interval | None, expected: _ContributionBounds) -> bool:
+    if expected is None or expected[0] == expected[1]:
+        return actual is None
+    return actual is not None and (actual.low, actual.high) == expected
+
+
+def _sum_interval(rows: tuple[ExplainedComponent, ...]) -> _ContributionBounds:
+    if not _has_contribution_intervals(rows):
+        return None
+    lows, highs = zip(*(_row_bounds(row) for row in rows), strict=True)
+    return _result_add(lows), _result_add(highs)
+
+
+def _bounded_row(row: ExplainedComponent, maximum: float) -> bool:
+    interval = row.contribution_interval
+    return interval is None or 0.0 <= interval.low < interval.high <= maximum
+
+
+def _has_contribution_intervals(rows: tuple[ExplainedComponent, ...]) -> bool:
+    return any(row.contribution_interval is not None for row in rows)
+
+
+def _weighted_row(row: ExplainedComponent) -> bool:
+    normalized = row.normalized
+    if normalized is None:
+        return False
+    contribution = _result_number(normalized * row.coefficient)
+    shape = row.operation is Operation.ADD and 0.0 < row.coefficient <= 1.0
+    return shape and 0.0 <= normalized <= 1.0 and row.contribution == contribution
+
+
+def _require_weighted_result(result: ScoreResult) -> None:
+    rows = result.components
+    _require_result(_weighted_shape(result))
+    _require_result(_valid_weighted_rows(rows))
+    _require_result(result.score == _result_add(tuple(row.contribution for row in rows)))
+    _require_result(_matches_interval(result.interval, _sum_interval(rows)))
+
+
+def _weighted_shape(result: ScoreResult) -> bool:
+    return (
+        result.selected_component_id is None
+        and result.intercept is None
+        and result.clamp is not None
+    )
+
+
+def _valid_weighted_rows(rows: tuple[ExplainedComponent, ...]) -> bool:
+    return all(_weighted_row(row) and _bounded_row(row, row.coefficient) for row in rows)
+
+
+def _additive_row(row: ExplainedComponent) -> bool:
+    contribution = _result_number(row.raw * row.coefficient)
+    return row.normalized is None and row.contribution == contribution
+
+
+def _signed_add(total: float, row: ExplainedComponent, value: float) -> float:
+    if row.operation is Operation.ADD:
+        return _result_number(total + value)
+    return _result_number(total - value)
+
+
+def _additive_point(result: ScoreResult) -> float:
+    if result.intercept is None:  # pragma: no cover - guarded by the result invariant
+        _fail(ContractCode.INVALID_RESULT)
+    total = result.intercept
+    for row in result.components:
+        total = _signed_add(total, row, row.contribution)
+    return _final_result(total, result.clamp)
+
+
+def _final_result(value: float, policy: ClampPolicy | None) -> float:
+    if policy is None:
+        return value
+    if policy is ClampPolicy.CLAMP:
+        return 0.0 if value <= 0.0 else min(1.0, value)
+    _require_result(0.0 <= value <= 1.0)
+    return value
+
+
+def _additive_interval(result: ScoreResult) -> _ContributionBounds:
+    if not _has_contribution_intervals(result.components):
+        return None
+    if result.intercept is None:  # pragma: no cover - guarded by the result invariant
+        _fail(ContractCode.INVALID_RESULT)
+    low = high = result.intercept
+    for row in result.components:
+        low, high = _advance_result_bounds(low, high, row)
+    return _final_result(low, result.clamp), _final_result(high, result.clamp)
+
+
+def _advance_result_bounds(low: float, high: float, row: ExplainedComponent) -> tuple[float, float]:
+    row_low, row_high = _row_bounds(row)
+    if row.operation is Operation.ADD:
+        return _signed_add(low, row, row_low), _signed_add(high, row, row_high)
+    return _signed_add(low, row, row_high), _signed_add(high, row, row_low)
+
+
+def _require_additive_result(result: ScoreResult) -> None:
+    shape = result.selected_component_id is None and result.intercept is not None
+    _require_result(shape and all(_additive_row(row) for row in result.components))
+    _require_result(result.score == _additive_point(result))
+    _require_result(_matches_interval(result.interval, _additive_interval(result)))
+
+
+def _minimum_row(row: ExplainedComponent) -> bool:
+    normalized = row.normalized
+    if normalized is None:
+        return False
+    shape = row.operation is Operation.ADD and row.coefficient == 1.0
+    return shape and 0.0 <= normalized <= 1.0 and row.contribution == normalized
+
+
+def _minimum_interval(rows: tuple[ExplainedComponent, ...]) -> _ContributionBounds:
+    if not _has_contribution_intervals(rows):
+        return None
+    bounds = tuple(_row_bounds(row) for row in rows)
+    return _minimum_lows(bounds), _minimum_highs(bounds)
+
+
+def _minimum_lows(bounds: tuple[tuple[float, float], ...]) -> float:
+    return min(low for low, _ in bounds)
+
+
+def _minimum_highs(bounds: tuple[tuple[float, float], ...]) -> float:
+    return min(high for _, high in bounds)
+
+
+def _require_minimum_result(result: ScoreResult) -> None:
+    rows = result.components
+    shape = result.clamp is not None and result.intercept is None
+    _require_result(shape and all(_minimum_row(row) for row in rows))
+    _require_result(all(_bounded_row(row, 1.0) for row in rows))
+    selected = min(rows, key=lambda row: row.contribution)
+    _require_result(result.selected_component_id == selected.id)
+    _require_result(result.score == selected.normalized == selected.contribution)
+    _require_result(_matches_interval(result.interval, _minimum_interval(rows)))
+
+
+def _require_result_invariants(result: ScoreResult) -> None:
+    if result.method.id == "weighted_mean":
+        _require_weighted_result(result)
+    elif result.method.id == "additive":
+        _require_additive_result(result)
+    else:
+        _require_minimum_result(result)
 
 
 ScoreRequest = Annotated[

@@ -52,6 +52,7 @@ def _explain(term: AdditiveTerm) -> ExplainedComponent:
         operation=term.operation,
         coefficient=term.coefficient,
         contribution=_contribution(term),
+        contribution_interval=interval_or_none(*_term_bounds(term)),
     )
 
 
@@ -93,6 +94,8 @@ def additive(request: AdditiveRequest) -> ScoreResult:
         method=Method(id=validated.method, version=validated.method_version),
         score=_point(validated, rows),
         interval=_result_interval(validated),
+        clamp=validated.clamp,
+        intercept=validated.intercept,
         components=rows,
         inputs_hash=inputs_hash(validated),
         selected_component_id=None,

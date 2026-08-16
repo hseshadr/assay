@@ -9,12 +9,13 @@ from assay import (
     Component,
     Direction,
     Interval,
+    MinimumRequest,
     NativeScale,
     Operation,
     WeightedMeanRequest,
     compose,
 )
-from assay.composite import inputs_preimage
+from assay.composite import inputs_hash, inputs_preimage
 
 
 def _scale(
@@ -91,6 +92,27 @@ def test_should_propagate_weighted_interval_endpoints_in_declared_direction() ->
     assert result.score == 0.8
 
 
+def test_should_reuse_effective_coefficient_for_point_and_interval_endpoints() -> None:
+    # Given a value whose weight-first endpoint arithmetic rounds above its point
+    request = _request(
+        Component(
+            id="fraction",
+            label="Fraction",
+            value=0.1,
+            interval=Interval(low=0.1, high=0.2),
+            scale=_scale(0.0, 1.0),
+            weight=3.0,
+        )
+    )
+    # When the point and interval use one precomputed effective coefficient
+    result = compose(request)
+    # Then the point lies inside the exact replayable contribution interval
+    assert result.score == 0.1
+    assert result.interval == Interval(low=0.1, high=0.2)
+    assert result.components[0].coefficient == 1.0
+    assert result.components[0].contribution_interval == result.interval
+
+
 def test_should_emit_method_schema_determinism_and_pinned_inputs_hash() -> None:
     # Given one deterministic literal request with a cross-language preimage
     request = _request(
@@ -139,3 +161,50 @@ def test_should_return_canonical_positive_zero() -> None:
     assert math.copysign(1.0, result.score) == 1.0
     assert math.copysign(1.0, result.components[0].normalized or 0.0) == 1.0
     assert math.copysign(1.0, result.components[0].contribution) == 1.0
+
+
+def test_should_hash_every_weighted_request_field_class() -> None:
+    # Given one baseline and variants changing each request field class independently
+    component = Component(
+        id="quality",
+        label="Quality",
+        value=0.25,
+        scale=_scale(0.0, 1.0),
+        interval=None,
+        weight=1.0,
+    )
+    baseline = _request(component)
+    scale_variants = (
+        component.model_copy(update={"scale": _scale(-1.0, 1.0)}),
+        component.model_copy(update={"scale": _scale(0.0, 2.0)}),
+        component.model_copy(update={"scale": _scale(0.0, 1.0, Direction.LOWER_IS_BETTER)}),
+    )
+    component_variants = (
+        component.model_copy(update={"id": "other"}),
+        component.model_copy(update={"label": "Other"}),
+        component.model_copy(update={"value": 0.5}),
+        component.model_copy(update={"interval": Interval(low=0.1, high=0.3)}),
+        component.model_copy(update={"weight": 2.0}),
+        *scale_variants,
+    )
+    variants = (
+        MinimumRequest(
+            method="minimum",
+            method_version="northstar-v2",
+            components=(component,),
+            clamp=ClampPolicy.REJECT,
+        ),
+        baseline.model_copy(update={"method_version": "northstar-v3"}),
+        baseline.model_copy(update={"clamp": ClampPolicy.CLAMP}),
+        *(baseline.model_copy(update={"components": (item,)}) for item in component_variants),
+        baseline.model_copy(
+            update={"components": (component, component.model_copy(update={"id": "second"}))}
+        ),
+        baseline.model_copy(
+            update={"components": (component.model_copy(update={"id": "second"}), component)}
+        ),
+    )
+    # When each complete request is hashed
+    hashes = {inputs_hash(baseline), *(inputs_hash(request) for request in variants)}
+    # Then method/version/policy/order and every component/scale field affect the digest
+    assert len(hashes) == len(variants) + 1

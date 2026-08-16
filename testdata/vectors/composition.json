@@ -24,14 +24,16 @@
       "method": {"id": "weighted_mean", "version": "northstar.2026-08-12"},
       "score": 0.92,
       "interval": null,
+      "clamp": "reject",
+      "intercept": null,
       "components": [
-        {"id": "security", "raw": 19.0, "normalized": 0.95, "operation": "add", "coefficient": 0.2, "contribution": 0.19},
-        {"id": "privacy", "raw": 15.0, "normalized": 1.0, "operation": "add", "coefficient": 0.15, "contribution": 0.15},
-        {"id": "reliability", "raw": 15.0, "normalized": 1.0, "operation": "add", "coefficient": 0.15, "contribution": 0.15},
-        {"id": "performance", "raw": 12.0, "normalized": 0.8, "operation": "add", "coefficient": 0.15, "contribution": 0.12},
-        {"id": "correctness", "raw": 15.0, "normalized": 1.0, "operation": "add", "coefficient": 0.15, "contribution": 0.15},
-        {"id": "clarity", "raw": 14.0, "normalized": 0.9333333333333333, "operation": "add", "coefficient": 0.15, "contribution": 0.13999999999999999},
-        {"id": "production", "raw": 2.0, "normalized": 0.4, "operation": "add", "coefficient": 0.05, "contribution": 0.020000000000000004}
+        {"id": "security", "raw": 19.0, "normalized": 0.95, "operation": "add", "coefficient": 0.2, "contribution": 0.19, "contribution_interval": null},
+        {"id": "privacy", "raw": 15.0, "normalized": 1.0, "operation": "add", "coefficient": 0.15, "contribution": 0.15, "contribution_interval": null},
+        {"id": "reliability", "raw": 15.0, "normalized": 1.0, "operation": "add", "coefficient": 0.15, "contribution": 0.15, "contribution_interval": null},
+        {"id": "performance", "raw": 12.0, "normalized": 0.8, "operation": "add", "coefficient": 0.15, "contribution": 0.12, "contribution_interval": null},
+        {"id": "correctness", "raw": 15.0, "normalized": 1.0, "operation": "add", "coefficient": 0.15, "contribution": 0.15, "contribution_interval": null},
+        {"id": "clarity", "raw": 14.0, "normalized": 0.9333333333333333, "operation": "add", "coefficient": 0.15, "contribution": 0.13999999999999999, "contribution_interval": null},
+        {"id": "production", "raw": 2.0, "normalized": 0.4, "operation": "add", "coefficient": 0.05, "contribution": 0.020000000000000004, "contribution_interval": null}
       ],
       "inputs_hash": "sha256:0266b1c59c97bacf85dc945685c55bb4386856b525249c7d5663a8edf020ba06",
       "selected_component_id": null
@@ -65,16 +67,18 @@
       "method": {"id": "additive", "version": "edgereco.recommendation-v3"},
       "score": 0.3600000000000001,
       "interval": null,
+      "clamp": null,
+      "intercept": 0.0,
       "components": [
-        {"id": "retrieval", "raw": 0.0, "normalized": null, "operation": "add", "coefficient": 1.0, "contribution": 0.0},
-        {"id": "popularity", "raw": 0.7, "normalized": null, "operation": "add", "coefficient": 0.4, "contribution": 0.27999999999999997},
-        {"id": "category_match", "raw": 0.6, "normalized": null, "operation": "add", "coefficient": 0.2, "contribution": 0.12},
-        {"id": "tag_match", "raw": 0.8, "normalized": null, "operation": "add", "coefficient": 0.15, "contribution": 0.12},
-        {"id": "brand_match", "raw": 0.5, "normalized": null, "operation": "add", "coefficient": 0.1, "contribution": 0.05},
-        {"id": "freshness", "raw": 0.4, "normalized": null, "operation": "add", "coefficient": 0.1, "contribution": 0.04000000000000001},
-        {"id": "similarity", "raw": 0.0, "normalized": null, "operation": "add", "coefficient": 0.0, "contribution": 0.0},
-        {"id": "cooccurrence", "raw": 0.0, "normalized": null, "operation": "add", "coefficient": 0.0, "contribution": 0.0},
-        {"id": "repetition_penalty", "raw": 1.0, "normalized": null, "operation": "subtract", "coefficient": 0.25, "contribution": 0.25}
+        {"id": "retrieval", "raw": 0.0, "normalized": null, "operation": "add", "coefficient": 1.0, "contribution": 0.0, "contribution_interval": null},
+        {"id": "popularity", "raw": 0.7, "normalized": null, "operation": "add", "coefficient": 0.4, "contribution": 0.27999999999999997, "contribution_interval": null},
+        {"id": "category_match", "raw": 0.6, "normalized": null, "operation": "add", "coefficient": 0.2, "contribution": 0.12, "contribution_interval": null},
+        {"id": "tag_match", "raw": 0.8, "normalized": null, "operation": "add", "coefficient": 0.15, "contribution": 0.12, "contribution_interval": null},
+        {"id": "brand_match", "raw": 0.5, "normalized": null, "operation": "add", "coefficient": 0.1, "contribution": 0.05, "contribution_interval": null},
+        {"id": "freshness", "raw": 0.4, "normalized": null, "operation": "add", "coefficient": 0.1, "contribution": 0.04000000000000001, "contribution_interval": null},
+        {"id": "similarity", "raw": 0.0, "normalized": null, "operation": "add", "coefficient": 0.0, "contribution": 0.0, "contribution_interval": null},
+        {"id": "cooccurrence", "raw": 0.0, "normalized": null, "operation": "add", "coefficient": 0.0, "contribution": 0.0, "contribution_interval": null},
+        {"id": "repetition_penalty", "raw": 1.0, "normalized": null, "operation": "subtract", "coefficient": 0.25, "contribution": 0.25, "contribution_interval": null}
       ],
       "inputs_hash": "sha256:df9b86d02e3cabea42e98ef18df165f6f8a227f8f144ae430496a43b5fcdc5fb",
       "selected_component_id": null
@@ -105,13 +109,15 @@
       "method": {"id": "additive", "version": "amlfilter.balanced-2026-08"},
       "score": 1.0,
       "interval": null,
+      "clamp": "clamp",
+      "intercept": 0.0,
       "components": [
-        {"id": "name_vector", "raw": 1.0, "normalized": null, "operation": "add", "coefficient": 0.55, "contribution": 0.55},
-        {"id": "name_trigram", "raw": 0.5, "normalized": null, "operation": "add", "coefficient": 0.2, "contribution": 0.1},
-        {"id": "alias_match", "raw": 1.0, "normalized": null, "operation": "add", "coefficient": 0.35, "contribution": 0.35},
-        {"id": "dob_match", "raw": 0.5, "normalized": null, "operation": "add", "coefficient": 0.1, "contribution": 0.05},
-        {"id": "country_match", "raw": 1.0, "normalized": null, "operation": "add", "coefficient": 0.05, "contribution": 0.05},
-        {"id": "entity_type_match", "raw": 1.0, "normalized": null, "operation": "add", "coefficient": 0.0, "contribution": 0.0}
+        {"id": "name_vector", "raw": 1.0, "normalized": null, "operation": "add", "coefficient": 0.55, "contribution": 0.55, "contribution_interval": null},
+        {"id": "name_trigram", "raw": 0.5, "normalized": null, "operation": "add", "coefficient": 0.2, "contribution": 0.1, "contribution_interval": null},
+        {"id": "alias_match", "raw": 1.0, "normalized": null, "operation": "add", "coefficient": 0.35, "contribution": 0.35, "contribution_interval": null},
+        {"id": "dob_match", "raw": 0.5, "normalized": null, "operation": "add", "coefficient": 0.1, "contribution": 0.05, "contribution_interval": null},
+        {"id": "country_match", "raw": 1.0, "normalized": null, "operation": "add", "coefficient": 0.05, "contribution": 0.05, "contribution_interval": null},
+        {"id": "entity_type_match", "raw": 1.0, "normalized": null, "operation": "add", "coefficient": 0.0, "contribution": 0.0, "contribution_interval": null}
       ],
       "inputs_hash": "sha256:64cecab703da9d0f2a473ad4a14c4ccb96b683d9b20169d1dcd650892eba0ff6",
       "selected_component_id": null
@@ -137,9 +143,11 @@
       "method": {"id": "minimum", "version": "almamesh.domain-strength-v1"},
       "score": 0.6,
       "interval": null,
+      "clamp": "reject",
+      "intercept": null,
       "components": [
-        {"id": "shadbala_pct", "raw": 60.0, "normalized": 0.6, "operation": "add", "coefficient": 1.0, "contribution": 0.6},
-        {"id": "sav_pct", "raw": 60.0, "normalized": 0.6, "operation": "add", "coefficient": 1.0, "contribution": 0.6}
+        {"id": "shadbala_pct", "raw": 60.0, "normalized": 0.6, "operation": "add", "coefficient": 1.0, "contribution": 0.6, "contribution_interval": null},
+        {"id": "sav_pct", "raw": 60.0, "normalized": 0.6, "operation": "add", "coefficient": 1.0, "contribution": 0.6, "contribution_interval": null}
       ],
       "inputs_hash": "sha256:c1dd2da5ebd54dfcc6f3b250f118ce1fc6ce7f3dfc7d249cf7a5f7216d4eaa5e",
       "selected_component_id": "shadbala_pct"
@@ -165,9 +173,11 @@
       "method": {"id": "minimum", "version": "almamesh.domain-strength-v1"},
       "score": 0.6,
       "interval": null,
+      "clamp": "reject",
+      "intercept": null,
       "components": [
-        {"id": "sav_pct", "raw": 60.0, "normalized": 0.6, "operation": "add", "coefficient": 1.0, "contribution": 0.6},
-        {"id": "shadbala_pct", "raw": 60.0, "normalized": 0.6, "operation": "add", "coefficient": 1.0, "contribution": 0.6}
+        {"id": "sav_pct", "raw": 60.0, "normalized": 0.6, "operation": "add", "coefficient": 1.0, "contribution": 0.6, "contribution_interval": null},
+        {"id": "shadbala_pct", "raw": 60.0, "normalized": 0.6, "operation": "add", "coefficient": 1.0, "contribution": 0.6, "contribution_interval": null}
       ],
       "inputs_hash": "sha256:09c0694100a04d66119ca5712cb669459e7bece368e36f729d2bb1c98f4f1115",
       "selected_component_id": "sav_pct"

@@ -754,8 +754,26 @@ _COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_weighted_mean.py::test_should_normalize_before_dividing_by_total_weight",
         ),
         edit=_replace_once(
-            "    coefficient = finite_output(_weight(component) / total)",
-            "    coefficient = finite_output(_weight(component))",
+            "    return tuple(finite_output(_weight(component) / total) "
+            "for component in request.components)",
+            "    return tuple(finite_output(_weight(component)) "
+            "for component in request.components)",
+        ),
+    ),
+    Mutation(
+        name="weighted-interval-reuses-effective-coefficient",
+        claim="point and interval endpoints multiply by the same precomputed coefficient",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::"
+            "test_should_reuse_effective_coefficient_for_point_and_interval_endpoints",
+        ),
+        edit=_replace_once(
+            "    return interval_or_none(finite_output(low * coefficient), "
+            "finite_output(high * coefficient))",
+            "    total = _total_weight(request)\n"
+            "    return interval_or_none(finite_output(low * _weight(component) / total), "
+            "finite_output(high * _weight(component) / total))",
         ),
     ),
     Mutation(
@@ -850,22 +868,309 @@ _COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
         ),
     ),
     Mutation(
+        name="additive-interval-keeps-declared-order",
+        claim="interval endpoint arithmetic advances in declared IEEE-754 term order",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_additive.py::test_should_propagate_interval_terms_in_declared_ieee_order",
+        ),
+        edit=_replace_once(
+            "    for term in request.terms:",
+            "    for term in reversed(request.terms):",
+        ),
+    ),
+    Mutation(
+        name="result-wire-keeps-additive-intercept",
+        claim="the additive result exposes the exact intercept required for standalone replay",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_result_replay.py::"
+            "test_should_replay_additive_point_and_interval_from_result_wire_alone",
+        ),
+        edit=_replace_once("        intercept=validated.intercept,", "        intercept=0.0,"),
+    ),
+    Mutation(
+        name="result-wire-keeps-additive-clamp-policy",
+        claim="the additive result exposes its exact final clamp or unbounded policy",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_result_replay.py::"
+            "test_should_replay_additive_point_and_interval_from_result_wire_alone",
+        ),
+        edit=_replace_once("        clamp=validated.clamp,", "        clamp=None,"),
+    ),
+    Mutation(
+        name="result-wire-keeps-contribution-intervals",
+        claim="each uncertain additive row exposes the bounds needed for standalone replay",
+        target="src/assay/additive.py",
+        guard=(
+            "tests/test_result_replay.py::"
+            "test_should_replay_additive_point_and_interval_from_result_wire_alone",
+        ),
+        edit=_replace_once(
+            "        contribution_interval=interval_or_none(*_term_bounds(term)),",
+            "        contribution_interval=None,",
+        ),
+    ),
+    Mutation(
+        name="score-result-invariants-run-at-the-boundary",
+        claim="every ScoreResult construction and parse enforces method-specific replay",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_replay_additive_score_from_intercept_policy_and_signed_rows",
+        ),
+        edit=_replace_once(
+            "        _require_result_invariants(self)",
+            "        _require_result(True)",
+        ),
+    ),
+    Mutation(
+        name="minimum-result-selects-first-actual-minimum",
+        claim="minimum result validation requires the selected ID to be the first minimum row",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_require_minimum_to_select_first_declared_lowest_row",
+        ),
+        edit=_replace_once(
+            "    _require_result(result.selected_component_id == selected.id)",
+            "    _require_result(result.selected_component_id is not None)",
+        ),
+    ),
+    Mutation(
+        name="public-contract-zero-has-positive-sign-bit",
+        claim="all accepted numeric zeros canonicalize before JSON and request hashing",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_contracts.py::"
+            "test_should_canonicalize_all_contract_zeros_before_json_and_request_hashing",
+        ),
+        edit=_replace_once(
+            "def _canonical_zero(value: float) -> float:\n"
+            "    return 0.0 if value == 0.0 else value",
+            "def _canonical_zero(value: float) -> float:\n    return value",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-request-method",
+        claim="the closed request method discriminator changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            "        request.method,",
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            '        "minimum",',
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-method-version",
+        claim="the caller-declared method version changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            "        request.method,\n"
+            "        request.method_version,",
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            "        request.method,\n"
+            '        "northstar-v2",',
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-weighted-clamp-policy",
+        claim="the explicit normalization clamp policy changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            "        request.method,\n"
+            "        request.method_version,\n"
+            "        request.clamp.value,",
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)\n"
+            "    return (\n"
+            "        _PREIMAGE_VERSION,\n"
+            "        request.method,\n"
+            "        request.method_version,\n"
+            '        "reject",',
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-id",
+        claim="a component's stable identity changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once("        component.id,", '        "quality",'),
+    ),
+    Mutation(
         name="inputs-hash-includes-component-label",
         claim="display-label changes alter the complete request digest",
         target="src/assay/composite.py",
-        guard=(
-            "tests/test_weighted_mean.py::test_should_emit_method_schema_determinism_and_pinned_inputs_hash",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once("        component.label,", '        "Quality",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-value",
+        claim="a component's native value changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "        _float_token(component.value),",
+            "        _float_token(0.25),",
         ),
-        edit=_replace_once("        component.label,", '        "",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-scale-minimum",
+        claim="a native scale minimum changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "(_float_token(scale.minimum), _float_token(scale.maximum), scale.direction.value)",
+            "(_float_token(0.0), _float_token(scale.maximum), scale.direction.value)",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-scale-maximum",
+        claim="a native scale maximum changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "(_float_token(scale.minimum), _float_token(scale.maximum), scale.direction.value)",
+            "(_float_token(scale.minimum), _float_token(1.0), scale.direction.value)",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-scale-direction",
+        claim="a native scale direction changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once(
+            "(_float_token(scale.minimum), _float_token(scale.maximum), scale.direction.value)",
+            '(_float_token(scale.minimum), _float_token(scale.maximum), "higher_is_better")',
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-interval",
+        claim="a component uncertainty interval changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once("        _interval_token(component.interval),", "        None,"),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-weight",
+        claim="a component weight changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_weighted_mean.py::test_should_hash_every_weighted_request_field_class",),
+        edit=_replace_once("        weight,", "        _float_token(1.0),"),
+    ),
+    Mutation(
+        name="inputs-hash-includes-component-order",
+        claim="component declaration order changes the complete digest",
+        target="src/assay/composite.py",
+        guard=(
+            "tests/test_consumer_conformance.py::test_should_replay_every_literal_consumer_result_exactly",
+        ),
+        edit=_replace_once(
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) for item in request.components)",
+            "def _weighted_token(request: WeightedMeanRequest) -> object:\n"
+            "    components = tuple(_component_token(item) "
+            "for item in reversed(request.components))",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-additive-policy",
+        claim="an additive final clamp or unbounded policy changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once(
+            "    policy = None if request.clamp is None else request.clamp.value",
+            "    policy = None",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-additive-intercept",
+        claim="the additive intercept changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once(
+            "        _float_token(request.intercept),",
+            "        _float_token(0.0),",
+        ),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-id",
+        claim="an additive term's stable identity changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once("        term.id,", '        "signal",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-label",
+        claim="an additive term's display label changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once("        term.label,", '        "Signal",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-value",
+        claim="an additive term's raw value changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once("        _float_token(term.value),", "        _float_token(0.25),"),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-coefficient",
+        claim="an additive term's coefficient changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once(
+            "        _float_token(term.coefficient),",
+            "        _float_token(0.5),",
+        ),
     ),
     Mutation(
         name="inputs-hash-includes-term-operation",
         claim="add versus subtract changes the complete additive request digest",
         target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once("        term.operation.value,", '        "add",'),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-interval",
+        claim="an additive term uncertainty interval changes the complete digest",
+        target="src/assay/composite.py",
+        guard=("tests/test_additive.py::test_should_hash_every_additive_request_field_class",),
+        edit=_replace_once("        _interval_token(term.interval),", "        None,"),
+    ),
+    Mutation(
+        name="inputs-hash-includes-term-order",
+        claim="additive term declaration order changes the complete digest",
+        target="src/assay/composite.py",
         guard=(
             "tests/test_consumer_conformance.py::test_should_replay_every_literal_consumer_result_exactly",
         ),
-        edit=_replace_once("        term.operation.value,", '        "add",'),
+        edit=_replace_once(
+            "    terms = tuple(_term_token(item) for item in request.terms)",
+            "    terms = tuple(_term_token(item) for item in reversed(request.terms))",
+        ),
     ),
     Mutation(
         name="composition-vectors-are-non-vacuous",

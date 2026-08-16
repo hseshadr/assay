@@ -42,6 +42,7 @@ class ContractCode(StrEnum):
     INVALID_NUMBER = "assay.invalid_number"
     INVALID_OBJECT = "assay.invalid_object"
     INVALID_OPERATION = "assay.invalid_operation"
+    INVALID_RESULT = "assay.invalid_result"
     INVALID_SCALE = "assay.invalid_scale"
     INVALID_TEXT = "assay.invalid_text"
     INVALID_WEIGHT = "assay.invalid_weight"

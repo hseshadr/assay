@@ -28,6 +28,7 @@ def _explain(component: Component, request: MinimumRequest) -> ExplainedComponen
         operation=Operation.ADD,
         coefficient=1.0,
         contribution=candidate,
+        contribution_interval=_candidate_interval(component, request),
     )
 
 
@@ -39,6 +40,12 @@ def _bounds(component: Component, request: MinimumRequest) -> tuple[float, float
     first = _normalized(component, request, interval.low)
     second = _normalized(component, request, interval.high)
     return min(first, second), max(first, second)
+
+
+def _candidate_interval(component: Component, request: MinimumRequest) -> Interval | None:
+    if component.interval is None:
+        return None
+    return interval_or_none(*_bounds(component, request))
 
 
 def _propagated_bounds(request: MinimumRequest) -> tuple[float, float]:
@@ -61,6 +68,8 @@ def minimum(request: MinimumRequest) -> ScoreResult:
         method=Method(id=validated.method, version=validated.method_version),
         score=selected.contribution,
         interval=_result_interval(validated),
+        clamp=validated.clamp,
+        intercept=None,
         components=rows,
         inputs_hash=inputs_hash(validated),
         selected_component_id=selected.id,

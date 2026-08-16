@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import struct
 
 import pytest
 from pydantic import BaseModel
@@ -29,6 +30,7 @@ from assay import (
     parse_request,
     parse_request_json,
 )
+from assay.composite import inputs_preimage
 from assay.errors import ContractCode, InvalidScoreRequest
 
 _INPUTS_HASH = "sha256:7f83b1657ff1fc53b92dc18148a1d65dfa13514d74c69915a0b7543842cff331"
@@ -69,14 +71,17 @@ def _explained(identifier: str = "reliability") -> ExplainedComponent:
         operation=Operation.ADD,
         coefficient=0.15,
         contribution=0.13,
+        contribution_interval=None,
     )
 
 
 def _result() -> ScoreResult:
     return ScoreResult(
         method=Method(id="weighted_mean", version="northstar-v2"),
-        score=0.88,
+        score=0.13,
         interval=None,
+        clamp=ClampPolicy.REJECT,
+        intercept=None,
         components=(_explained(),),
         inputs_hash=_INPUTS_HASH,
     )
@@ -540,7 +545,13 @@ def test_should_revalidate_forged_components_entering_requests() -> None:
 def test_should_revalidate_forged_explanations_entering_results() -> None:
     # Given
     forged = ExplainedComponent.model_construct(
-        id="quality", raw=1, normalized=1, operation="add", coefficient=1, contribution=math.inf
+        id="quality",
+        raw=1,
+        normalized=1,
+        operation="add",
+        coefficient=1,
+        contribution=math.inf,
+        contribution_interval=None,
     )
     payload = _result().model_dump()
     payload["components"] = (forged,)
@@ -726,6 +737,36 @@ def test_should_reject_nonfinite_component_values_and_weights(bad: float) -> Non
         Component(id="value", label="Value", value=bad, scale=_scale(), weight=1)
     with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
         Component(id="weight", label="Weight", value=1, scale=_scale(), weight=bad)
+
+
+def test_should_canonicalize_all_contract_zeros_before_json_and_request_hashing() -> None:
+    # Given signed-zero values across every numeric additive boundary class
+    interval = Interval(low=-0.0, high=1.0)
+    term = AdditiveTerm(
+        id="zero",
+        label="Zero",
+        value=-0.0,
+        coefficient=-0.0,
+        operation=Operation.ADD,
+        interval=interval,
+    )
+    request = AdditiveRequest(
+        method="additive",
+        method_version="zero-v1",
+        terms=(term,),
+        clamp=None,
+        intercept=-0.0,
+    )
+    # When the models serialize and enter the cross-language hash preimage
+    serialized = request.model_dump_json()
+    preimage = inputs_preimage(request)
+    # Then no public number or IEEE-754 token retains a negative-zero sign bit
+    assert "-0.0" not in serialized
+    assert "f64:8000000000000000" not in preimage
+    assert struct.pack("!d", request.intercept).hex() == "0000000000000000"
+    assert struct.pack("!d", request.terms[0].value).hex() == "0000000000000000"
+    assert struct.pack("!d", request.terms[0].coefficient).hex() == "0000000000000000"
+    assert struct.pack("!d", request.terms[0].interval.low).hex() == "0000000000000000"
 
 
 @pytest.mark.parametrize("weight", [0, -1])
@@ -975,8 +1016,10 @@ def test_should_round_trip_a_result_with_explicit_deterministic_interval() -> No
     # Given
     result = ScoreResult(
         method=Method(id="weighted_mean", version="northstar-v2"),
-        score=0.88,
+        score=0.13,
         interval=None,
+        clamp=ClampPolicy.REJECT,
+        intercept=None,
         components=(_explained(),),
         inputs_hash=_INPUTS_HASH,
     )
@@ -1000,12 +1043,15 @@ def test_should_reject_nonfinite_result_and_explanation_numbers(bad: float) -> N
             operation=Operation.ADD,
             coefficient=0.15,
             contribution=bad,
+            contribution_interval=None,
         )
     with pytest.raises(ContractValidationError, match=r"assay\.invalid_number"):
         ScoreResult(
-            method=Method(id="minimum", version="alma-v1"),
+            method=Method(id="weighted_mean", version="northstar-v2"),
             score=bad,
             interval=None,
+            clamp=ClampPolicy.REJECT,
+            intercept=None,
             components=(_explained(),),
             inputs_hash=_INPUTS_HASH,
         )
@@ -1015,9 +1061,11 @@ def test_should_reject_malformed_result_input_hashes() -> None:
     # Given / When / Then
     with pytest.raises(ContractValidationError, match=r"assay\.invalid_inputs_hash"):
         ScoreResult(
-            method=Method(id="minimum", version="alma-v1"),
-            score=0.5,
+            method=Method(id="weighted_mean", version="northstar-v2"),
+            score=0.13,
             interval=None,
+            clamp=ClampPolicy.REJECT,
+            intercept=None,
             components=(_explained(),),
             inputs_hash="sha256:not-a-digest",
         )

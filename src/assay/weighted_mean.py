@@ -25,9 +25,10 @@ def _total_weight(request: WeightedMeanRequest) -> float:
     return left_add(_weight(component) for component in request.components)
 
 
-def _explain(component: Component, spec: WeightedMeanRequest, total: float) -> ExplainedComponent:
+def _explain(
+    component: Component, spec: WeightedMeanRequest, coefficient: float
+) -> ExplainedComponent:
     normalized = normalize(component.value, component.scale, spec.clamp)
-    coefficient = finite_output(_weight(component) / total)
     contribution = finite_output(normalized * coefficient)
     return ExplainedComponent(
         id=component.id,
@@ -36,6 +37,7 @@ def _explain(component: Component, spec: WeightedMeanRequest, total: float) -> E
         operation=Operation.ADD,
         coefficient=coefficient,
         contribution=contribution,
+        contribution_interval=_contribution_interval(component, spec, coefficient),
     )
 
 
@@ -49,32 +51,57 @@ def _normalized_bounds(component: Component, request: WeightedMeanRequest) -> tu
     return min(first, second), max(first, second)
 
 
-def _weighted_bound(request: WeightedMeanRequest, total: float, *, high: bool) -> float:
-    contributions = []
-    for component in request.components:
-        bounds = _normalized_bounds(component, request)
-        normalized = bounds[1] if high else bounds[0]
-        contributions.append(finite_output(normalized * _weight(component) / total))
-    return left_add(contributions)
-
-
-def _result_interval(request: WeightedMeanRequest, total: float) -> Interval | None:
-    if not any(component.interval is not None for component in request.components):
+def _contribution_interval(
+    component: Component, request: WeightedMeanRequest, coefficient: float
+) -> Interval | None:
+    if component.interval is None:
         return None
-    low = _weighted_bound(request, total, high=False)
-    high = _weighted_bound(request, total, high=True)
+    low, high = _normalized_bounds(component, request)
+    return interval_or_none(finite_output(low * coefficient), finite_output(high * coefficient))
+
+
+def _coefficients(request: WeightedMeanRequest, total: float) -> tuple[float, ...]:
+    return tuple(finite_output(_weight(component) / total) for component in request.components)
+
+
+def _weighted_bound(rows: tuple[ExplainedComponent, ...], *, high: bool) -> float:
+    index = 1 if high else 0
+    bounds = (
+        row.contribution
+        if row.contribution_interval is None
+        else (row.contribution_interval.low, row.contribution_interval.high)[index]
+        for row in rows
+    )
+    return left_add(bounds)
+
+
+def _result_interval(rows: tuple[ExplainedComponent, ...]) -> Interval | None:
+    if not any(row.contribution_interval is not None for row in rows):
+        return None
+    low = _weighted_bound(rows, high=False)
+    high = _weighted_bound(rows, high=True)
     return interval_or_none(low, high)
+
+
+def _rows(request: WeightedMeanRequest) -> tuple[ExplainedComponent, ...]:
+    total = _total_weight(request)
+    coefficients = _coefficients(request, total)
+    return tuple(
+        _explain(component, request, coefficient)
+        for component, coefficient in zip(request.components, coefficients, strict=True)
+    )
 
 
 def weighted_mean(request: WeightedMeanRequest) -> ScoreResult:
     """Compose a validated normalized weighted mean in declared input order."""
     validated = WeightedMeanRequest.model_validate(request)
-    total = _total_weight(validated)
-    rows = tuple(_explain(component, validated, total) for component in validated.components)
+    rows = _rows(validated)
     return ScoreResult(
         method=Method(id=validated.method, version=validated.method_version),
         score=left_add(row.contribution for row in rows),
-        interval=_result_interval(validated, total),
+        interval=_result_interval(rows),
+        clamp=validated.clamp,
+        intercept=None,
         components=rows,
         inputs_hash=inputs_hash(validated),
         selected_component_id=None,
