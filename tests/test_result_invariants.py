@@ -28,12 +28,14 @@ def _row(
     *,
     operation: Operation = Operation.ADD,
     interval: Interval | None = None,
+    declared_weight: float | None = None,
 ) -> ExplainedComponent:
     raw = contribution / coefficient if coefficient else 0.0
     return ExplainedComponent(
         id=identifier,
         raw=raw,
         normalized=normalized,
+        declared_weight=declared_weight,
         operation=operation,
         coefficient=coefficient,
         contribution=contribution,
@@ -44,11 +46,12 @@ def _row(
 def _weighted() -> ScoreResult:
     return ScoreResult(
         method=Method(id="weighted_mean", version="review-v1"),
-        score=0.5,
+        score=1.0,
         interval=None,
         clamp=ClampPolicy.REJECT,
         intercept=None,
-        components=(_row("quality", 1.0, 0.5, 0.5),),
+        weight_total=1.0,
+        components=(_row("quality", 1.0, 1.0, 1.0, declared_weight=1.0),),
         inputs_hash=_HASH,
         selected_component_id=None,
     )
@@ -63,6 +66,7 @@ def _additive(
         interval=None,
         clamp=clamp,
         intercept=0.1,
+        weight_total=None,
         components=(_row("signal", None, 0.5, 0.2),),
         inputs_hash=_HASH,
         selected_component_id=None,
@@ -76,6 +80,7 @@ def _minimum() -> ScoreResult:
         interval=None,
         clamp=ClampPolicy.REJECT,
         intercept=None,
+        weight_total=None,
         components=(_row("first", 0.6, 1.0, 0.6), _row("second", 0.4, 1.0, 0.4)),
         inputs_hash=_HASH,
         selected_component_id="second",
@@ -154,6 +159,7 @@ def test_should_replay_final_additive_clamp_from_result_policy() -> None:
         interval=None,
         clamp=None,
         intercept=1.0,
+        weight_total=None,
         components=(_row("gain", None, 1.0, 0.2),),
         inputs_hash=_HASH,
         selected_component_id=None,
@@ -187,9 +193,24 @@ def test_should_replay_weighted_interval_from_ordered_contribution_bounds() -> N
         interval=Interval(low=0.30000000000000004, high=0.7),
         clamp=ClampPolicy.REJECT,
         intercept=None,
+        weight_total=1.0,
         components=(
-            _row("first", 0.4, 0.5, 0.2, interval=Interval(low=0.1, high=0.3)),
-            _row("second", 0.6, 0.5, 0.3, interval=Interval(low=0.2, high=0.4)),
+            _row(
+                "first",
+                0.4,
+                0.5,
+                0.2,
+                interval=Interval(low=0.1, high=0.3),
+                declared_weight=0.5,
+            ),
+            _row(
+                "second",
+                0.6,
+                0.5,
+                0.3,
+                interval=Interval(low=0.2, high=0.4),
+                declared_weight=0.5,
+            ),
         ),
         inputs_hash=_HASH,
         selected_component_id=None,
@@ -200,6 +221,72 @@ def test_should_replay_weighted_interval_from_ordered_contribution_bounds() -> N
     # Then public JSON validation rejects it
     with pytest.raises(ContractValidationError, match=r"assay\.invalid_result"):
         ScoreResult.model_validate_json(json.dumps(payload))
+
+
+def test_should_reject_forged_one_component_weighted_coefficient() -> None:
+    # Given a one-component weighted result whose only effective coefficient must be one
+    payload = _weighted().model_dump()
+    # When point arithmetic is forged consistently around an impossible coefficient
+    payload["components"][0]["coefficient"] = 0.5
+    payload["components"][0]["contribution"] = 0.5
+    payload["score"] = 0.5
+    # Then declared-weight replay rejects it even though its local multiplication agrees
+    _assert_invalid(payload)
+
+
+def test_should_require_weight_total_on_weighted_result_json() -> None:
+    # Given a weighted result payload with its replay total removed
+    payload = _weighted().model_dump()
+    payload.pop("weight_total", None)
+    # When it crosses the JSON boundary
+    with pytest.raises(ContractValidationError) as caught:
+        ScoreResult.model_validate_json(json.dumps(payload))
+    # Then the required wire field cannot be inferred
+    assert caught.value.code == ContractCode.MISSING_FIELD.value
+
+
+def test_should_reject_inconsistent_weight_total_on_copy() -> None:
+    # Given a valid weighted result with one declared unit of weight
+    result = _weighted()
+    row = result.components[0].model_copy(update={"coefficient": 0.5, "contribution": 0.5})
+    # When a validated copy uses locally consistent arithmetic with a false total
+    with pytest.raises(ContractValidationError) as caught:
+        result.model_copy(update={"score": 0.5, "weight_total": 2.0, "components": (row,)})
+    # Then exact declared-order replay rejects the inconsistency
+    assert caught.value.code == ContractCode.INVALID_RESULT.value
+
+
+@pytest.mark.parametrize("factory", [_additive, _minimum])
+def test_should_emit_null_weight_metadata_on_nonweighted_results(factory: object) -> None:
+    # Given an additive or minimum result with explicit null weight metadata
+    assert callable(factory)
+    payload = factory().model_dump()
+    # When its portable result shape is inspected
+    # Then weighted replay fields are present but explicitly unused
+    assert payload["weight_total"] is None
+    assert all(row["declared_weight"] is None for row in payload["components"])
+
+
+@pytest.mark.parametrize("factory", [_additive, _minimum])
+def test_should_reject_weight_total_on_nonweighted_results(factory: object) -> None:
+    # Given an additive or minimum result
+    assert callable(factory)
+    payload = factory().model_dump()
+    # When its result claims a weighted total
+    payload["weight_total"] = 1.0
+    # Then the method-specific result invariant rejects that metadata
+    _assert_invalid(payload)
+
+
+@pytest.mark.parametrize("factory", [_additive, _minimum])
+def test_should_reject_declared_row_weight_on_nonweighted_results(factory: object) -> None:
+    # Given an additive or minimum result
+    assert callable(factory)
+    payload = factory().model_dump()
+    # When one explanation claims a declared weighted-mean weight
+    payload["components"][0]["declared_weight"] = 1.0
+    # Then the method-specific explanation invariant rejects it
+    _assert_invalid(payload)
 
 
 def test_should_revalidate_result_invariants_on_model_copy() -> None:

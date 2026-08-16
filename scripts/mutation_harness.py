@@ -777,6 +777,136 @@ _COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
         ),
     ),
     Mutation(
+        name="weighted-result-requires-total-weight",
+        claim="the weighted result wire requires the declared total used for replay",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_require_weight_total_on_weighted_result_json",
+        ),
+        edit=_replace_once(
+            "    weight_total: _PositiveWeight | None",
+            "    weight_total: _PositiveWeight | None = None",
+        ),
+    ),
+    Mutation(
+        name="weighted-result-keeps-declared-row-weight",
+        claim="every weighted explanation exposes its original positive request weight",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::"
+            "test_should_compose_when_a_positive_effective_weight_underflows_to_zero",
+        ),
+        edit=_replace_once(
+            "        declared_weight=_weight(component),", "        declared_weight=1.0,"
+        ),
+    ),
+    Mutation(
+        name="weighted-result-keeps-total-weight",
+        claim="the weighted result exposes the exact declared-order total",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::test_should_normalize_before_dividing_by_total_weight",
+        ),
+        edit=_replace_once("        weight_total=total,", "        weight_total=1.0,"),
+    ),
+    Mutation(
+        name="weighted-result-rederives-effective-coefficient",
+        claim="a weighted coefficient must equal declared weight divided by total weight",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_forged_one_component_weighted_coefficient",
+        ),
+        edit=_replace_once(
+            "    return row.operation is Operation.ADD and row.coefficient "
+            "== _result_number(weight / total)",
+            "    return row.operation is Operation.ADD and 0.0 <= row.coefficient <= 1.0",
+        ),
+    ),
+    Mutation(
+        name="weighted-result-allows-representable-coefficient-underflow",
+        claim="a positive declared weight may produce canonical zero after binary64 division",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_weighted_mean.py::"
+            "test_should_compose_when_a_positive_effective_weight_underflows_to_zero",
+        ),
+        edit=_replace_once(
+            "    return row.operation is Operation.ADD and row.coefficient "
+            "== _result_number(weight / total)",
+            "    return row.operation is Operation.ADD and 0.0 < row.coefficient "
+            "== _result_number(weight / total)",
+        ),
+    ),
+    Mutation(
+        name="weighted-result-checks-declared-total",
+        claim="weight total must equal the declared-order sum of row weights",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::test_should_reject_inconsistent_weight_total_on_copy",
+        ),
+        edit=_replace_once(
+            "    _require_result(total == _result_add(_declared_weights(rows)))",
+            "    _require_result(total > 0.0)",
+        ),
+    ),
+    Mutation(
+        name="additive-result-rejects-weight-total",
+        claim="additive results cannot claim weighted-mean total metadata",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_weight_total_on_nonweighted_results[_additive]",
+        ),
+        edit=_replace_once(
+            "        and result.weight_total is None\n    )\n\n\ndef _minimum_row",
+            "    )\n\n\ndef _minimum_row",
+        ),
+    ),
+    Mutation(
+        name="additive-row-rejects-declared-weight",
+        claim="additive explanation rows cannot claim weighted-mean request weights",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_declared_row_weight_on_nonweighted_results[_additive]",
+        ),
+        edit=_replace_once(
+            "        row.normalized is None and row.declared_weight is None "
+            "and row.contribution == contribution",
+            "        row.normalized is None and row.contribution == contribution",
+        ),
+    ),
+    Mutation(
+        name="minimum-result-rejects-weight-total",
+        claim="minimum results cannot claim weighted-mean total metadata",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_weight_total_on_nonweighted_results[_minimum]",
+        ),
+        edit=_replace_once(
+            "    return result.clamp is not None and result.intercept is None "
+            "and result.weight_total is None",
+            "    return result.clamp is not None and result.intercept is None",
+        ),
+    ),
+    Mutation(
+        name="minimum-row-rejects-declared-weight",
+        claim="minimum candidate rows cannot claim weighted-mean request weights",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_declared_row_weight_on_nonweighted_results[_minimum]",
+        ),
+        edit=_replace_once(
+            "    return row.operation is Operation.ADD and row.coefficient == 1.0 "
+            "and row.declared_weight is None",
+            "    return row.operation is Operation.ADD and row.coefficient == 1.0",
+        ),
+    ),
+    Mutation(
         name="additive-subtraction-keeps-its-sign",
         claim="a subtract term lowers the running total",
         target="src/assay/additive.py",

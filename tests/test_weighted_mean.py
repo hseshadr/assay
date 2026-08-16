@@ -60,6 +60,8 @@ def test_should_normalize_before_dividing_by_total_weight() -> None:
     assert tuple(row.id for row in result.components) == ("z_reliability", "a_latency")
     assert tuple(row.raw for row in result.components) == (13.0, 80.0)
     assert tuple(row.normalized for row in result.components) == (13.0 / 15.0, 0.2)
+    assert tuple(row.declared_weight for row in result.components) == (15.0, 5.0)
+    assert result.weight_total == 20.0
     assert tuple(row.coefficient for row in result.components) == (0.75, 0.25)
     assert tuple(row.contribution for row in result.components) == (0.65, 0.05)
     assert all(row.operation is Operation.ADD for row in result.components)
@@ -161,6 +163,26 @@ def test_should_return_canonical_positive_zero() -> None:
     assert math.copysign(1.0, result.score) == 1.0
     assert math.copysign(1.0, result.components[0].normalized or 0.0) == 1.0
     assert math.copysign(1.0, result.components[0].contribution) == 1.0
+
+
+def test_should_compose_when_a_positive_effective_weight_underflows_to_zero() -> None:
+    # Given valid positive weights whose binary64 ratio is not representable
+    request = _request(
+        Component(id="tiny", label="Tiny", value=1.0, scale=_scale(0.0, 1.0), weight=5e-324),
+        Component(id="large", label="Large", value=0.5, scale=_scale(0.0, 1.0), weight=1e308),
+    )
+    # When the weighted score is composed and crosses JSON/copy boundaries
+    result = compose(request)
+    wire = result.model_dump_json()
+    replayed = type(result).model_validate_json(wire)
+    copied = replayed.model_copy()
+    # Then declared weights remain positive while the public effective zero is canonical
+    assert copied.weight_total == 1e308
+    assert tuple(row.declared_weight for row in copied.components) == (5e-324, 1e308)
+    assert tuple(row.coefficient for row in copied.components) == (0.0, 1.0)
+    assert math.copysign(1.0, copied.components[0].coefficient) == 1.0
+    assert copied.score == 0.5
+    assert "-0.0" not in wire
 
 
 def test_should_hash_every_weighted_request_field_class() -> None:

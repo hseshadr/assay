@@ -86,6 +86,19 @@ def _replay_rows(payload: dict[str, object]) -> tuple[float, tuple[float, float]
     return point, (low, high)
 
 
+def _replay_weighted_rows(payload: dict[str, object]) -> tuple[float, tuple[float, float]]:
+    total = payload["weight_total"]
+    rows = payload["components"]
+    assert isinstance(total, (int, float))
+    assert isinstance(rows, list)
+    for row in rows:
+        assert isinstance(row, dict)
+        weight = row["declared_weight"]
+        assert isinstance(weight, (int, float))
+        assert row["coefficient"] == weight / total
+    return _replay_rows(payload)
+
+
 def test_should_replay_additive_point_and_interval_from_result_wire_alone() -> None:
     # Given an additive result whose ordered terms carry uncertainty
     request = AdditiveRequest(
@@ -124,10 +137,12 @@ def test_should_replay_weighted_point_and_interval_from_result_wire_alone() -> N
     payload = json.loads(compose(request).model_dump_json())
     assert isinstance(payload, dict)
     # When an independent reader adds only the result's ordered contribution rows
-    point, interval = _replay_rows(payload)
+    point, interval = _replay_weighted_rows(payload)
     # Then it reproduces the result without native scales, weights, or the request
     assert payload["clamp"] == "reject"
     assert payload["intercept"] is None
+    assert payload["weight_total"] == 2.0
+    assert [row["declared_weight"] for row in payload["components"]] == [1.0, 1.0]
     assert point == payload["score"] == 0.375
     assert interval == (payload["interval"]["low"], payload["interval"]["high"])
     assert interval == (0.25, 0.44999999999999996)

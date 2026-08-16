@@ -34,6 +34,7 @@ def _explain(
         id=component.id,
         raw=component.value,
         normalized=normalized,
+        declared_weight=_weight(component),
         operation=Operation.ADD,
         coefficient=coefficient,
         contribution=contribution,
@@ -83,8 +84,7 @@ def _result_interval(rows: tuple[ExplainedComponent, ...]) -> Interval | None:
     return interval_or_none(low, high)
 
 
-def _rows(request: WeightedMeanRequest) -> tuple[ExplainedComponent, ...]:
-    total = _total_weight(request)
+def _rows(request: WeightedMeanRequest, total: float) -> tuple[ExplainedComponent, ...]:
     coefficients = _coefficients(request, total)
     return tuple(
         _explain(component, request, coefficient)
@@ -95,14 +95,15 @@ def _rows(request: WeightedMeanRequest) -> tuple[ExplainedComponent, ...]:
 def weighted_mean(request: WeightedMeanRequest) -> ScoreResult:
     """Compose a validated normalized weighted mean in declared input order."""
     validated = WeightedMeanRequest.model_validate(request)
-    rows = _rows(validated)
+    total = _total_weight(validated)
+    rows = _rows(validated, total)
     return ScoreResult(
         method=Method(id=validated.method, version=validated.method_version),
         score=left_add(row.contribution for row in rows),
         interval=_result_interval(rows),
         clamp=validated.clamp,
         intercept=None,
+        weight_total=total,
         components=rows,
         inputs_hash=inputs_hash(validated),
-        selected_component_id=None,
     )

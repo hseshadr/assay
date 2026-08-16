@@ -25,6 +25,7 @@ def _explain(component: Component, request: MinimumRequest) -> ExplainedComponen
         id=component.id,
         raw=component.value,
         normalized=candidate,
+        declared_weight=None,
         operation=Operation.ADD,
         coefficient=1.0,
         contribution=candidate,
@@ -59,18 +60,23 @@ def _result_interval(request: MinimumRequest) -> Interval | None:
     return interval_or_none(*_propagated_bounds(request))
 
 
+def _result(request: MinimumRequest, rows: tuple[ExplainedComponent, ...]) -> ScoreResult:
+    selected = min(rows, key=lambda row: row.contribution)
+    return ScoreResult(
+        method=Method(id=request.method, version=request.method_version),
+        score=selected.contribution,
+        interval=_result_interval(request),
+        clamp=request.clamp,
+        intercept=None,
+        weight_total=None,
+        components=rows,
+        inputs_hash=inputs_hash(request),
+        selected_component_id=selected.id,
+    )
+
+
 def minimum(request: MinimumRequest) -> ScoreResult:
     """Return the first lowest normalized candidate and identify it explicitly."""
     validated = MinimumRequest.model_validate(request)
     rows = tuple(_explain(component, validated) for component in validated.components)
-    selected = min(rows, key=lambda row: row.contribution)
-    return ScoreResult(
-        method=Method(id=validated.method, version=validated.method_version),
-        score=selected.contribution,
-        interval=_result_interval(validated),
-        clamp=validated.clamp,
-        intercept=None,
-        components=rows,
-        inputs_hash=inputs_hash(validated),
-        selected_component_id=selected.id,
-    )
+    return _result(validated, rows)

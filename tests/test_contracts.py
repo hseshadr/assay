@@ -68,9 +68,10 @@ def _explained(identifier: str = "reliability") -> ExplainedComponent:
         id=identifier,
         raw=13,
         normalized=13 / 15,
+        declared_weight=1.0,
         operation=Operation.ADD,
-        coefficient=0.15,
-        contribution=0.13,
+        coefficient=1.0,
+        contribution=13 / 15,
         contribution_interval=None,
     )
 
@@ -78,10 +79,11 @@ def _explained(identifier: str = "reliability") -> ExplainedComponent:
 def _result() -> ScoreResult:
     return ScoreResult(
         method=Method(id="weighted_mean", version="northstar-v2"),
-        score=0.13,
+        score=13 / 15,
         interval=None,
         clamp=ClampPolicy.REJECT,
         intercept=None,
+        weight_total=1.0,
         components=(_explained(),),
         inputs_hash=_INPUTS_HASH,
     )
@@ -548,6 +550,7 @@ def test_should_revalidate_forged_explanations_entering_results() -> None:
         id="quality",
         raw=1,
         normalized=1,
+        declared_weight=1,
         operation="add",
         coefficient=1,
         contribution=math.inf,
@@ -1016,10 +1019,11 @@ def test_should_round_trip_a_result_with_explicit_deterministic_interval() -> No
     # Given
     result = ScoreResult(
         method=Method(id="weighted_mean", version="northstar-v2"),
-        score=0.13,
+        score=13 / 15,
         interval=None,
         clamp=ClampPolicy.REJECT,
         intercept=None,
+        weight_total=1.0,
         components=(_explained(),),
         inputs_hash=_INPUTS_HASH,
     )
@@ -1040,6 +1044,7 @@ def test_should_reject_nonfinite_result_and_explanation_numbers(bad: float) -> N
             id="reliability",
             raw=13,
             normalized=13 / 15,
+            declared_weight=1.0,
             operation=Operation.ADD,
             coefficient=0.15,
             contribution=bad,
@@ -1052,6 +1057,7 @@ def test_should_reject_nonfinite_result_and_explanation_numbers(bad: float) -> N
             interval=None,
             clamp=ClampPolicy.REJECT,
             intercept=None,
+            weight_total=1.0,
             components=(_explained(),),
             inputs_hash=_INPUTS_HASH,
         )
@@ -1062,10 +1068,11 @@ def test_should_reject_malformed_result_input_hashes() -> None:
     with pytest.raises(ContractValidationError, match=r"assay\.invalid_inputs_hash"):
         ScoreResult(
             method=Method(id="weighted_mean", version="northstar-v2"),
-            score=0.13,
+            score=13 / 15,
             interval=None,
             clamp=ClampPolicy.REJECT,
             intercept=None,
+            weight_total=1.0,
             components=(_explained(),),
             inputs_hash="sha256:not-a-digest",
         )

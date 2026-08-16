@@ -493,6 +493,7 @@ class ExplainedComponent(_ContractModel):
     id: _StableIdentifier
     raw: _FiniteNumber
     normalized: _FiniteNumber | None
+    declared_weight: _PositiveWeight | None
     operation: _ExplicitOperation
     coefficient: _NonnegativeCoefficient
     contribution: _FiniteNumber
@@ -602,6 +603,7 @@ class ScoreResult(_ContractModel):
     interval: Interval | None = None
     clamp: _ExplicitClampPolicy | None
     intercept: _FiniteNumber | None
+    weight_total: _PositiveWeight | None
     components: tuple[ExplainedComponent, ...]
     inputs_hash: _InputsHash
     selected_component_id: _StableIdentifier | None = None
@@ -662,19 +664,31 @@ def _has_contribution_intervals(rows: tuple[ExplainedComponent, ...]) -> bool:
     return any(row.contribution_interval is not None for row in rows)
 
 
-def _weighted_row(row: ExplainedComponent) -> bool:
+def _weighted_row(row: ExplainedComponent, total: float) -> bool:
     normalized = row.normalized
     if normalized is None:
         return False
     contribution = _result_number(normalized * row.coefficient)
-    shape = row.operation is Operation.ADD and 0.0 < row.coefficient <= 1.0
-    return shape and 0.0 <= normalized <= 1.0 and row.contribution == contribution
+    return _weighted_row_shape(row, total) and _unit_value(normalized, row, contribution)
+
+
+def _weighted_row_shape(row: ExplainedComponent, total: float) -> bool:
+    weight = row.declared_weight
+    if weight is None:
+        return False
+    return row.operation is Operation.ADD and row.coefficient == _result_number(weight / total)
+
+
+def _unit_value(normalized: float, row: ExplainedComponent, contribution: float) -> bool:
+    return 0.0 <= normalized <= 1.0 and row.contribution == contribution
 
 
 def _require_weighted_result(result: ScoreResult) -> None:
     rows = result.components
     _require_result(_weighted_shape(result))
-    _require_result(_valid_weighted_rows(rows))
+    total = _weight_total(result)
+    _require_result(total == _result_add(_declared_weights(rows)))
+    _require_result(_valid_weighted_rows(rows, total))
     _require_result(result.score == _result_add(tuple(row.contribution for row in rows)))
     _require_result(_matches_interval(result.interval, _sum_interval(rows)))
 
@@ -684,16 +698,31 @@ def _weighted_shape(result: ScoreResult) -> bool:
         result.selected_component_id is None
         and result.intercept is None
         and result.clamp is not None
+        and result.weight_total is not None
     )
 
 
-def _valid_weighted_rows(rows: tuple[ExplainedComponent, ...]) -> bool:
-    return all(_weighted_row(row) and _bounded_row(row, row.coefficient) for row in rows)
+def _weight_total(result: ScoreResult) -> float:
+    if result.weight_total is None:  # pragma: no cover - guarded by weighted shape
+        _fail(ContractCode.INVALID_RESULT)
+    return result.weight_total
+
+
+def _declared_weights(rows: tuple[ExplainedComponent, ...]) -> tuple[float, ...]:
+    if any(row.declared_weight is None for row in rows):
+        _fail(ContractCode.INVALID_RESULT)
+    return tuple(row.declared_weight for row in rows if row.declared_weight is not None)
+
+
+def _valid_weighted_rows(rows: tuple[ExplainedComponent, ...], total: float) -> bool:
+    return all(_weighted_row(row, total) and _bounded_row(row, row.coefficient) for row in rows)
 
 
 def _additive_row(row: ExplainedComponent) -> bool:
     contribution = _result_number(row.raw * row.coefficient)
-    return row.normalized is None and row.contribution == contribution
+    return (
+        row.normalized is None and row.declared_weight is None and row.contribution == contribution
+    )
 
 
 def _signed_add(total: float, row: ExplainedComponent, value: float) -> float:
@@ -739,18 +768,29 @@ def _advance_result_bounds(low: float, high: float, row: ExplainedComponent) -> 
 
 
 def _require_additive_result(result: ScoreResult) -> None:
-    shape = result.selected_component_id is None and result.intercept is not None
+    shape = _additive_shape(result)
     _require_result(shape and all(_additive_row(row) for row in result.components))
     _require_result(result.score == _additive_point(result))
     _require_result(_matches_interval(result.interval, _additive_interval(result)))
+
+
+def _additive_shape(result: ScoreResult) -> bool:
+    return (
+        result.selected_component_id is None
+        and result.intercept is not None
+        and result.weight_total is None
+    )
 
 
 def _minimum_row(row: ExplainedComponent) -> bool:
     normalized = row.normalized
     if normalized is None:
         return False
-    shape = row.operation is Operation.ADD and row.coefficient == 1.0
-    return shape and 0.0 <= normalized <= 1.0 and row.contribution == normalized
+    return _minimum_row_shape(row) and _unit_value(normalized, row, normalized)
+
+
+def _minimum_row_shape(row: ExplainedComponent) -> bool:
+    return row.operation is Operation.ADD and row.coefficient == 1.0 and row.declared_weight is None
 
 
 def _minimum_interval(rows: tuple[ExplainedComponent, ...]) -> _ContributionBounds:
@@ -770,13 +810,17 @@ def _minimum_highs(bounds: tuple[tuple[float, float], ...]) -> float:
 
 def _require_minimum_result(result: ScoreResult) -> None:
     rows = result.components
-    shape = result.clamp is not None and result.intercept is None
-    _require_result(shape and all(_minimum_row(row) for row in rows))
+    _require_result(_minimum_shape(result))
+    _require_result(all(_minimum_row(row) for row in rows))
     _require_result(all(_bounded_row(row, 1.0) for row in rows))
     selected = min(rows, key=lambda row: row.contribution)
     _require_result(result.selected_component_id == selected.id)
     _require_result(result.score == selected.normalized == selected.contribution)
     _require_result(_matches_interval(result.interval, _minimum_interval(rows)))
+
+
+def _minimum_shape(result: ScoreResult) -> bool:
+    return result.clamp is not None and result.intercept is None and result.weight_total is None
 
 
 def _require_result_invariants(result: ScoreResult) -> None:
