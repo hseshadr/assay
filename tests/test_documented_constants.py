@@ -20,7 +20,7 @@ from assay.settings import AssaySettings
 
 _METRICS = Path("testdata/vectors/metrics.json")
 
-# README, same section: "metrics.json holds 23 hand-computed metric cases: 7 ranking and
+# docs/METHODS.md, optional metrics section: "metrics.json holds 23 cases: 7 ranking and
 # 7 ranking refusals, 5 classification and 4 classification refusals".
 _DOCUMENTED_METRIC_CASES = {
     "ranking": 7,

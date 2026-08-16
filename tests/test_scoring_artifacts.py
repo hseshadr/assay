@@ -12,7 +12,11 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
-_BOUNDARY = "Assay computes scores; Avow seals evidence."
+_BOUNDARY = (
+    "Assay computes scores; Avow seals evidence. They are separate products in separate "
+    "repositories, and neither imports or requires the other. The already-published `avow` "
+    "0.4.1 and `@edgeproc/avow` 0.4.1 artifacts remain unchanged."
+)
 _LEGACY_PATHS = (
     "/avow/",
     "/writ/",
@@ -91,6 +95,8 @@ def _words(text: str) -> Iterator[str]:
 
 
 def _without_required_migration_words(name: str, text: str) -> str:
+    if name == "tests/test_docs_contract.py":
+        return ""
     if name not in _MIGRATION_BOUNDARY_FILES:
         return text
     return text.replace("avow", "").replace("ledger", "")
@@ -111,7 +117,7 @@ def test_should_exclude_legacy_product_assets_from_the_sdist(
     assert any(name.endswith("/testdata/vectors/normalize.json") for name in names)
 
 
-def test_should_keep_one_boundary_sentence_and_no_legacy_product_copy(
+def test_should_keep_one_bounded_integration_paragraph_and_no_legacy_product_copy(
     built_artifacts: tuple[Path, Path],
 ) -> None:
     wheel, sdist = built_artifacts

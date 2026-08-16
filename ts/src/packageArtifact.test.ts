@@ -9,7 +9,9 @@ import { describe, expect, it } from "vitest";
 const PACKAGE_ROOT = new URL("..", import.meta.url);
 const ARCHIVE_NAME = "edgeproc-assay-0.5.0-dev.0.tgz";
 const EXPECTED_ARCHIVE_SHA256 =
-  "6367292db83b31ed78e84775fc6af52e32f9548a1239f3d30e9f74af316320b8";
+  "7084ab2c360e3f3f971b3cde159c12aa37156ddf7ba79b1b01e052cb1ce225c3";
+const OPTIONAL_INTEGRATION =
+  "Assay computes scores; Avow seals evidence. They are separate products and neither requires the other.";
 const EXPECTED_MEMBERS = [
   "package/LICENSE",
   "package/README.md",
@@ -96,7 +98,10 @@ describe("the real npm artifact", () => {
       expect(run("tar", ["-xOzf", archive, "package/LICENSE"])).toBe(
         readFileSync(new URL("../../LICENSE", import.meta.url), "utf8"),
       );
-      expect(readme.match(/Avow/gu)).toHaveLength(1);
+      expect(readme.split(OPTIONAL_INTEGRATION)).toHaveLength(2);
+      expect(readme.replace(OPTIONAL_INTEGRATION, "")).not.toMatch(
+        /\b(?:Avow|evidence|signing|signature|receipt|ledger)\b/iu,
+      );
     } finally {
       rmSync(destination, { recursive: true, force: true });
     }

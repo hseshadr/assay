@@ -1,64 +1,116 @@
-# QUICKSTART
+# Assay quickstart
 
-New here? Read [`README.md`](README.md) first — it explains what a receipt is and why it
-matters. This page is the shortest path from clone to a verified receipt.
+> **TL;DR:** From a clean checkout, one command builds both local package candidates,
+> computes the committed Northstar score, and proves Python/TypeScript semantic parity.
 
-Before production use, read the [operational contract](docs/OPERATIONS.md) for the
-privacy, plaintext retention, key/head custody, recovery, and performance boundaries.
+Requires Python 3.13, `uv`, Node 22.13 or newer, and Corepack. Neither package is
+published; all commands below build from the current checkout.
 
-**Requires Python 3.13+.** The distribution is named `avow`; the command it installs is
-named **`assay`**. There is no `avow` command.
-
-One distribution `avow`, three import packages: `avow` (envelope), `assay` (scoring),
-`writ` (effect). `assay` and `writ` import `avow`; `avow` imports neither.
+## First result
 
 ```bash
-git clone https://github.com/hseshadr/assay.git
-cd assay
+bash examples/run_composite.sh
 ```
 
-1. `uv sync --all-extras` — installs all three faces + the CLI + tooling for dev.
-2. `uv run python demo/run_demo.py` — scoring face: six honesty acceptance cases.
-3. `uv run python demo/unification_demo.py` — one envelope + one verifier, both faces.
-4. `uv run poe gate` — Python: ruff, ruff-format, mypy `--strict`, xenon A, tests.
-5. `uv run poe gate-ts` — TypeScript: biome, `tsc --noEmit`, vitest, build (needs pnpm).
-   `uv run poe gate-all` runs both, mirroring CI's two jobs.
+Expected first and last lines:
 
-Install matrix (for consumers):
+```text
+Northstar weighted score: 0.92
+Parity: Python and TypeScript fields and values match
+```
 
-| Command | Gives you |
-|---|---|
-| `pip install avow` | `import avow`, `import writ` |
-| `pip install 'avow[assay]'` | `+ import assay` (scoring) |
-| `pip install 'avow[cli]'` | + the `assay` command |
+The demo works from any current directory because it resolves the repository relative
+to its own path. It builds the real wheel and npm tarball, installs them outside the
+checkout, compares both typed results with the committed oracle, and removes its
+temporary files on success or failure.
 
-CLI: `uv run assay --help`.
+## Python checkout
+
+Install the local project with the command-line adapter:
 
 ```bash
-uv run assay keygen --out signing.key                 # also writes signing.key.pub
-echo '{"metric":"binary","metric_version":"1","y_true":[0,1,0,1],"y_score":[0.2,0.8,0.3,0.7]}' > req.json
-uv run assay score --request req.json --key signing.key --out receipt.json --ledger ledger.jsonl
-uv run assay verify --receipt receipt.json --public-key signing.key.pub   # -> OK: receipt verified
-uv run assay verify-ledger --ledger ledger.jsonl --public-key signing.key.pub --head ledger.jsonl.head   # -> OK: ledger verified, 1 entry intact
+uv sync --extra cli
+uv run assay compose --request examples/northstar_score.json
 ```
 
-`keygen` wrote `signing.key.pub` and `score` wrote `ledger.jsonl.head`, so a cold clone
-already has both pins `verify-ledger` needs: the public key (*who* signed the entries) and
-the chain head (*which* entries there are). Copy the head somewhere the ledger's writer
-cannot reach — beside the ledger it is a convenience, not a control.
-
-The **chained, keyed** `verify-ledger` shown above is supported by 0.4.1. This release
-supersedes 0.4.0 for CLI ledger writers by holding one bounded process lock across the
-append and convenience-head save. Check [PyPI](https://pypi.org/project/avow/) and
-[npm](https://www.npmjs.com/package/@edgeproc/avow) for current registry availability;
-see [`CHANGELOG.md`](CHANGELOG.md) for the exact change history.
-
-Pointed at a path it cannot read, `verify-ledger` fails closed with
-`avow.ledger_unreadable` rather than reporting zero entries intact. With no head to check
-against, it fails closed with `avow.ledger_head_unreadable`.
-
-Regenerate the cross-language golden vectors after any canonicalization change:
+Add the scientific calculators only when you need `assay measure`:
 
 ```bash
-uv run python tests/gen_vectors.py    # writes testdata/vectors/{canonical,receipts}.json
+uv sync --extra cli --extra metrics
+uv run assay --help
 ```
+
+The three commands are:
+
+- `assay compose --request REQUEST [--out RESULT]` validates and combines a weighted
+  mean, additive, or minimum request.
+- `assay measure --request REQUEST [--out REPORT]` runs one typed optional binary,
+  ranking, or agreement report.
+- `assay explain --result RESULT [--out TEXT]` validates a serialized composition
+  result, replays its invariants, and renders the arithmetic.
+
+When `--out` is absent, JSON or text goes to standard output. A requested output is
+installed atomically. Inputs must be bounded regular files and cannot alias their
+outputs.
+
+## TypeScript checkout
+
+Install the pinned development toolchain, run its complete gate, then build the local
+tarball:
+
+```bash
+corepack pnpm --dir ts install --frozen-lockfile
+corepack pnpm --dir ts gate
+corepack pnpm --dir ts pack --pack-destination /tmp/assay-pack
+```
+
+Install that tarball into a Node 22 application. The package root exports
+`parseRequest()` and `compose()`:
+
+```typescript
+import { compose, parseRequest } from "@edgeproc/assay";
+
+const request = parseRequest({
+  method: "additive",
+  method_version: "ranking.v1",
+  terms: [
+    {
+      id: "relevance",
+      label: "Relevance",
+      value: 0.8,
+      coefficient: 1,
+      operation: "add",
+      interval: null,
+    },
+  ],
+  clamp: null,
+  intercept: 0,
+});
+
+console.log(compose(request).score);
+```
+
+## Repository gates
+
+Run the complete Python and TypeScript gates independently:
+
+```bash
+uv run poe gate
+corepack pnpm --dir ts gate
+```
+
+The Python gate covers formatting, lint, strict types, Grade A complexity, branch
+coverage, and behavior. The TypeScript gate covers Biome, strict type checking, branch
+coverage, behavior, and its production build.
+
+Read [Methods](docs/METHODS.md) for exact arithmetic and fields,
+[Architecture](docs/ARCHITECTURE.md) for package boundaries, and
+[Operations](docs/OPERATIONS.md) before handling sensitive inputs.
+
+## Future registry identity
+
+> **Status:** `assay-engine` 0.5.0.dev0 and `@edgeproc/assay` 0.5.0-dev.0 are local split candidates. Neither package is published.
+
+After a separately authorized release, consumers will use `pip install assay-engine`
+for Python and `npm install @edgeproc/assay` for TypeScript. Until then, use only the
+checkout paths above.

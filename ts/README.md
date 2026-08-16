@@ -1,54 +1,48 @@
 # Assay for TypeScript
 
-Assay turns measurements with different scales into one score and explains every contribution.
+> **TL;DR:** `@edgeproc/assay` validates explicit scoring requests, combines them with
+> one of three methods, and returns every ordered contribution.
 
-It does not sign evidence, store receipts, or decide whether a score should pass. Use Avow when you need a signed evidence receipt; Assay only calculates scores.
+> **Status:** `@edgeproc/assay` 0.5.0-dev.0 is a local split candidate. It is not published.
 
-**Status:** `0.5.0-dev.0` is a local candidate. It is not published to npm.
+The package is dependency-free, ESM-only, and requires Node 22.13 or newer. The future
+authorized registry command is `npm install @edgeproc/assay`; build from the checkout
+until a release is explicitly authorized.
 
-**Runtime:** ESM-only on Node 22.13 or newer.
-
-## Try the local candidate
-
-Build the package from the repository root:
+## Build the tarball
 
 ```bash
 corepack pnpm --dir ts install --frozen-lockfile
-corepack pnpm --dir ts pack --pack-destination /tmp
+corepack pnpm --dir ts gate
+corepack pnpm --dir ts pack --pack-destination /tmp/assay-pack
 ```
 
-Install it in a scratch app:
+This produces `edgeproc-assay-0.5.0-dev.0.tgz`. Install that file in a separate Node 22
+application, then import only from the package root.
 
-```bash
-mkdir -p /tmp/assay-demo
-cd /tmp/assay-demo
-npm init -y
-npm install /tmp/edgeproc-assay-0.5.0-dev.0.tgz
-```
-
-## Run a real score
-
-Save this as `demo.mjs` after installing the tarball:
+## Compose a typed score
 
 ```typescript
 import { compose, parseRequest } from "@edgeproc/assay";
 
 const request = parseRequest({
   method: "weighted_mean",
-  method_version: "screening.v1",
+  method_version: "quality.v1",
   components: [
     {
-      id: "match_strength",
-      label: "Match strength",
-      value: 87,
-      scale: { minimum: 0, maximum: 100, direction: "higher_is_better" },
+      id: "quality",
+      label: "Quality",
+      value: 8,
+      scale: { minimum: 0, maximum: 10, direction: "higher_is_better" },
+      interval: null,
       weight: 3,
     },
     {
-      id: "data_quality",
-      label: "Data quality",
-      value: 0.8,
-      scale: { minimum: 0, maximum: 1, direction: "higher_is_better" },
+      id: "latency",
+      label: "Latency",
+      value: 20,
+      scale: { minimum: 0, maximum: 100, direction: "lower_is_better" },
+      interval: null,
       weight: 1,
     },
   ],
@@ -56,29 +50,31 @@ const request = parseRequest({
 });
 
 const result = compose(request);
-console.log(result.score);
-console.log(result.components);
+console.log(result.score); // 0.8
 ```
 
-Run it:
+`parseRequest()` accepts `unknown`, rejects extra fields and invalid values, and returns
+the closed `ScoreRequest` union. `compose()` dispatches only `weighted_mean`, `additive`,
+or `minimum`. See the repository's [method reference](../docs/METHODS.md) for every
+request rule and result field.
+
+## Parity boundary
+
+The shared vectors require Python and TypeScript to agree on typed field/value
+structure, field and component order, finite IEEE-754 binary64 values, the three
+composition methods, and exact `inputs_hash` values. They do not require byte-identical
+language-native JSON serialization.
+
+The TypeScript package also exposes small binary and ranking calculators. Python's
+optional metric surface is broader; complete optional-metric parity is not claimed.
+Application bands, thresholds, hard gates, and decisions remain outside this package.
+
+Run the repository-wide realistic parity demo from any directory:
 
 ```bash
-node demo.mjs
+bash examples/run_composite.sh
 ```
 
-The first line is:
+## Optional integration
 
-```text
-0.8525
-```
-
-## What the output means
-
-- Every number is a finite IEEE-754 binary64 value. JSON integers above `2^53` are accepted and rounded to the nearest representable binary64 value, exactly as they are in Python.
-- `score` is the combined number. Weighted mean and minimum results are between 0 and 1. An additive result can be outside that range when `clamp` is `null`.
-- `components` shows each raw value, normalized value, coefficient, and contribution in declared order.
-- `interval` is `null` when the inputs have no uncertainty range.
-- `inputs_hash` changes when any scored field or input order changes.
-- `selected_component_id` names the bottleneck for the `minimum` method. It is `null` for the other methods.
-
-Assay supports three explicit methods: `weighted_mean`, `additive`, and `minimum`. Choose the formula that already describes your application; Assay does not silently replace it with an average.
+Assay computes scores; Avow seals evidence. They are separate products and neither requires the other.
