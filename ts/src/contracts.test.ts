@@ -57,6 +57,33 @@ function weightedResult(): Record<string, unknown> {
   };
 }
 
+function contradictoryResult(
+  method: "weighted_mean" | "additive" | "minimum",
+): Record<string, unknown> {
+  const row = {
+    id: "quality",
+    raw: 0.5,
+    normalized: method === "additive" ? null : 0.5,
+    declared_weight: method === "weighted_mean" ? 1 : null,
+    operation: "add",
+    coefficient: 1,
+    contribution: 0.5,
+    contribution_interval: { low: 0.1, high: 0.2 },
+  };
+  return {
+    schema: "assay.result/v1",
+    method: { id: method, version: "review.v1" },
+    score: 0.5,
+    interval: { low: 0.1, high: 0.2 },
+    clamp: method === "additive" ? null : "reject",
+    intercept: method === "additive" ? 0 : null,
+    weight_total: method === "weighted_mean" ? 1 : null,
+    components: [row],
+    inputs_hash: HASH,
+    selected_component_id: method === "minimum" ? "quality" : null,
+  };
+}
+
 function errorFrom(action: () => unknown): Error & { readonly code?: unknown } {
   try {
     action();
@@ -156,23 +183,6 @@ describe("parseRequest", () => {
       "assay.invalid_number",
     ],
     [
-      "unsafe integer",
-      {
-        ...weightedInput(),
-        components: [
-          {
-            ...(
-              weightedInput().components as ReadonlyArray<
-                Record<string, unknown>
-              >
-            )[0],
-            value: Number.MAX_SAFE_INTEGER + 1,
-          },
-        ],
-      },
-      "assay.invalid_number",
-    ],
-    [
       "invalid Unicode scalar",
       {
         ...weightedInput(),
@@ -249,6 +259,46 @@ describe("parseRequest", () => {
   it("rejects malformed JSON with a stable value-free code", () => {
     expectCode(() => parseRequestJson('{"method":'), "assay.invalid_contract");
   });
+
+  it.each([2 ** 53, 2 ** 53 + 2, 1e20, 1e308])(
+    "accepts every finite binary64 value, including %s",
+    (value) => {
+      const request = parseRequest({
+        method: "additive",
+        method_version: "binary64.v1",
+        terms: [
+          {
+            id: "large",
+            label: "Large finite value",
+            value,
+            coefficient: 0,
+            operation: "add",
+          },
+        ],
+        clamp: null,
+      });
+
+      expect(request.method).toBe("additive");
+      if (request.method !== "additive") throw new Error("wrong request");
+      expect(request.terms[0]?.value).toBe(value);
+    },
+  );
+
+  it("rounds a 2^53 + 1 JSON literal to binary64 and rejects overflow", () => {
+    const finite = parseRequestJson(
+      '{"method":"additive","method_version":"binary64.v1","terms":[{"id":"large","label":"Large finite value","value":9007199254740993,"coefficient":0,"operation":"add"}],"clamp":null}',
+    );
+
+    if (finite.method !== "additive") throw new Error("wrong request");
+    expect(finite.terms[0]?.value).toBe(2 ** 53);
+    expectCode(
+      () =>
+        parseRequestJson(
+          '{"method":"additive","method_version":"binary64.v1","terms":[{"id":"large","label":"Large finite value","value":1e309,"coefficient":0,"operation":"add"}],"clamp":null}',
+        ),
+      "assay.invalid_number",
+    );
+  });
 });
 
 describe("parseScoreResult", () => {
@@ -277,4 +327,39 @@ describe("parseScoreResult", () => {
       "assay.invalid_inputs_hash",
     );
   });
+
+  it.each(["weighted_mean", "additive", "minimum"] as const)(
+    "rejects a %s point outside its contribution interval from objects and JSON",
+    (method) => {
+      const payload = contradictoryResult(method);
+
+      expectCode(() => parseScoreResult(payload), "assay.invalid_result");
+      expectCode(
+        () => parseScoreResultJson(JSON.stringify(payload)),
+        "assay.invalid_result",
+      );
+    },
+  );
+
+  it.each(["weighted_mean", "additive", "minimum"] as const)(
+    "rejects copied and null-prototype forged %s interval contradictions",
+    (method) => {
+      const payload = contradictoryResult(method);
+      const copied = {
+        ...payload,
+        components: [
+          ...(payload.components as ReadonlyArray<Record<string, unknown>>).map(
+            (row) => ({ ...row }),
+          ),
+        ],
+      };
+      const forged = Object.assign(
+        Object.create(null) as Record<string, unknown>,
+        copied,
+      );
+
+      expectCode(() => parseScoreResult(copied), "assay.invalid_result");
+      expectCode(() => parseScoreResult(forged), "assay.invalid_result");
+    },
+  );
 });

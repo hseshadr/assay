@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseRequest, weightedMean } from "./index.js";
+import {
+  parseRequest,
+  type WeightedMeanRequest,
+  weightedMean,
+} from "./index.js";
 
 describe("weightedMean", () => {
   it("normalizes, weights, and propagates intervals in declared order", () => {
@@ -72,5 +76,110 @@ describe("weightedMean", () => {
       },
     ]);
     expect(result.inputs_hash).toMatch(/^sha256:[0-9a-f]{64}$/u);
+  });
+
+  it("returns a deterministic lower-is-better result without an interval", () => {
+    const request = parseRequest({
+      method: "weighted_mean",
+      method_version: "deterministic.v1",
+      components: [
+        {
+          id: "latency",
+          label: "Latency",
+          value: 8,
+          scale: {
+            minimum: 0,
+            maximum: 10,
+            direction: "lower_is_better",
+          },
+          weight: 1,
+        },
+      ],
+      clamp: "reject",
+    });
+    if (request.method !== "weighted_mean") throw new Error("wrong request");
+
+    const result = weightedMean(request);
+
+    expect(result.score).toBe(0.2);
+    expect(result.interval).toBeNull();
+    expect(result.components[0]?.contribution_interval).toBeNull();
+  });
+
+  it("collapses a fully clamped component interval", () => {
+    const request = parseRequest({
+      method: "weighted_mean",
+      method_version: "clamped.v1",
+      components: [
+        {
+          id: "quality",
+          label: "Quality",
+          value: 2,
+          scale: {
+            minimum: 0,
+            maximum: 1,
+            direction: "higher_is_better",
+          },
+          interval: { low: 2, high: 3 },
+          weight: 1,
+        },
+      ],
+      clamp: "clamp",
+    });
+    if (request.method !== "weighted_mean") throw new Error("wrong request");
+
+    const result = weightedMean(request);
+
+    expect(result.score).toBe(1);
+    expect(result.interval).toBeNull();
+    expect(result.components[0]?.contribution_interval).toBeNull();
+  });
+
+  it("rejects non-finite weighted arithmetic", () => {
+    const request = parseRequest({
+      method: "weighted_mean",
+      method_version: "overflow.v1",
+      components: [
+        {
+          id: "first",
+          label: "First",
+          value: 1,
+          scale: { minimum: 0, maximum: 1, direction: "higher_is_better" },
+          weight: 1e308,
+        },
+        {
+          id: "second",
+          label: "Second",
+          value: 1,
+          scale: { minimum: 0, maximum: 1, direction: "higher_is_better" },
+          weight: 1e308,
+        },
+      ],
+      clamp: "reject",
+    });
+    if (request.method !== "weighted_mean") throw new Error("wrong request");
+
+    expect(() => weightedMean(request)).toThrow("assay.invalid_number");
+  });
+
+  it("rejects a request for a different method", () => {
+    const request = parseRequest({
+      method: "additive",
+      method_version: "wrong.v1",
+      terms: [
+        {
+          id: "term",
+          label: "Term",
+          value: 1,
+          coefficient: 1,
+          operation: "add",
+        },
+      ],
+      clamp: null,
+    });
+
+    expect(() =>
+      weightedMean(request as unknown as WeightedMeanRequest),
+    ).toThrow("assay.invalid_method");
   });
 });

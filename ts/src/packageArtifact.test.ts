@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +8,35 @@ import { describe, expect, it } from "vitest";
 
 const PACKAGE_ROOT = new URL("..", import.meta.url);
 const ARCHIVE_NAME = "edgeproc-assay-0.5.0-dev.0.tgz";
+const EXPECTED_ARCHIVE_SHA256 =
+  "55ebfa03c0a7ab1b987f9f97ea8574c480fe4b8ce973cd60e5acd8c8ea538088";
+const EXPECTED_MEMBERS = [
+  "package/LICENSE",
+  "package/README.md",
+  "package/dist/additive.d.ts",
+  "package/dist/additive.js",
+  "package/dist/compose.d.ts",
+  "package/dist/compose.js",
+  "package/dist/contracts.d.ts",
+  "package/dist/contracts.js",
+  "package/dist/errors.d.ts",
+  "package/dist/errors.js",
+  "package/dist/index.d.ts",
+  "package/dist/index.js",
+  "package/dist/metrics.d.ts",
+  "package/dist/metrics.js",
+  "package/dist/minimum.d.ts",
+  "package/dist/minimum.js",
+  "package/dist/normalize.d.ts",
+  "package/dist/normalize.js",
+  "package/dist/ranking.d.ts",
+  "package/dist/ranking.js",
+  "package/dist/requestHash.d.ts",
+  "package/dist/requestHash.js",
+  "package/dist/weightedMean.d.ts",
+  "package/dist/weightedMean.js",
+  "package/package.json",
+] as const;
 
 function runAt(
   cwd: string | URL,
@@ -26,9 +56,12 @@ function run(command: string, args: ReadonlyArray<string>): string {
 }
 
 function pack(destination: string): string {
-  run("pnpm", ["build"]);
   run("pnpm", ["pack", "--pack-destination", destination]);
   return join(destination, ARCHIVE_NAME);
+}
+
+function archiveHash(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
 describe("the real npm artifact", () => {
@@ -38,28 +71,51 @@ describe("the real npm artifact", () => {
       const archive = pack(destination);
       const names = run("tar", ["-tzf", archive]).trim().split("\n").sort();
 
-      expect(names).toContain("package/LICENSE");
-      expect(names).toContain("package/README.md");
-      expect(names).toContain("package/dist/index.js");
-      expect(names).toContain("package/dist/index.d.ts");
-      expect(names).toContain("package/package.json");
-      expect(
-        names.every(
-          (name) =>
-            [
-              "package/LICENSE",
-              "package/README.md",
-              "package/package.json",
-            ].includes(name) || /^package\/dist\/.+\.(?:js|d\.ts)$/u.test(name),
-        ),
-      ).toBe(true);
+      expect(names).toEqual([...EXPECTED_MEMBERS].sort());
 
       const text = run("tar", ["-xOzf", archive]);
       expect(text).not.toMatch(
         /canonicalBytes|generateSeedHex|signPayload|SignedReceipt|verifySignature|receipt-ui|@noble\/ed25519|canonicalize|Writ/u,
       );
+      const manifest = JSON.parse(
+        run("tar", ["-xOzf", archive, "package/package.json"]),
+      ) as Readonly<Record<string, unknown>>;
+      const readme = run("tar", ["-xOzf", archive, "package/README.md"]);
+      expect(manifest).toMatchObject({
+        name: "@edgeproc/assay",
+        version: "0.5.0-dev.0",
+        type: "module",
+        dependencies: {},
+        exports: {
+          ".": {
+            types: "./dist/index.d.ts",
+            import: "./dist/index.js",
+          },
+        },
+      });
+      expect(run("tar", ["-xOzf", archive, "package/LICENSE"])).toBe(
+        readFileSync(new URL("../../LICENSE", import.meta.url), "utf8"),
+      );
+      expect(readme.match(/Avow/gu)).toHaveLength(1);
     } finally {
       rmSync(destination, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("reproduces the exact archive digest with the pinned toolchain", () => {
+    const first = mkdtempSync(join(tmpdir(), "assay-repro-first-"));
+    const second = mkdtempSync(join(tmpdir(), "assay-repro-second-"));
+    try {
+      expect(process.versions.node).toBe("22.13.0");
+      expect(run("pnpm", ["--version"]).trim()).toBe("11.5.0");
+      const firstHash = archiveHash(pack(first));
+      const secondHash = archiveHash(pack(second));
+
+      expect(firstHash).toBe(secondHash);
+      expect(firstHash).toBe(EXPECTED_ARCHIVE_SHA256);
+    } finally {
+      rmSync(first, { recursive: true, force: true });
+      rmSync(second, { recursive: true, force: true });
     }
   }, 30_000);
 
@@ -91,6 +147,9 @@ for (const path of ["receipt", "keys", "canonical", "ledger", "writ"]) {
     throw new Error(\`legacy subpath resolved: \${path}\`);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("legacy subpath")) throw error;
+    if (!(error && typeof error === "object" && error.code === "ERR_PACKAGE_PATH_NOT_EXPORTED")) {
+      throw error;
+    }
   }
 }
 console.log(JSON.stringify(ids));

@@ -43,4 +43,39 @@ describe("normalize", () => {
 
     expect(new Set(executed).size).toBe(cases.length);
   });
+
+  it("rejects non-finite intermediate binary64 arithmetic", () => {
+    expect(() =>
+      normalize(
+        0,
+        {
+          minimum: -1e308,
+          maximum: 1e308,
+          direction: "higher_is_better",
+        },
+        "clamp",
+      ),
+    ).toThrow("assay.invalid_number");
+    expect(() =>
+      normalize(
+        1e308,
+        {
+          minimum: 0,
+          maximum: Number.MIN_VALUE,
+          direction: "higher_is_better",
+        },
+        "clamp",
+      ),
+    ).toThrow("assay.invalid_number");
+  });
+
+  it("rejects an out-of-range value under the reject policy", () => {
+    expect(() =>
+      normalize(
+        2,
+        { minimum: 0, maximum: 1, direction: "higher_is_better" },
+        "reject",
+      ),
+    ).toThrow("assay.out_of_range");
+  });
 });

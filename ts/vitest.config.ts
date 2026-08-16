@@ -10,6 +10,7 @@ export default defineConfig({
       exclude: ["src/**/*.test.ts", "src/index.ts"],
       // Portable scoring logic must keep its input, method, and replay branches covered.
       thresholds: {
+        perFile: true,
         lines: 90,
         functions: 90,
         branches: 90,

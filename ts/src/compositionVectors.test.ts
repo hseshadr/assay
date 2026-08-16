@@ -8,6 +8,7 @@ import {
   parseScoreResult,
   parseScoreResultJson,
 } from "./index.js";
+import { inputsHash, inputsPreimage } from "./requestHash.js";
 
 interface CompositionVector {
   readonly id: string;
@@ -35,6 +36,13 @@ const EXPECTED_HASHES = {
   almamesh_domain_strength_reverse_tie:
     "sha256:09c0694100a04d66119ca5712cb669459e7bece368e36f729d2bb1c98f4f1115",
 } as const;
+
+const BINARY64_REQUEST_JSON =
+  '{"method":"additive","method_version":"binary64.v1","terms":[{"id":"two53","label":"2^53","value":9007199254740992,"coefficient":0,"operation":"add"},{"id":"two53_plus_one","label":"2^53 + 1 literal","value":9007199254740993,"coefficient":0,"operation":"add"},{"id":"next_binary64","label":"Next binary64","value":9007199254740994,"coefficient":0,"operation":"add"},{"id":"large","label":"Large","value":1e20,"coefficient":0,"operation":"add"},{"id":"near_max","label":"Near max","value":1e308,"coefficient":0,"operation":"add"}],"clamp":null}';
+const BINARY64_PREIMAGE =
+  '["assay.request/v1","additive","binary64.v1",null,"f64:0000000000000000",[["two53","2^53","f64:4340000000000000","f64:0000000000000000","add",null],["two53_plus_one","2^53 + 1 literal","f64:4340000000000000","f64:0000000000000000","add",null],["next_binary64","Next binary64","f64:4340000000000001","f64:0000000000000000","add",null],["large","Large","f64:4415af1d78b58c40","f64:0000000000000000","add",null],["near_max","Near max","f64:7fe1ccf385ebc8a0","f64:0000000000000000","add",null]]]';
+const BINARY64_HASH =
+  "sha256:06bdaca8183f904e058025140da6166e9e0ea4abacc170129c0685cb579fd010";
 
 async function vectors(): Promise<ReadonlyArray<CompositionVector>> {
   const path = new URL(
@@ -144,5 +152,13 @@ describe("shared Python and TypeScript composition parity", () => {
     });
 
     expect(compose(request).score).toBe(1);
+  });
+
+  it("matches Python binary64 bits and hash above the safe-integer range", () => {
+    const request = parseRequest(JSON.parse(BINARY64_REQUEST_JSON) as unknown);
+
+    expect(inputsPreimage(request)).toBe(BINARY64_PREIMAGE);
+    expect(inputsHash(request)).toBe(BINARY64_HASH);
+    expect(compose(request).inputs_hash).toBe(BINARY64_HASH);
   });
 });

@@ -8,6 +8,10 @@ interface PackageManifest {
   readonly version?: string;
 }
 
+async function readPackageFile(name: string): Promise<string> {
+  return readFile(new URL(`../${name}`, import.meta.url), "utf8");
+}
+
 async function readManifest(): Promise<PackageManifest> {
   const text = await readFile(
     new URL("../package.json", import.meta.url),
@@ -52,5 +56,13 @@ describe("the public Assay package boundary", () => {
         "verifySignature",
       ]),
     );
+  });
+
+  it("documents the exact runtime and finite binary64 number contract", async () => {
+    const readme = await readPackageFile("README.md");
+
+    expect(readme).toContain("Node 22.13");
+    expect(readme).toContain("ESM-only");
+    expect(readme).toContain("finite IEEE-754 binary64");
   });
 });

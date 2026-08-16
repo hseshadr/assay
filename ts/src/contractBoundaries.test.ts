@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { parseRequest, parseRequestJson, parseScoreResult } from "./index.js";
+import {
+  ContractCode,
+  ContractValidationError,
+  parseRequest,
+  parseRequestJson,
+  parseScoreResult,
+} from "./index.js";
 
 interface Vector {
   readonly id: string;
@@ -46,6 +52,20 @@ function expectCode(action: () => unknown, code: string): void {
   } catch (error: unknown) {
     expect(error).toMatchObject({ code });
   }
+}
+
+function expectPrivateCode(
+  action: () => unknown,
+  code = "assay.invalid_object",
+): void {
+  try {
+    action();
+  } catch (error: unknown) {
+    expect(error).toMatchObject({ code, message: code });
+    expect(String(error)).not.toMatch(/PII_(?:GETTER|PROXY|DESCRIPTOR)/u);
+    return;
+  }
+  throw new Error("expected a private contract error");
 }
 
 describe("request boundary mutations", () => {
@@ -157,6 +177,169 @@ describe("request boundary mutations", () => {
       "assay.invalid_contract",
     );
   });
+
+  it("rejects symbols, non-enumerable fields, accessors, and custom prototypes", () => {
+    const symbolRoot = weighted();
+    Object.defineProperty(symbolRoot, Symbol("PII_SYMBOL"), {
+      enumerable: true,
+      value: "private",
+    });
+    expectPrivateCode(() => parseRequest(symbolRoot));
+
+    const hidden = component();
+    Object.defineProperty(hidden, "PII_HIDDEN", {
+      enumerable: false,
+      value: "private",
+    });
+    expectPrivateCode(() => parseRequest(weighted({ components: [hidden] })));
+
+    const accessor = component();
+    Object.defineProperty(accessor, "value", {
+      enumerable: true,
+      get: () => {
+        throw new Error("PII_GETTER");
+      },
+    });
+    expectPrivateCode(() => parseRequest(weighted({ components: [accessor] })));
+
+    expectPrivateCode(() =>
+      parseRequest(
+        Object.assign(Object.create({ inherited: true }), weighted()),
+      ),
+    );
+
+    const nestedPrototype = component();
+    nestedPrototype.scale = Object.assign(
+      Object.create({ inherited: true }),
+      nestedPrototype.scale,
+    );
+    expectPrivateCode(() =>
+      parseRequest(weighted({ components: [nestedPrototype] })),
+    );
+  });
+
+  it("translates hostile proxy reflection failures without leaking values", () => {
+    const prototypeFailure = new Proxy(weighted(), {
+      getPrototypeOf: () => {
+        throw new Error("PII_PROXY");
+      },
+    });
+    expectPrivateCode(() => parseRequest(prototypeFailure));
+
+    const descriptorFailure = new Proxy(weighted(), {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("PII_DESCRIPTOR");
+      },
+    });
+    expectPrivateCode(() => parseRequest(descriptorFailure));
+
+    const keysFailure = new Proxy(weighted(), {
+      ownKeys: () => {
+        throw new Error("PII_PROXY");
+      },
+    });
+    expectPrivateCode(() => parseRequest(keysFailure));
+
+    const disguisedFailure = new Proxy(weighted(), {
+      getPrototypeOf: () => {
+        throw new ContractValidationError(ContractCode.INVALID_WEIGHT);
+      },
+    });
+    expectPrivateCode(() => parseRequest(disguisedFailure));
+  });
+
+  it("reads data descriptors without invoking getters or proxy get traps", () => {
+    let getterCalls = 0;
+    const accessor = weighted();
+    Object.defineProperty(accessor, "method", {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        throw new Error("PII_GETTER");
+      },
+    });
+    expectPrivateCode(() => parseRequest(accessor));
+    expect(getterCalls).toBe(0);
+
+    let getCalls = 0;
+    const proxy = new Proxy(weighted(), {
+      get: () => {
+        getCalls += 1;
+        throw new Error("PII_PROXY");
+      },
+    });
+    expect(parseRequest(proxy).method).toBe("weighted_mean");
+    expect(getCalls).toBe(0);
+  });
+
+  it("rejects sparse, extended, and custom-prototype arrays", () => {
+    const sparse = new Array<Record<string, unknown>>(1);
+    expectPrivateCode(() => parseRequest(weighted({ components: sparse })));
+
+    const extended = [component()];
+    Object.assign(extended, { PII_EXTRA: "private" });
+    expectPrivateCode(() => parseRequest(weighted({ components: extended })));
+
+    const custom = [component()];
+    Object.setPrototypeOf(custom, Object.create(Array.prototype));
+    expectPrivateCode(() => parseRequest(weighted({ components: custom })));
+
+    let indexGetterCalls = 0;
+    const accessor = [component()];
+    Object.defineProperty(accessor, "0", {
+      enumerable: true,
+      get: () => {
+        indexGetterCalls += 1;
+        throw new Error("PII_GETTER");
+      },
+    });
+    expectPrivateCode(() => parseRequest(weighted({ components: accessor })));
+    expect(indexGetterCalls).toBe(0);
+
+    const symbol = [component()];
+    Object.defineProperty(symbol, Symbol("PII_SYMBOL"), {
+      enumerable: true,
+      value: "private",
+    });
+    expectPrivateCode(() => parseRequest(weighted({ components: symbol })));
+  });
+
+  it("takes a detached snapshot and rejects a shape that mutates during reflection", () => {
+    const input = weighted();
+    const parsed = parseRequest(input);
+    if (parsed.method === "additive") throw new Error("wrong request");
+    const sourceRows = input.components as Array<Record<string, unknown>>;
+    const parsedRows = parsed.components;
+    const first = sourceRows[0];
+    if (first === undefined) throw new Error("missing source component");
+    first.label = "Mutated";
+    sourceRows.push(component());
+
+    expect(parsedRows).toHaveLength(1);
+    expect(parsedRows[0]?.label).toBe("Quality");
+
+    let reads = 0;
+    const changing = new Proxy(weighted(), {
+      ownKeys: (target) => {
+        reads += 1;
+        return reads === 1
+          ? Reflect.ownKeys(target)
+          : [...Reflect.ownKeys(target), "PII_MUTATED"];
+      },
+    });
+    expectPrivateCode(() => parseRequest(changing));
+  });
+
+  it("rejects root and nested cycles with a stable value-free code", () => {
+    const root = weighted();
+    root.self = root;
+    expectPrivateCode(() => parseRequest(root));
+
+    const nested = component();
+    const scale = nested.scale as Record<string, unknown>;
+    scale.self = nested;
+    expectPrivateCode(() => parseRequest(weighted({ components: [nested] })));
+  });
 });
 
 describe("result replay mutations", () => {
@@ -229,5 +412,57 @@ describe("result replay mutations", () => {
       () => parseScoreResult({ ...minimum, interval: { low: 0.1, high: 0.2 } }),
       "assay.invalid_result",
     );
+  });
+
+  it("applies the same redacted descriptor boundary to result objects", () => {
+    const source = vectors()[0]?.expected;
+    if (source === undefined) throw new Error("missing weighted vector");
+    let getterCalls = 0;
+    const accessor = { ...source };
+    Object.defineProperty(accessor, "score", {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        throw new Error("PII_GETTER");
+      },
+    });
+
+    expectPrivateCode(() => parseScoreResult(accessor));
+    expect(getterCalls).toBe(0);
+
+    const nested = structuredClone(source);
+    const rows = nested.components as Array<Record<string, unknown>>;
+    Object.defineProperty(rows[0], "PII_HIDDEN", {
+      enumerable: false,
+      value: "private",
+    });
+    expectPrivateCode(() => parseScoreResult(nested));
+
+    const reflected = new Proxy(source, {
+      ownKeys: () => {
+        throw new Error("PII_PROXY");
+      },
+    });
+    expectPrivateCode(() => parseScoreResult(reflected));
+  });
+
+  it("detaches parsed results from immediate and queued source mutation", async () => {
+    const source = structuredClone(vectors()[0]?.expected) as
+      | Record<string, unknown>
+      | undefined;
+    if (source === undefined) throw new Error("missing weighted vector");
+    const parsed = parseScoreResult(source);
+    const sourceRows = source.components as Array<Record<string, unknown>>;
+
+    source.score = 0;
+    queueMicrotask(() => {
+      const first = sourceRows[0];
+      if (first !== undefined) first.contribution = 0;
+    });
+    await Promise.resolve();
+
+    expect(parsed.score).toBe(0.92);
+    expect(parsed.components[0]?.contribution).toBe(0.19);
+    expect(Object.isFrozen(parsed.components)).toBe(true);
   });
 });

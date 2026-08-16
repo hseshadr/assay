@@ -6,6 +6,8 @@ It does not sign evidence, store receipts, or decide whether a score should pass
 
 **Status:** `0.5.0-dev.0` is a local candidate. It is not published to npm.
 
+**Runtime:** ESM-only on Node 22.13 or newer.
+
 ## Try the local candidate
 
 Build the package from the repository root:
@@ -72,6 +74,7 @@ The first line is:
 
 ## What the output means
 
+- Every number is a finite IEEE-754 binary64 value. JSON integers above `2^53` are accepted and rounded to the nearest representable binary64 value, exactly as they are in Python.
 - `score` is the combined number. Weighted mean and minimum results are between 0 and 1. An additive result can be outside that range when `clamp` is `null`.
 - `components` shows each raw value, normalized value, coefficient, and contribution in declared order.
 - `interval` is `null` when the inputs have no uncertainty range.

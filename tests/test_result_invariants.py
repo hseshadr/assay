@@ -94,6 +94,83 @@ def _assert_invalid(payload: dict[str, object]) -> None:
     assert str(caught.value) == "assay.invalid_result"
 
 
+def _contradictory_payload(method: str) -> dict[str, object]:
+    normalized = None if method == "additive" else 0.5
+    weight = 1.0 if method == "weighted_mean" else None
+    row = {
+        "id": "quality",
+        "raw": 0.5,
+        "normalized": normalized,
+        "declared_weight": weight,
+        "operation": "add",
+        "coefficient": 1.0,
+        "contribution": 0.5,
+        "contribution_interval": {"low": 0.1, "high": 0.2},
+    }
+    return {
+        "schema": "assay.result/v1",
+        "method": {"id": method, "version": "review-v1"},
+        "score": 0.5,
+        "interval": {"low": 0.1, "high": 0.2},
+        "clamp": None if method == "additive" else "reject",
+        "intercept": 0.0 if method == "additive" else None,
+        "weight_total": weight,
+        "components": [row],
+        "inputs_hash": _HASH,
+        "selected_component_id": "quality" if method == "minimum" else None,
+    }
+
+
+@pytest.mark.parametrize("method", ["weighted_mean", "additive", "minimum"])
+def test_should_reject_point_outside_contribution_interval_from_direct_input(method: str) -> None:
+    # Given method-coherent aggregate bounds that exclude the row's point contribution
+    payload = _contradictory_payload(method)
+    # When direct construction validates the result contract
+    # Then local point containment is required independently of aggregate replay
+    _assert_invalid(payload)
+
+
+@pytest.mark.parametrize("method", ["weighted_mean", "additive", "minimum"])
+def test_should_reject_point_outside_contribution_interval_from_json(method: str) -> None:
+    # Given the same internally contradictory portable result JSON
+    payload = _contradictory_payload(method)
+    # When it crosses the JSON boundary
+    with pytest.raises(ContractValidationError) as caught:
+        ScoreResult.model_validate_json(json.dumps(payload))
+    # Then it fails with the stable result-invariant code
+    assert caught.value.code == ContractCode.INVALID_RESULT.value
+
+
+@pytest.mark.parametrize("factory", [_weighted, _additive, _minimum])
+def test_should_reject_point_outside_contribution_interval_on_copy(factory: object) -> None:
+    # Given a valid result and a copied row with contradictory local bounds
+    assert callable(factory)
+    result = factory()
+    method = result.method.id
+    bad_interval = (
+        Interval(low=0.3, high=0.4) if method == "additive" else Interval(low=0.1, high=0.2)
+    )
+    row = result.components[0].model_copy(update={"contribution_interval": bad_interval})
+    rows = (row, *result.components[1:])
+    aggregate = Interval(low=0.4, high=0.5) if method == "additive" else Interval(low=0.1, high=0.2)
+    # When a validated copy replays the changed row and matching aggregate bounds
+    with pytest.raises(ContractValidationError) as caught:
+        result.model_copy(update={"interval": aggregate, "components": rows})
+    # Then copy validation cannot bypass point containment
+    assert caught.value.code == ContractCode.INVALID_RESULT.value
+
+
+@pytest.mark.parametrize("method", ["weighted_mean", "additive", "minimum"])
+def test_should_revalidate_forged_interval_contradictions(method: str) -> None:
+    # Given a result instance forged without Pydantic validation
+    forged = ScoreResult.model_construct(**_contradictory_payload(method))
+    # When the forged instance re-enters the public validator
+    with pytest.raises(ContractValidationError) as caught:
+        ScoreResult.model_validate(forged)
+    # Then method-specific interval invariants are re-applied
+    assert caught.value.code == ContractCode.INVALID_RESULT.value
+
+
 @pytest.mark.parametrize("result", [_weighted(), _additive()])
 def test_should_forbid_selection_on_nonminimum_results(result: ScoreResult) -> None:
     # Given a valid weighted or additive result

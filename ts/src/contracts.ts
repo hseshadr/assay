@@ -25,6 +25,10 @@ export interface Component {
   readonly weight: number | null;
 }
 
+export interface WeightedComponent extends Component {
+  readonly weight: number;
+}
+
 export interface AdditiveTerm {
   readonly id: string;
   readonly label: string;
@@ -37,7 +41,7 @@ export interface AdditiveTerm {
 export interface WeightedMeanRequest {
   readonly method: "weighted_mean";
   readonly method_version: string;
-  readonly components: ReadonlyArray<Component>;
+  readonly components: ReadonlyArray<WeightedComponent>;
   readonly clamp: ClampPolicy;
 }
 
@@ -103,6 +107,122 @@ function fail(code: ContractCode): never {
   throw new ContractValidationError(code);
 }
 
+function invalidObject(): never {
+  fail(ContractCode.INVALID_OBJECT);
+}
+
+interface ReflectedShape {
+  readonly keys: ReadonlyArray<PropertyKey>;
+  readonly prototype: object | null;
+}
+
+function reflectedShape(value: object): ReflectedShape {
+  return {
+    keys: Reflect.ownKeys(value),
+    prototype: Reflect.getPrototypeOf(value),
+  };
+}
+
+function sameKeys(
+  first: ReadonlyArray<PropertyKey>,
+  second: ReadonlyArray<PropertyKey>,
+): boolean {
+  return (
+    first.length === second.length &&
+    first.every((key, index) => key === second[index])
+  );
+}
+
+function requireStableShape(value: object, shape: ReflectedShape): void {
+  const current = reflectedShape(value);
+  if (
+    current.prototype !== shape.prototype ||
+    !sameKeys(current.keys, shape.keys)
+  ) {
+    invalidObject();
+  }
+}
+
+function dataValue(
+  source: object,
+  key: PropertyKey,
+  enumerable = true,
+): unknown {
+  const descriptor = Reflect.getOwnPropertyDescriptor(source, key);
+  if (
+    descriptor === undefined ||
+    descriptor.enumerable !== enumerable ||
+    !("value" in descriptor)
+  ) {
+    invalidObject();
+  }
+  return descriptor.value;
+}
+
+function snapshotRecord(source: object, seen: WeakSet<object>): UnknownRecord {
+  const shape = reflectedShape(source);
+  if (shape.prototype !== Object.prototype && shape.prototype !== null) {
+    invalidObject();
+  }
+  const output: Record<string, unknown> = Object.create(null) as Record<
+    string,
+    unknown
+  >;
+  for (const key of shape.keys) {
+    if (typeof key !== "string") invalidObject();
+    output[key] = snapshotValue(dataValue(source, key), seen);
+  }
+  requireStableShape(source, shape);
+  return output;
+}
+
+function arrayLength(source: object, shape: ReflectedShape): number {
+  const value = dataValue(source, "length", false);
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    invalidObject();
+  }
+  if (shape.keys.length !== value + 1) invalidObject();
+  return value;
+}
+
+function snapshotArray(
+  source: ReadonlyArray<unknown>,
+  seen: WeakSet<object>,
+): ReadonlyArray<unknown> {
+  const shape = reflectedShape(source);
+  if (shape.prototype !== Array.prototype) invalidObject();
+  const length = arrayLength(source, shape);
+  const output: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
+    const key = String(index);
+    if (!shape.keys.includes(key)) invalidObject();
+    output.push(snapshotValue(dataValue(source, key), seen));
+  }
+  requireStableShape(source, shape);
+  return output;
+}
+
+function snapshotValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (seen.has(value)) invalidObject();
+  seen.add(value);
+  try {
+    return Array.isArray(value)
+      ? snapshotArray(value, seen)
+      : snapshotRecord(value, seen);
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function snapshotBoundary(value: unknown): unknown {
+  try {
+    return snapshotValue(value, new WeakSet<object>());
+  } catch {
+    return invalidObject();
+  }
+}
+
 function isPlainRecord(value: unknown): value is UnknownRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -143,9 +263,6 @@ function canonicalZero(value: number): number {
 
 function finite(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    fail(ContractCode.INVALID_NUMBER);
-  }
-  if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
     fail(ContractCode.INVALID_NUMBER);
   }
   return canonicalZero(value);
@@ -259,7 +376,7 @@ function parseScale(value: unknown): NativeScale {
 }
 
 export function parseNativeScale(value: unknown): NativeScale {
-  return deepFreeze(parseScale(value));
+  return deepFreeze(parseScale(snapshotBoundary(value)));
 }
 
 export function parseClampPolicy(value: unknown): ClampPolicy {
@@ -360,7 +477,7 @@ function parseWeighted(source: UnknownRecord): WeightedMeanRequest {
   return {
     method: "weighted_mean",
     method_version: identifier(shaped.method_version),
-    components,
+    components: components as ReadonlyArray<WeightedComponent>,
     clamp: policy,
   };
 }
@@ -417,14 +534,15 @@ function decodeJson(input: string): unknown {
 }
 
 export function parseRequest(input: unknown): ScoreRequest {
-  if (!isPlainRecord(input)) fail(ContractCode.INVALID_METHOD);
-  const method = methodId(input.method);
+  const snapshot = snapshotBoundary(input);
+  if (!isPlainRecord(snapshot)) fail(ContractCode.INVALID_METHOD);
+  const method = methodId(snapshot.method);
   const parsed =
     method === "weighted_mean"
-      ? parseWeighted(input)
+      ? parseWeighted(snapshot)
       : method === "additive"
-        ? parseAdditive(input)
-        : parseMinimum(input);
+        ? parseAdditive(snapshot)
+        : parseMinimum(snapshot);
   return deepFreeze(parsed);
 }
 
@@ -558,8 +676,18 @@ function boundedInterval(row: ExplainedComponent, maximum: number): boolean {
   return (
     interval === null ||
     (interval.low >= 0 &&
+      interval.low <= row.contribution &&
+      row.contribution <= interval.high &&
       interval.low < interval.high &&
       interval.high <= maximum)
+  );
+}
+
+function containsContribution(row: ExplainedComponent): boolean {
+  const interval = row.contribution_interval;
+  return (
+    interval === null ||
+    (interval.low <= row.contribution && row.contribution <= interval.high)
   );
 }
 
@@ -654,7 +782,8 @@ function validAdditiveRow(row: ExplainedComponent): boolean {
   return (
     row.normalized === null &&
     row.declared_weight === null &&
-    row.contribution === resultNumber(row.raw * row.coefficient)
+    row.contribution === resultNumber(row.raw * row.coefficient) &&
+    containsContribution(row)
   );
 }
 
@@ -735,7 +864,7 @@ function validateResult(result: ScoreResult): void {
 }
 
 export function parseScoreResult(input: unknown): ScoreResult {
-  const result = buildResult(resultShape(input));
+  const result = buildResult(resultShape(snapshotBoundary(input)));
   validateResult(result);
   return deepFreeze(result);
 }

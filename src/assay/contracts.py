@@ -1,4 +1,4 @@
-"""Immutable, JSON-safe contracts for portable score composition."""
+"""Immutable, JSON-safe contracts using finite IEEE-754 binary64 numbers."""
 
 from __future__ import annotations
 
@@ -657,7 +657,15 @@ def _sum_interval(rows: tuple[ExplainedComponent, ...]) -> _ContributionBounds:
 
 def _bounded_row(row: ExplainedComponent, maximum: float) -> bool:
     interval = row.contribution_interval
-    return interval is None or 0.0 <= interval.low < interval.high <= maximum
+    return interval is None or (
+        0.0 <= interval.low <= row.contribution <= interval.high <= maximum
+        and interval.low < interval.high
+    )
+
+
+def _contains_contribution(row: ExplainedComponent) -> bool:
+    interval = row.contribution_interval
+    return interval is None or interval.low <= row.contribution <= interval.high
 
 
 def _has_contribution_intervals(rows: tuple[ExplainedComponent, ...]) -> bool:
@@ -721,7 +729,10 @@ def _valid_weighted_rows(rows: tuple[ExplainedComponent, ...], total: float) -> 
 def _additive_row(row: ExplainedComponent) -> bool:
     contribution = _result_number(row.raw * row.coefficient)
     return (
-        row.normalized is None and row.declared_weight is None and row.contribution == contribution
+        row.normalized is None
+        and row.declared_weight is None
+        and row.contribution == contribution
+        and _contains_contribution(row)
     )
 
 

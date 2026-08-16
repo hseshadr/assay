@@ -72,10 +72,7 @@ function resultInterval(request: MinimumRequest): Interval | null {
 function firstMinimum(
   rows: ReadonlyArray<ExplainedComponent>,
 ): ExplainedComponent {
-  const first = rows[0];
-  if (first === undefined) {
-    throw new ContractValidationError(ContractCode.EMPTY_COMPONENTS);
-  }
+  const first = rows[0] as ExplainedComponent;
   let selected = first;
   for (const candidate of rows.slice(1)) {
     if (candidate.contribution < selected.contribution) selected = candidate;

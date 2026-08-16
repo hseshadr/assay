@@ -15,6 +15,7 @@ export type {
   Operation,
   ScoreRequest,
   ScoreResult,
+  WeightedComponent,
   WeightedMeanRequest,
 } from "./contracts.js";
 export {

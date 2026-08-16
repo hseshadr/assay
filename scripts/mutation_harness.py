@@ -1200,6 +1200,48 @@ _COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
         ),
     ),
     Mutation(
+        name="weighted-result-interval-contains-point",
+        claim="every weighted contribution lies inside its reported contribution interval",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_point_outside_contribution_interval_from_direct_input"
+            "[weighted_mean]",
+        ),
+        edit=_replace_once(
+            "        0.0 <= interval.low <= row.contribution <= interval.high <= maximum\n"
+            "        and interval.low < interval.high",
+            "        0.0 <= interval.low < interval.high <= maximum",
+        ),
+    ),
+    Mutation(
+        name="additive-result-interval-contains-point",
+        claim="every additive contribution lies inside its reported contribution interval",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_point_outside_contribution_interval_from_direct_input[additive]",
+        ),
+        edit=_replace_once(
+            "    return interval is None or interval.low <= row.contribution <= interval.high",
+            "    return True",
+        ),
+    ),
+    Mutation(
+        name="minimum-result-interval-contains-point",
+        claim="every minimum candidate lies inside its reported contribution interval",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_result_invariants.py::"
+            "test_should_reject_point_outside_contribution_interval_from_direct_input[minimum]",
+        ),
+        edit=_replace_once(
+            "        0.0 <= interval.low <= row.contribution <= interval.high <= maximum\n"
+            "        and interval.low < interval.high",
+            "        0.0 <= interval.low < interval.high <= maximum",
+        ),
+    ),
+    Mutation(
         name="minimum-result-selects-first-actual-minimum",
         claim="minimum result validation requires the selected ID to be the first minimum row",
         target="src/assay/contracts.py",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Final
 
 import pytest
 
@@ -13,9 +14,22 @@ from assay import (
     Interval,
     Operation,
     compose,
+    parse_request_json,
 )
-from assay.composite import inputs_hash
+from assay.composite import inputs_hash, inputs_preimage
 from assay.errors import ContractCode, ContractValidationError
+
+BINARY64_PREIMAGE: Final = (
+    '["assay.request/v1","additive","binary64.v1",null,"f64:0000000000000000",'
+    '[["two53","2^53","f64:4340000000000000","f64:0000000000000000","add",null],'
+    '["two53_plus_one","2^53 + 1 literal","f64:4340000000000000",'
+    '"f64:0000000000000000","add",null],["next_binary64","Next binary64",'
+    '"f64:4340000000000001","f64:0000000000000000","add",null],'
+    '["large","Large","f64:4415af1d78b58c40","f64:0000000000000000","add",null],'
+    '["near_max","Near max","f64:7fe1ccf385ebc8a0","f64:0000000000000000",'
+    '"add",null]]]'
+)
+BINARY64_HASH: Final = "sha256:06bdaca8183f904e058025140da6166e9e0ea4abacc170129c0685cb579fd010"
 
 
 def _term(
@@ -185,3 +199,30 @@ def test_should_hash_every_additive_request_field_class() -> None:
     hashes = {inputs_hash(baseline), *(inputs_hash(request) for request in variants)}
     # Then version/policy/intercept/order and every term field affect the digest
     assert len(hashes) == len(variants) + 1
+
+
+def test_should_match_typescript_binary64_bits_above_the_safe_integer_range() -> None:
+    # Given JSON containing finite binary64 values beyond JavaScript's safe-integer range
+    wire = (
+        '{"method":"additive","method_version":"binary64.v1","terms":['
+        '{"id":"two53","label":"2^53","value":9007199254740992,"coefficient":0,'
+        '"operation":"add"},{"id":"two53_plus_one","label":"2^53 + 1 literal",'
+        '"value":9007199254740993,"coefficient":0,"operation":"add"},'
+        '{"id":"next_binary64","label":"Next binary64","value":9007199254740994,'
+        '"coefficient":0,"operation":"add"},{"id":"large","label":"Large",'
+        '"value":1e20,"coefficient":0,"operation":"add"},{"id":"near_max",'
+        '"label":"Near max","value":1e308,"coefficient":0,"operation":"add"}],'
+        '"clamp":null}'
+    )
+    # When Python parses and encodes the same JSON-number domain as TypeScript
+    request = parse_request_json(wire)
+    # Then rounding, big-endian bits, and the portable digest are identical
+    assert tuple(term.value for term in request.terms) == (
+        2**53,
+        2**53,
+        2**53 + 2,
+        1e20,
+        1e308,
+    )
+    assert inputs_preimage(request) == BINARY64_PREIMAGE
+    assert inputs_hash(request) == BINARY64_HASH

@@ -1,10 +1,10 @@
 import {
-  type Component,
   type ExplainedComponent,
   type Interval,
   parseRequest,
   parseScoreResult,
   type ScoreResult,
+  type WeightedComponent,
   type WeightedMeanRequest,
 } from "./contracts.js";
 import { ContractCode, ContractValidationError } from "./errors.js";
@@ -25,33 +25,23 @@ function leftAdd(values: ReadonlyArray<number>): number {
 }
 
 function bounds(
-  component: Component,
+  interval: Interval,
+  component: WeightedComponent,
   request: WeightedMeanRequest,
 ): readonly [number, number] {
-  if (component.interval === null) {
-    const point = normalize(component.value, component.scale, request.clamp);
-    return [point, point];
-  }
-  const first = normalize(
-    component.interval.low,
-    component.scale,
-    request.clamp,
-  );
-  const second = normalize(
-    component.interval.high,
-    component.scale,
-    request.clamp,
-  );
+  const first = normalize(interval.low, component.scale, request.clamp);
+  const second = normalize(interval.high, component.scale, request.clamp);
   return [Math.min(first, second), Math.max(first, second)];
 }
 
 function contributionInterval(
-  component: Component,
+  component: WeightedComponent,
   request: WeightedMeanRequest,
   coefficient: number,
 ): Interval | null {
-  if (component.interval === null) return null;
-  const [low, high] = bounds(component, request);
+  const interval = component.interval;
+  if (interval === null) return null;
+  const [low, high] = bounds(interval, component, request);
   const result = {
     low: finiteOutput(low * coefficient),
     high: finiteOutput(high * coefficient),
@@ -60,19 +50,16 @@ function contributionInterval(
 }
 
 function row(
-  component: Component,
+  component: WeightedComponent,
   request: WeightedMeanRequest,
   coefficient: number,
 ): ExplainedComponent {
   const normalized = normalize(component.value, component.scale, request.clamp);
-  const weight = component.weight;
-  if (weight === null)
-    throw new ContractValidationError(ContractCode.MISSING_WEIGHT);
   return {
     id: component.id,
     raw: component.value,
     normalized,
-    declared_weight: weight,
+    declared_weight: component.weight,
     operation: "add",
     coefficient,
     contribution: finiteOutput(normalized * coefficient),
@@ -94,8 +81,7 @@ function resultInterval(
   const highs = rows.map(
     (item) => item.contribution_interval?.high ?? item.contribution,
   );
-  const interval = { low: leftAdd(lows), high: leftAdd(highs) };
-  return interval.low === interval.high ? null : interval;
+  return { low: leftAdd(lows), high: leftAdd(highs) };
 }
 
 export function weightedMean(input: WeightedMeanRequest): ScoreResult {
@@ -103,7 +89,7 @@ export function weightedMean(input: WeightedMeanRequest): ScoreResult {
   if (request.method !== "weighted_mean") {
     throw new ContractValidationError(ContractCode.INVALID_METHOD);
   }
-  const weights = request.components.map((component) => component.weight ?? 0);
+  const weights = request.components.map((component) => component.weight);
   const total = leftAdd(weights);
   const coefficients = weights.map((weight) => finiteOutput(weight / total));
   const rows = request.components.map((component, index) =>

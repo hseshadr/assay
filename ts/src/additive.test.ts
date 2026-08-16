@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { additive, parseRequest } from "./index.js";
+import { type AdditiveRequest, additive, parseRequest } from "./index.js";
 
 describe("additive", () => {
   it("adds and subtracts left to right before applying the final policy", () => {
@@ -63,5 +63,90 @@ describe("additive", () => {
         contribution_interval: { low: 0.1, high: 0.3 },
       },
     ]);
+  });
+
+  it("rejects non-finite term arithmetic and an out-of-range final score", () => {
+    const overflow = parseRequest({
+      method: "additive",
+      method_version: "overflow.v1",
+      terms: [
+        {
+          id: "term",
+          label: "Term",
+          value: 1e308,
+          coefficient: 2,
+          operation: "add",
+        },
+      ],
+      clamp: null,
+    });
+    const rejected = parseRequest({
+      method: "additive",
+      method_version: "reject.v1",
+      terms: [
+        {
+          id: "term",
+          label: "Term",
+          value: 2,
+          coefficient: 1,
+          operation: "add",
+        },
+      ],
+      clamp: "reject",
+    });
+    if (overflow.method !== "additive" || rejected.method !== "additive") {
+      throw new Error("wrong request");
+    }
+
+    expect(() => additive(overflow)).toThrow("assay.invalid_number");
+    expect(() => additive(rejected)).toThrow("assay.out_of_range");
+  });
+
+  it("collapses the final interval only after clamping its endpoints", () => {
+    const request = parseRequest({
+      method: "additive",
+      method_version: "clamp.v1",
+      terms: [
+        {
+          id: "term",
+          label: "Term",
+          value: 2.5,
+          coefficient: 1,
+          operation: "add",
+          interval: { low: 2, high: 3 },
+        },
+      ],
+      clamp: "clamp",
+    });
+    if (request.method !== "additive") throw new Error("wrong request");
+
+    const result = additive(request);
+
+    expect(result.score).toBe(1);
+    expect(result.interval).toBeNull();
+    expect(result.components[0]?.contribution_interval).toEqual({
+      low: 2,
+      high: 3,
+    });
+  });
+
+  it("rejects a request for a different method", () => {
+    const request = parseRequest({
+      method: "minimum",
+      method_version: "wrong.v1",
+      components: [
+        {
+          id: "quality",
+          label: "Quality",
+          value: 1,
+          scale: { minimum: 0, maximum: 1, direction: "higher_is_better" },
+        },
+      ],
+      clamp: "reject",
+    });
+
+    expect(() => additive(request as unknown as AdditiveRequest)).toThrow(
+      "assay.invalid_method",
+    );
   });
 });

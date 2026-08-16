@@ -228,3 +228,25 @@ def test_should_exclude_cryptography_dependencies_from_metadata_and_lock() -> No
     # Then
     assert "pynacl" not in dependency_state
     assert "rfc8785" not in dependency_state
+
+
+def test_should_document_the_assay_only_repository_workflow() -> None:
+    # Given / When
+    guidance = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    # Then
+    assert guidance.startswith("# Assay scoring engine")
+    assert "uv run poe gate" in guidance
+    assert "corepack pnpm --dir ts gate" in guidance
+    assert "Node 22.13" in guidance
+    assert "Avow trust-kernel monorepo" not in guidance
+    assert "src/avow" not in guidance
+    assert "src/writ" not in guidance
+    assert "receipt-ui" not in guidance
+
+
+def test_should_document_the_portable_binary64_contract() -> None:
+    # Given / When
+    source = (ROOT / "src" / "assay" / "contracts.py").read_text(encoding="utf-8")
+    # Then
+    assert "finite IEEE-754 binary64" in source
+    assert "safe integer" not in source
