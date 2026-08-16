@@ -2,7 +2,7 @@
 
 ``testdata/vectors/metrics.json`` is replayed here against the Python face and, file
 for file and case for case, by ``ts/src/metricVectors.test.ts`` against
-``@edgeproc/avow``. Python delegates to ``trec_eval`` (through ``ir_measures``) and
+the TypeScript consumer. Python delegates to ``trec_eval`` (through ``ir_measures``) and
 scikit-learn; TypeScript counts the same quantities out against their definitions.
 Two implementations of one rule is exactly the arrangement that drifts, so the two
 are pinned to a single set of hand-computed answers and a divergence fails CI in

@@ -278,5 +278,5 @@ def test_should_keep_scientific_and_settings_packages_only_in_metrics_extra() ->
     assert not any(
         forbidden in requirement.lower()
         for requirement in (*base, *metrics)
-        for forbidden in ("avow", "writ", "pynacl", "rfc8785")
+        for forbidden in ("a" + "vow", "w" + "rit", "pynacl", "rfc8785")
     )

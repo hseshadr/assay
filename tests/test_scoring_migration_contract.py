@@ -1,4 +1,4 @@
-"""Pure scoring expectations preserved across the Assay/Avow split.
+"""Pure scoring expectations preserved across the repository split.
 
 These executable migration cases are conformance inputs for Tasks 2-5. They retain the
 numeric and privacy behavior that used to be asserted only through signed receipts.

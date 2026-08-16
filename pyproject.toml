@@ -73,8 +73,11 @@ only-include = [
   "testdata/vectors/metrics.json",
   "testdata/vectors/normalize.json",
   "README.md",
-  "CHANGELOG.md",
   "LICENSE",
+]
+exclude = [
+  "/tests/test_repository_identity.py",
+  "/tests/test_scoring_artifacts.py",
 ]
 
 [tool.ruff]
@@ -137,7 +140,7 @@ exclude_lines = [
     "@abstractmethod",
     # Anchored to a bare `...` stub body ONLY. The unanchored `\.\.\.` this
     # replaces also matched the ellipsis inside `tuple[X, ...]` annotations, which
-    # silently excluded every function whose signature carried one. Coverage must not
+    # silently excluded every function whose annotation carried one. Coverage must not
     # be able to hide code based on an annotation.
     "^\\s*\\.\\.\\.$",
 ]

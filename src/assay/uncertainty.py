@@ -9,6 +9,7 @@ seed (BCa can fail on low-variance samples)."""
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
@@ -69,16 +70,18 @@ def _bootstrap_mean(data: Sequence[float], settings: _BootstrapSettings) -> tupl
 
 
 def _bootstrap_result(data: Sequence[float], settings: _BootstrapSettings) -> object:
-    return _call(
-        "scipy.stats",
-        "bootstrap",
-        (data,),
-        load_callable("numpy", "mean"),
-        n_resamples=settings.n_resamples,
-        confidence_level=settings.confidence_level,
-        method="percentile",
-        rng=settings.seed,
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return _call(
+            "scipy.stats",
+            "bootstrap",
+            (data,),
+            load_callable("numpy", "mean"),
+            n_resamples=settings.n_resamples,
+            confidence_level=settings.confidence_level,
+            method="percentile",
+            rng=settings.seed,
+        )
 
 
 def _confidence_bounds(result: object) -> tuple[object, object]:

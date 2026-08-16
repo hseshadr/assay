@@ -14,9 +14,7 @@ coverage.json
 .DS_Store
 .env
 
-# Signing key material — defense-in-depth. `assay keygen` writes a real
-# private signing key; never let one be committed. Public verify keys shipped
-# for demos live under demo/ and are added explicitly.
+# Local credentials and generated secret material.
 private.key
 signing.key
 *.key

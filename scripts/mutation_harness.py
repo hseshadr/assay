@@ -517,6 +517,19 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
             "    pass",
         ),
     ),
+    Mutation(
+        name="uncertainty-suppresses-dependency-runtime-warnings",
+        claim="a rejected huge finite bootstrap emits only Assay's stable error",
+        target=_UNCERTAINTY,
+        guard=(
+            "tests/test_metric_resource_boundaries.py::"
+            "test_should_suppress_dependency_warnings_for_a_rejected_bootstrap",
+        ),
+        edit=_replace_once(
+            '        warnings.simplefilter("ignore", RuntimeWarning)',
+            '        warnings.simplefilter("always", RuntimeWarning)',
+        ),
+    ),
     # ----------------------------------------------------------------------------------
     # The envelope: what a receipt actually proves.
     # ----------------------------------------------------------------------------------
