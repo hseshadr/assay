@@ -193,6 +193,17 @@ def test_should_mean_average_precision_across_a_query_set() -> None:
     assert mean_average_precision(queries) == pytest.approx(0.75)
 
 
+def test_should_preserve_numpy_map_rounding_bit_for_bit() -> None:
+    # Given AP values 1, 1/3, 1 whose mean differs by one ULP under fmean
+    queries = (
+        _query("first", ["a"], ["a"]),
+        _query("third", ["a"], ["b", "c", "a"]),
+        _query("last", ["a"], ["a"]),
+    )
+    # Then the published NumPy aggregation bit pattern remains unchanged
+    assert mean_average_precision(queries).hex() == "0x1.8e38e38e38e38p-1"
+
+
 # --------------------------------------------------------------------------------------
 # Refusals — every one of these would otherwise return a number nobody should believe
 # --------------------------------------------------------------------------------------

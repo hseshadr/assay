@@ -65,6 +65,7 @@ _AGREEMENT = "src/assay/agreement.py"
 _METRICS = "src/assay/metrics.py"
 _CALIBRATION = "src/assay/calibration.py"
 _UNCERTAINTY = "src/assay/uncertainty.py"
+_OPTIONAL = "src/assay/_optional.py"
 _ENVELOPE = "src/avow/envelope.py"
 _LEDGER = "src/avow/ledger.py"
 _SETTINGS = "src/assay/settings.py"
@@ -171,8 +172,8 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_ranking.py::test_should_charge_for_the_empty_positions_when_k_exceeds_the_list",
         ),
         edit=_replace_once(
-            "    return _score(relevant, ranked, P @ k)",
-            "    return _score(relevant, ranked, P @ 1)",
+            '    return _score(relevant, ranked, _cut("P", k))',
+            '    return _score(relevant, ranked, _cut("P", 1))',
         ),
     ),
     Mutation(
@@ -184,8 +185,8 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_ranking.py::test_should_separate_precision_from_recall_when_relevant_set_is_larger_than_k",
         ),
         edit=_replace_once(
-            "    return _score(relevant, ranked, R @ k)",
-            "    return _score(relevant, ranked, P @ k)",
+            '    return _score(relevant, ranked, _cut("R", k))',
+            '    return _score(relevant, ranked, _cut("P", k))',
         ),
     ),
     Mutation(
@@ -210,8 +211,8 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_ranking.py::test_should_divide_average_precision_by_the_full_relevant_set",
         ),
         edit=_replace_once(
-            "    return _score(relevant, ranked, AP)",
-            "    return _score(relevant, ranked, RR)",
+            '    return _score(relevant, ranked, load_object("ir_measures", "AP"))',
+            '    return _score(relevant, ranked, load_object("ir_measures", "RR"))',
         ),
     ),
     Mutation(
@@ -222,6 +223,16 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         edit=_replace_once(
             "    return 2 * precision * recall / (precision + recall)",
             "    return (precision + recall) / 2",
+        ),
+    ),
+    Mutation(
+        name="ranking-means-preserve-numpy-rounding",
+        claim="ranking aggregates preserve their published binary64 bit patterns",
+        target=_RANKING,
+        guard=("tests/test_ranking.py::test_should_preserve_numpy_map_rounding_bit_for_bit",),
+        edit=_replace_once(
+            '    raw = call_dependency(load_callable("numpy", "mean"), values)',
+            '    raw = __import__("statistics").fmean(values)',
         ),
     ),
     # ----------------------------------------------------------------------------------
@@ -244,8 +255,8 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         target=_RANKING,
         guard=("tests/test_ranking.py::test_should_refuse_a_fractional_relevance_gain",),
         edit=_replace_once(
-            "        if not math.isfinite(gain) or gain < 0 or gain != int(gain):",
-            "        if not math.isfinite(gain) or gain < 0:",
+            "    if gain != int(gain):\n        raise InvalidRankingRequest",
+            "    if gain != int(gain):\n        pass",
         ),
     ),
     Mutation(
@@ -256,8 +267,10 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_ranking.py::test_should_refuse_nonfinite_relevance_gain_without_echoing_id",
         ),
         edit=_replace_once(
-            "        if not math.isfinite(gain) or gain < 0 or gain != int(gain):",
-            "        if gain < 0 or gain != int(gain):",
+            "    if not math.isfinite(gain):\n        raise InvalidRankingRequest\n"
+            "    if not 0 <= gain <= MAX_RELEVANCE_GAIN:\n        raise InvalidRankingRequest",
+            "    if not math.isfinite(gain):\n        pass\n"
+            "    if not 0 <= gain <= MAX_RELEVANCE_GAIN:\n        pass",
         ),
     ),
     Mutation(
@@ -290,9 +303,8 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         # complain: it sorts the band names instead, so weak/moderate/strong silently
         # becomes moderate < strong < weak and the SAME ratings score +2/3 instead of -1/3.
         edit=_replace_once(
-            "    return float(cohen_kappa_score(rater_a, rater_b, "
-            'labels=list(scale), weights="quadratic"))',
-            '    return float(cohen_kappa_score(rater_a, rater_b, weights="quadratic"))',
+            '            labels=list(scale),\n            weights="quadratic",',
+            '            weights="quadratic",',
         ),
     ),
     Mutation(
@@ -306,8 +318,8 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         # Unweighted kappa scores the two rater pairs in that first test IDENTICALLY
         # (1/3 each), which is precisely the blindness the weighting exists to remove.
         edit=_replace_once(
-            'labels=list(scale), weights="quadratic"))',
-            "labels=list(scale)))",
+            '            weights="quadratic",',
+            "            weights=None,",
         ),
     ),
     Mutation(
@@ -318,8 +330,8 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_agreement.py::test_should_correct_tau_for_ties_the_three_band_scale_forces",
         ),
         edit=_replace_once(
-            'kendalltau(ordinals_a, ordinals_b, variant="b")',
-            'kendalltau(ordinals_a, ordinals_b, variant="c")',
+            'raw = _call("scipy.stats", "kendalltau", ordinals_a, ordinals_b, variant="b")',
+            'raw = _call("scipy.stats", "kendalltau", ordinals_a, ordinals_b, variant="c")',
         ),
     ),
     Mutation(
@@ -360,6 +372,18 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
             "    if len(set(rater_a) | set(rater_b)) < _MIN_LEVELS:\n        return 1.0",
         ),
     ),
+    Mutation(
+        name="agreement-means-preserve-numpy-rounding",
+        claim="agreement aggregates preserve their published binary64 bit patterns",
+        target=_AGREEMENT,
+        guard=(
+            "tests/test_agreement.py::test_should_preserve_numpy_weighted_mean_rounding_bit_for_bit",
+        ),
+        edit=_replace_once(
+            '    return _finite_float(_call("numpy", "mean", values))',
+            '    return __import__("statistics").fmean(values)',
+        ),
+    ),
     # ----------------------------------------------------------------------------------
     # The confusion counts. A rate hides which way a system fails; these are the four
     # numbers that say, and two of them are trivially swappable without any total moving.
@@ -372,10 +396,21 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         # sklearn ravels the matrix as tn, fp, fn, tp. Swapping the middle pair keeps
         # every total identical and inverts what the system is failing at.
         edit=_replace_once(
-            "    true_negatives, false_positives, false_negatives, "
-            "true_positives = confusion_matrix(",
-            "    true_negatives, false_negatives, false_positives, "
-            "true_positives = confusion_matrix(",
+            "    true_negatives, false_positives, false_negatives, true_positives = cast(\n",
+            "    true_negatives, false_negatives, false_positives, true_positives = cast(\n",
+        ),
+    ),
+    Mutation(
+        name="metrics-confusion-fields-keep-public-order",
+        claim="the public confusion tuple stays tp, fp, tn, fn",
+        target=_METRICS,
+        guard=(
+            "tests/test_metrics.py::"
+            "test_should_preserve_the_published_confusion_count_value_contract",
+        ),
+        edit=_replace_once(
+            "    true_positives: int\n    false_positives: int\n    true_negatives: int",
+            "    true_negatives: int\n    false_positives: int\n    true_positives: int",
         ),
     ),
     Mutation(
@@ -417,14 +452,28 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         name="metrics-missing-extra-has-a-stable-code",
         claim="a base install never leaks the missing module name from an optional face",
-        target=_METRICS,
+        target=_OPTIONAL,
         guard=(
             "tests/test_optional_metrics_boundary.py::"
             "test_should_raise_only_stable_redacted_code_when_metrics_extra_is_missing",
         ),
         edit=_replace_once(
-            "    except ImportError:\n        raise MetricsExtraMissing from None",
-            "    except ImportError:\n        raise",
+            "    try:\n        return import_module(name)\n"
+            "    except Exception:\n        return None",
+            "    try:\n        return import_module(name)\n    except Exception:\n        raise",
+        ),
+    ),
+    Mutation(
+        name="metrics-successful-optional-imports-are-cached",
+        claim="a recovered optional callable stays usable after its package disappears",
+        target=_OPTIONAL,
+        guard=(
+            "tests/test_optional_metrics_boundary.py::"
+            "test_should_cache_a_successfully_loaded_exact_callable",
+        ),
+        edit=_replace_once(
+            "@cache\ndef load_callable(module_name: str, name: str) -> OptionalCallable:",
+            "def load_callable(module_name: str, name: str) -> OptionalCallable:",
         ),
     ),
     Mutation(
@@ -436,9 +485,10 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
             "test_should_not_average_reliability_gaps_as_equal_sized_bins",
         ),
         edit=_replace_once(
-            "    return sum(b.count / total * abs(b.mean_predicted - b.fraction_positive) "
+            "    result = sum(b.count / total * abs(b.mean_predicted - b.fraction_positive) "
             "for b in bins)",
-            "    return sum(abs(b.mean_predicted - b.fraction_positive) for b in bins) / len(bins)",
+            "    result = sum(abs(b.mean_predicted - b.fraction_positive) for b in bins) "
+            "/ len(bins)",
         ),
     ),
     Mutation(
@@ -446,8 +496,8 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         claim="invalid calibration inputs produce Assay's stable value-free code",
         target=_CALIBRATION,
         guard=(
-            "tests/test_calibration.py::"
-            "test_should_refuse_invalid_calibration_inputs_with_stable_code",
+            "tests/test_metric_resource_boundaries.py::"
+            "test_should_reject_calibration_bounds_before_calling_sklearn",
         ),
         edit=_replace_once(
             "    _validate(y_true, y_score, n_bins)",
@@ -547,7 +597,9 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         claim="the README's honesty floor of 30 samples is the shipped default",
         target=_SETTINGS,
         guard=("tests/test_settings.py::test_should_use_documented_defaults_when_no_env",),
-        edit=_replace_once("    min_samples: int = 30", "    min_samples: int = 3"),
+        edit=_replace_once(
+            "    min_samples: _SampleCount = 30", "    min_samples: _SampleCount = 3"
+        ),
     ),
     Mutation(
         name="documented-confidence-level-is-95pc",
@@ -555,7 +607,7 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         target=_SETTINGS,
         guard=("tests/test_settings.py::test_should_use_documented_defaults_when_no_env",),
         edit=_replace_once(
-            "    confidence_level: float = 0.95", "    confidence_level: float = 0.5"
+            "    confidence_level: _Confidence = 0.95", "    confidence_level: _Confidence = 0.5"
         ),
     ),
     Mutation(
@@ -565,7 +617,7 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         guard=(
             "tests/test_documented_constants.py::test_should_match_documented_default_ranking_cutoff",
         ),
-        edit=_replace_once("    ranking_k: int = 10", "    ranking_k: int = 4"),
+        edit=_replace_once("    ranking_k: _RankingK = 10", "    ranking_k: _RankingK = 4"),
     ),
     Mutation(
         name="documented-golden-vector-count-is-12",

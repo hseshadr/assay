@@ -1,0 +1,82 @@
+"""Built artifacts describe and contain only the Assay scoring product."""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import tarfile
+import zipfile
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parents[1]
+_BOUNDARY = "Assay computes scores; Avow seals evidence."
+_LEGACY_PATHS = (
+    "/avow/",
+    "/writ/",
+    "/demo/",
+    "/docs/",
+    "quickstart",
+    "canonical.json",
+    "receipts.json",
+)
+_LEGACY_WORDS = ("key", "signature", "receipt", "ledger")
+
+
+@pytest.fixture(scope="module")
+def built_artifacts(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    out = tmp_path_factory.mktemp("artifacts")
+    subprocess.run(  # noqa: S603 - fixed build command and test-owned output
+        ["uv", "build", "--out-dir", str(out)],  # noqa: S607
+        cwd=_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return next(out.glob("*.whl")), next(out.glob("*.tar.gz"))
+
+
+def _sdist_names(path: Path) -> tuple[str, ...]:
+    with tarfile.open(path, "r:gz") as archive:
+        return tuple(member.name.lower() for member in archive.getmembers())
+
+
+def _wheel_metadata(path: Path) -> str:
+    with zipfile.ZipFile(path) as archive:
+        name = next(item for item in archive.namelist() if item.endswith(".dist-info/METADATA"))
+        return archive.read(name).decode()
+
+
+def _sdist_readme(path: Path) -> str:
+    with tarfile.open(path, "r:gz") as archive:
+        member = next(item for item in archive.getmembers() if item.name.endswith("/README.md"))
+        stream = archive.extractfile(member)
+        assert stream is not None
+        return stream.read().decode()
+
+
+def _words(text: str) -> Iterator[str]:
+    yield from re.findall(r"[a-z]+", text.lower())
+
+
+def test_should_exclude_legacy_product_assets_from_the_sdist(
+    built_artifacts: tuple[Path, Path],
+) -> None:
+    _, sdist = built_artifacts
+    names = _sdist_names(sdist)
+    assert not any(token in name for name in names for token in _LEGACY_PATHS)
+    assert any(name.endswith("/testdata/vectors/composition.json") for name in names)
+    assert any(name.endswith("/testdata/vectors/metrics.json") for name in names)
+
+
+def test_should_keep_one_boundary_sentence_and_no_legacy_product_copy(
+    built_artifacts: tuple[Path, Path],
+) -> None:
+    wheel, sdist = built_artifacts
+    for text in (_wheel_metadata(wheel), _sdist_readme(sdist)):
+        assert text.count(_BOUNDARY) == 1
+        remainder = text.replace(_BOUNDARY, "")
+        assert "avow" not in _words(remainder)
+        assert not set(_LEGACY_WORDS) & set(_words(remainder))

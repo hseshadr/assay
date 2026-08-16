@@ -15,6 +15,7 @@ __all__ = [
     "InvalidMethod",
     "InvalidRankingRequest",
     "InvalidScoreRequest",
+    "InvalidSettings",
     "MetricsExtraMissing",
     "ReplayRefused",
     "ScoringCorePending",
@@ -124,6 +125,12 @@ class MetricsExtraMissing(AssayError):
     """An optional metric was requested without metric dependencies."""
 
     code: str = "assay.metrics_extra_missing"
+
+
+class InvalidSettings(AssayError):
+    """Runtime settings are invalid or outside documented resource bounds."""
+
+    code: str = "assay.invalid_settings"
 
 
 class ReplayRefused(AssayError):

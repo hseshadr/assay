@@ -39,31 +39,18 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from statistics import fmean
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel, ConfigDict
 
+from assay._optional import call_dependency, dependency_failed, load_callable, load_object
 from assay.errors import EmptyRelevantSet, InvalidRankingRequest
-from assay.metrics import require_metrics_extra
+from assay.limits import MAX_ITEMS, MAX_RANKING_K, MAX_RELEVANCE_GAIN
 from assay.models import RankedQuery
 from assay.uncertainty import Estimate, mean_interval
 
 if TYPE_CHECKING:
-    from ir_measures import AP, RR, Measure, P, R, calc_aggregate, nDCG
-
     from assay.settings import AssaySettings
-else:
-    try:
-        from ir_measures import AP, RR, Measure, P, R, calc_aggregate, nDCG
-    except ImportError:
-        AP = None
-        RR = None
-        Measure = object
-        P = None
-        R = None
-        calc_aggregate = None
-        nDCG = None
 
 type Judgments = Mapping[str, float]
 """Document id -> graded gain. Gain > 0 means relevant; larger means more relevant."""
@@ -131,12 +118,12 @@ def binary_judgments(doc_ids: Iterable[str]) -> dict[str, float]:
 
 
 def _require_positive_k(k: int) -> None:
-    if k <= 0:
+    if isinstance(k, bool) or not 0 < k <= MAX_RANKING_K:
         raise InvalidRankingRequest
 
 
 def _require_ranked(ranked: Sequence[str]) -> None:
-    if not ranked:
+    if not ranked or len(ranked) > MAX_ITEMS:
         raise InvalidRankingRequest("ranked list is empty; nothing was returned to score")
     if len(set(ranked)) != len(ranked):
         raise InvalidRankingRequest("ranked list holds the same document id twice")
@@ -150,8 +137,18 @@ def _require_graded(relevant: Judgments) -> None:
     document from relevant to irrelevant and quietly change the answer, and there is no
     reference semantics saying which way it should go."""
     for gain in relevant.values():
-        if not math.isfinite(gain) or gain < 0 or gain != int(gain):
-            raise InvalidRankingRequest
+        _require_gain(gain)
+
+
+def _require_gain(gain: float) -> None:
+    if isinstance(gain, bool):
+        raise InvalidRankingRequest
+    if not math.isfinite(gain):
+        raise InvalidRankingRequest
+    if not 0 <= gain <= MAX_RELEVANCE_GAIN:
+        raise InvalidRankingRequest
+    if gain != int(gain):
+        raise InvalidRankingRequest
 
 
 def _require_relevant(relevant: Judgments) -> None:
@@ -160,6 +157,8 @@ def _require_relevant(relevant: Judgments) -> None:
 
 
 def _validate(relevant: Judgments, ranked: Sequence[str]) -> None:
+    if len(relevant) > MAX_ITEMS:
+        raise InvalidRankingRequest
     _require_ranked(ranked)
     _require_graded(relevant)
     _require_relevant(relevant)
@@ -187,10 +186,36 @@ def _run(ranked: Sequence[str]) -> dict[str, dict[str, float]]:
     return {_QUERY: {doc: float(len(ranked) - i) for i, doc in enumerate(ranked)}}
 
 
-def _score(relevant: Judgments, ranked: Sequence[str], measure: Measure) -> float:
+def _score(relevant: Judgments, ranked: Sequence[str], measure: object) -> float:
     """One trec_eval evaluation of one query. Validation is the caller's job."""
-    require_metrics_extra()
-    return float(calc_aggregate([measure], _qrels(relevant), _run(ranked))[measure])
+    aggregate = load_callable("ir_measures", "calc_aggregate")
+    raw = call_dependency(aggregate, [measure], _qrels(relevant), _run(ranked))
+    value = call_dependency(_aggregate_value, raw, measure)
+    if dependency_failed(raw) or dependency_failed(value):
+        raise InvalidRankingRequest
+    return _finite_float(value)
+
+
+def _aggregate_value(raw: object, measure: object) -> object:
+    return cast(Mapping[object, object], raw)[measure]
+
+
+def _finite_float(value: object) -> float:
+    converted = call_dependency(float, value)
+    if dependency_failed(converted) or not math.isfinite(cast(float, converted)):
+        raise InvalidRankingRequest
+    return cast(float, converted)
+
+
+def _cut(name: str, k: int) -> object:
+    value = call_dependency(_apply_cut, load_object("ir_measures", name), k)
+    if dependency_failed(value):
+        raise InvalidRankingRequest
+    return value
+
+
+def _apply_cut(measure: object, k: int) -> object:
+    return measure @ k  # type: ignore[operator]
 
 
 def precision_at_k(relevant: Judgments, ranked: Sequence[str], k: int) -> float:
@@ -200,9 +225,8 @@ def precision_at_k(relevant: Judgments, ranked: Sequence[str], k: int) -> float:
     now trec_eval's own arithmetic. A result list shorter than k is a real cost to the
     user, and dividing by the list length would let a ranker score a perfect
     precision@10 by returning one good hit."""
-    require_metrics_extra()
     _validate_at_k(relevant, ranked, k)
-    return _score(relevant, ranked, P @ k)
+    return _score(relevant, ranked, _cut("P", k))
 
 
 def recall_at_k(relevant: Judgments, ranked: Sequence[str], k: int) -> float:
@@ -211,9 +235,8 @@ def recall_at_k(relevant: Judgments, ranked: Sequence[str], k: int) -> float:
     The denominator is the size of the relevant set and never ``k``. Dividing by ``k``
     is the classic recall bug: it silently reports precision under recall's name, so a
     ranker that misses half the relevant documents still looks complete."""
-    require_metrics_extra()
     _validate_at_k(relevant, ranked, k)
-    return _score(relevant, ranked, R @ k)
+    return _score(relevant, ranked, _cut("R", k))
 
 
 def f1_at_k(relevant: Judgments, ranked: Sequence[str], k: int) -> float:
@@ -235,16 +258,14 @@ def ndcg_at_k(relevant: Judgments, ranked: Sequence[str], k: int) -> float:
     Supports graded relevance: a gain of 3 at rank 1 outscores a gain of 1 at rank 1.
     The ideal is taken over every judged-relevant document, including ones the ranker
     never returned, so nDCG cannot be maximised by returning less."""
-    require_metrics_extra()
     _validate_at_k(relevant, ranked, k)
-    return _score(relevant, ranked, nDCG @ k)
+    return _score(relevant, ranked, _cut("nDCG", k))
 
 
 def mrr(relevant: Judgments, ranked: Sequence[str]) -> float:
     """Reciprocal rank of the first relevant document; 0.0 if the list holds none."""
-    require_metrics_extra()
     _validate(relevant, ranked)
-    return _score(relevant, ranked, RR)
+    return _score(relevant, ranked, load_object("ir_measures", "RR"))
 
 
 def average_precision(relevant: Judgments, ranked: Sequence[str]) -> float:
@@ -253,9 +274,8 @@ def average_precision(relevant: Judgments, ranked: Sequence[str]) -> float:
     The denominator is the number of documents judged relevant *overall*, not the number
     retrieved, so retrieving 3 of 30 relevant documents flawlessly is AP 0.1 and not AP
     1.0. That is the classical definition, and trec_eval implements it directly."""
-    require_metrics_extra()
     _validate(relevant, ranked)
-    return _score(relevant, ranked, AP)
+    return _score(relevant, ranked, load_object("ir_measures", "AP"))
 
 
 def _gains(query: RankedQuery) -> dict[str, float]:
@@ -267,18 +287,25 @@ def _gains(query: RankedQuery) -> dict[str, float]:
 
 
 def _require_queries(queries: Sequence[RankedQuery]) -> None:
-    if not queries:
+    if not queries or len(queries) > MAX_ITEMS:
         raise InvalidRankingRequest("query set is empty; there is nothing to average over")
 
 
 def mean_average_precision(queries: Sequence[RankedQuery]) -> float:
     """MAP: the mean of every query's average precision."""
     _require_queries(queries)
-    return fmean(average_precision(_gains(q), q.ranked) for q in queries)
+    return _numpy_mean(tuple(average_precision(_gains(q), q.ranked) for q in queries))
 
 
 def _mean_of(rows: Sequence[QueryRanking], pick: Callable[[QueryRanking], float]) -> float:
-    return fmean(pick(row) for row in rows)
+    return _numpy_mean(tuple(pick(row) for row in rows))
+
+
+def _numpy_mean(values: Sequence[float]) -> float:
+    raw = call_dependency(load_callable("numpy", "mean"), values)
+    if dependency_failed(raw):
+        raise InvalidRankingRequest
+    return _finite_float(raw)
 
 
 def _query_ranking(query: RankedQuery, k: int) -> QueryRanking:

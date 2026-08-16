@@ -69,12 +69,11 @@ packages = ["src/assay"]
 only-include = [
   "src",
   "tests",
-  "testdata",
-  "demo",
+  "testdata/vectors/composition.json",
+  "testdata/vectors/metrics.json",
+  "testdata/vectors/normalize.json",
   "README.md",
-  "QUICKSTART.md",
   "CHANGELOG.md",
-  "docs",
   "LICENSE",
 ]
 

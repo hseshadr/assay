@@ -8,36 +8,15 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import Protocol, SupportsFloat, SupportsInt, cast
 
-from assay.errors import InvalidScoreRequest, MetricsExtraMissing
-
-if TYPE_CHECKING:
-    from sklearn.metrics import (
-        accuracy_score,
-        average_precision_score,
-        confusion_matrix,
-        precision_recall_fscore_support,
-        roc_auc_score,
-    )
-else:
-    try:
-        from sklearn.metrics import (
-            accuracy_score,
-            average_precision_score,
-            confusion_matrix,
-            precision_recall_fscore_support,
-            roc_auc_score,
-        )
-    except ImportError:
-        accuracy_score = None
-        average_precision_score = None
-        confusion_matrix = None
-        precision_recall_fscore_support = None
-        roc_auc_score = None
+from assay._optional import call_dependency, dependency_failed, load_callable, load_module
+from assay.errors import InvalidScoreRequest
+from assay.limits import MAX_ITEMS
 
 _MIN_CLASSES = 2
+_PRF_RESULT_COUNT = 3
+_CONFUSION_CELL_COUNT = 4
 _METRICS_MODULES = ("numpy", "scipy", "sklearn", "ir_measures", "pydantic_settings")
 
 _BINARY_LABELS = (0, 1)
@@ -47,11 +26,8 @@ depend on which labels happen to appear in the data."""
 
 def require_metrics_extra() -> None:
     """Refuse optional calculators with one stable, value-free error."""
-    try:
-        for module in _METRICS_MODULES:
-            import_module(module)
-    except ImportError:
-        raise MetricsExtraMissing from None
+    for module in _METRICS_MODULES:
+        load_module(module)
 
 
 @dataclass(frozen=True)
@@ -63,10 +39,10 @@ class ConfusionCounts:
     classic silent inversion: it swaps a miss for a false alarm while every total still
     adds up, so nothing downstream can notice."""
 
-    true_negatives: int
-    false_positives: int
-    false_negatives: int
     true_positives: int
+    false_positives: int
+    true_negatives: int
+    false_negatives: int
 
 
 @dataclass(frozen=True)
@@ -83,12 +59,19 @@ class ClassificationScores:
     false_negative_rate: float
 
 
-def _validate(y_true: Sequence[int], y_score: Sequence[float]) -> None:
-    require_metrics_extra()
-    if len(y_true) != len(y_score):
+class _RavelResult(Protocol):
+    def ravel(self) -> Sequence[object]: ...
+
+
+def _validate_shape(y_true: Sequence[int], y_score: Sequence[float]) -> None:
+    if len(y_true) != len(y_score) or len(y_true) > MAX_ITEMS:
         raise InvalidScoreRequest
     if not y_true:
         raise InvalidScoreRequest
+
+
+def _validate(y_true: Sequence[int], y_score: Sequence[float]) -> None:
+    _validate_shape(y_true, y_score)
     if not all(math.isfinite(score) for score in y_score):
         raise InvalidScoreRequest
     _require_binary_labels(y_true)
@@ -100,17 +83,40 @@ def _require_auc_classes(y_true: Sequence[int]) -> None:
 
 
 def _threshold(y_score: Sequence[float], threshold: float) -> list[int]:
-    if not math.isfinite(threshold):
+    if isinstance(threshold, bool) or not math.isfinite(threshold):
         raise InvalidScoreRequest
     return [1 if s >= threshold else 0 for s in y_score]
 
 
 def _prf(y_true: Sequence[int], y_pred: Sequence[int]) -> tuple[float, float, float]:
-    require_metrics_extra()
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        y_true, y_pred, average="binary", zero_division=0.0
+    raw = _metric_call(
+        "precision_recall_fscore_support",
+        y_true,
+        y_pred,
+        average="binary",
+        zero_division=0.0,
     )
-    return float(precision), float(recall), float(f1)
+    values = call_dependency(_first_three_finite, raw)
+    if dependency_failed(values):
+        raise InvalidScoreRequest
+    return cast(tuple[float, float, float], values)
+
+
+def _first_three_finite(raw: object) -> tuple[float, float, float]:
+    values = cast(Sequence[object], raw)
+    result = tuple(_as_float(value) for value in values[:_PRF_RESULT_COUNT])
+    if len(result) != _PRF_RESULT_COUNT or not all(math.isfinite(value) for value in result):
+        raise ValueError
+    first, second, third = result
+    return first, second, third
+
+
+def _as_float(value: object) -> float:
+    return float(cast(SupportsFloat, value))
+
+
+def _as_int(value: object) -> int:
+    return int(cast(SupportsInt, value))
 
 
 def _require_binary_labels(y_true: Sequence[int]) -> None:
@@ -126,16 +132,27 @@ def _require_binary_labels(y_true: Sequence[int]) -> None:
 
 
 def _counts(y_true: Sequence[int], y_pred: Sequence[int]) -> ConfusionCounts:
-    require_metrics_extra()
-    true_negatives, false_positives, false_negatives, true_positives = confusion_matrix(
-        y_true, y_pred, labels=_BINARY_LABELS
-    ).ravel()
+    raw = _metric_call("confusion_matrix", y_true, y_pred, labels=_BINARY_LABELS)
+    cells = call_dependency(_confusion_cells, raw)
+    if dependency_failed(cells):
+        raise InvalidScoreRequest
+    true_negatives, false_positives, false_negatives, true_positives = cast(
+        tuple[int, int, int, int], cells
+    )
     return ConfusionCounts(
         true_positives=int(true_positives),
         false_positives=int(false_positives),
         true_negatives=int(true_negatives),
         false_negatives=int(false_negatives),
     )
+
+
+def _confusion_cells(raw: object) -> tuple[int, int, int, int]:
+    values = cast(_RavelResult, raw).ravel()
+    cells = tuple(_as_int(value) for value in values)
+    if len(cells) != _CONFUSION_CELL_COUNT or any(value < 0 for value in cells):
+        raise ValueError
+    return cast(tuple[int, int, int, int], cells)
 
 
 def confusion_counts(
@@ -176,15 +193,30 @@ def _scores(
     precision, recall, f1 = _prf(y_true, y_pred)
     counts = _counts(y_true, y_pred)
     return ClassificationScores(
-        accuracy=float(accuracy_score(y_true, y_pred)),
+        accuracy=_metric_float("accuracy_score", y_true, y_pred),
         precision=precision,
         recall=recall,
         f1=f1,
-        pr_auc=float(average_precision_score(y_true, y_score)),
-        roc_auc=float(roc_auc_score(y_true, y_score)),
+        pr_auc=_metric_float("average_precision_score", y_true, y_score),
+        roc_auc=_metric_float("roc_auc_score", y_true, y_score),
         counts=counts,
         false_negative_rate=_false_negative_rate(counts),
     )
+
+
+def _metric_call(name: str, *args: object, **kwargs: object) -> object:
+    result = call_dependency(load_callable("sklearn.metrics", name), *args, **kwargs)
+    if dependency_failed(result):
+        raise InvalidScoreRequest
+    return result
+
+
+def _metric_float(name: str, *args: object) -> float:
+    raw = _metric_call(name, *args)
+    result = call_dependency(float, raw)
+    if dependency_failed(result) or not math.isfinite(cast(float, result)):
+        raise InvalidScoreRequest
+    return cast(float, result)
 
 
 def binary_scores(

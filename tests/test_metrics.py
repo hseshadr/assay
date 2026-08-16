@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import math
+from dataclasses import asdict, astuple
 
 import pytest
 
 from assay.errors import InvalidScoreRequest
-from assay.metrics import binary_scores, confusion_counts, correctness, false_negative_rate
+from assay.metrics import (
+    ConfusionCounts,
+    binary_scores,
+    confusion_counts,
+    correctness,
+    false_negative_rate,
+)
 
 # Ten examples: five real positives, five real negatives. At threshold 0.5 the four
 # confusion cells all come out DIFFERENT (TP 3, FN 2, FP 1, TN 4), so a test over them
@@ -92,10 +99,10 @@ def test_should_count_each_confusion_cell_by_hand() -> None:
     counts = confusion_counts(_Y_TRUE, _Y_SCORE, threshold=0.5)
     # Then each cell is the hand count, and no two of them are interchangeable
     assert tuple(vars(counts)) == (
-        "true_negatives",
-        "false_positives",
-        "false_negatives",
         "true_positives",
+        "false_positives",
+        "true_negatives",
+        "false_negatives",
     )
     assert counts.true_positives == 3  # hand: 0.9, 0.8, 0.7 are positive and predicted 1
     assert counts.false_negatives == 2  # hand: 0.4, 0.1 are positive and predicted 0
@@ -110,6 +117,22 @@ def test_should_count_each_confusion_cell_by_hand() -> None:
             counts.true_negatives,
         )
     ) == len(_Y_TRUE)
+
+
+def test_should_preserve_the_published_confusion_count_value_contract() -> None:
+    # Given the public positional order from the scoring package before the split
+    counts = ConfusionCounts(3, 1, 4, 2)
+    # Then positional construction, repr, iteration helpers, and serialization agree
+    assert astuple(counts) == (3, 1, 4, 2)
+    assert repr(counts) == (
+        "ConfusionCounts(true_positives=3, false_positives=1, true_negatives=4, false_negatives=2)"
+    )
+    assert asdict(counts) == {
+        "true_positives": 3,
+        "false_positives": 1,
+        "true_negatives": 4,
+        "false_negatives": 2,
+    }
 
 
 def test_should_report_the_miss_rate_as_the_false_negative_rate() -> None:

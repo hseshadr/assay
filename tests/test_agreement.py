@@ -231,6 +231,17 @@ def test_should_report_one_when_the_two_raters_are_identical() -> None:
     assert kendall_tau_b(ratings, ratings, scale=_SCALE) == pytest.approx(1.0)
 
 
+def test_should_preserve_numpy_weighted_mean_rounding_bit_for_bit() -> None:
+    # Given weights 1, 1, 5/9, 8/9 whose fmean differs from NumPy by one ULP
+    score = weighted_agreement(
+        ["a", "a", "a", "a"],
+        ["a", "a", "c", "b"],
+        scale=("a", "b", "c", "d"),
+    )
+    # Then the published NumPy aggregation bit pattern remains unchanged
+    assert score.hex() == "0x1.b8e38e38e38e3p-1"
+
+
 # ---------------------------------------------------------------------------------
 # Refusals — every one of these would otherwise return a number nobody should believe
 # ---------------------------------------------------------------------------------
