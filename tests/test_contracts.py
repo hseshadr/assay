@@ -362,6 +362,31 @@ def test_should_reject_payloads_without_string_discriminator(payload: object) ->
     _assert_code_only(caught.value, "assay.invalid_method")
 
 
+def test_should_redact_oversized_integer_json_for_every_public_model() -> None:
+    # Given
+    payload = "9" * 5_000
+
+    # When / Then
+    for model in _public_models():
+        with pytest.raises(ContractValidationError) as caught:
+            type(model).model_validate_json(payload)
+        _assert_code_only(caught.value, "assay.invalid_contract")
+        assert payload not in repr(caught.value)
+
+
+def test_should_redact_oversized_integer_json_from_request_parser() -> None:
+    # Given
+    payload = "9" * 5_000
+
+    # When
+    with pytest.raises(ContractValidationError) as caught:
+        parse_request_json(payload)
+
+    # Then
+    _assert_code_only(caught.value, "assay.invalid_contract")
+    assert payload not in repr(caught.value)
+
+
 def test_should_hide_pydantic_surface_from_direct_constructor_error() -> None:
     # Given
     scale = {"minimum": 0, "maximum": 1, "direction": "higher_is_better"}
@@ -535,6 +560,63 @@ def test_should_reject_conflicting_alias_validation_paths() -> None:
 
     # Then
     _assert_code_only(caught.value, "assay.invalid_alias_config")
+
+
+def test_should_accept_documented_score_result_schema_alias_by_default() -> None:
+    # Given
+    result = _result()
+    payload = result.model_dump()
+
+    # When
+    restored = ScoreResult.model_validate(payload)
+
+    # Then
+    assert payload["schema"] == "assay.result/v1"
+    assert restored == result
+
+
+@pytest.mark.parametrize(
+    ("field_name", "by_alias", "by_name"),
+    [
+        ("schema_version", True, False),
+        ("schema", False, True),
+    ],
+)
+def test_should_reject_disabled_score_result_field_spelling(
+    field_name: str, by_alias: bool, by_name: bool
+) -> None:
+    # Given
+    payload = _result().model_dump(exclude={"schema_version"})
+    payload[field_name] = "assay.result/v1"
+
+    # When
+    with pytest.raises(ContractValidationError) as caught:
+        ScoreResult.model_validate(payload, by_alias=by_alias, by_name=by_name)
+
+    # Then
+    _assert_code_only(caught.value, "assay.unknown_field")
+
+
+@pytest.mark.parametrize(
+    ("by_alias", "by_name"),
+    [
+        (True, False),
+        (False, True),
+    ],
+)
+def test_should_reject_alias_duplicates_before_explicit_spelling_mode(
+    by_alias: bool, by_name: bool
+) -> None:
+    # Given
+    payload = _result().model_dump()
+    payload["schema_version"] = "assay.result/v1"
+
+    # When
+    with pytest.raises(ContractValidationError) as caught:
+        ScoreResult.model_validate(payload, by_alias=by_alias, by_name=by_name)
+
+    # Then
+    _assert_code_only(caught.value, "assay.duplicate_field")
 
 
 @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])

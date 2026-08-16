@@ -7,7 +7,6 @@ import math
 import re
 from collections.abc import Mapping
 from enum import StrEnum
-from json import JSONDecodeError
 from typing import Annotated, ClassVar, Literal, NoReturn, Self
 
 from pydantic import (
@@ -101,11 +100,12 @@ def _fail(code: ContractCode) -> NoReturn:
 
 
 def _decode_json(data: _JsonData) -> object:
+    error: ContractValidationError
     try:
         return json.loads(data)
-    except (JSONDecodeError, UnicodeDecodeError, TypeError):
-        pass
-    _fail(ContractCode.INVALID_CONTRACT)
+    except (ValueError, UnicodeDecodeError, TypeError):
+        error = ContractValidationError(ContractCode.INVALID_CONTRACT)
+    raise error from None
 
 
 def _finite(value: object) -> float:
@@ -229,6 +229,25 @@ def _allowed_names(fields: Mapping[str, FieldInfo]) -> frozenset[str]:
     )
 
 
+def _selected_names(
+    name: str, field: FieldInfo, by_alias: _OptionalBool, by_name: _OptionalBool
+) -> tuple[str, ...]:
+    if not isinstance(field.alias, str):
+        return (name,)
+    names = (name,) if by_name is not False else ()
+    return (*names, field.alias) if by_alias is not False else names
+
+
+def _selected_allowed_names(
+    fields: Mapping[str, FieldInfo], by_alias: _OptionalBool, by_name: _OptionalBool
+) -> frozenset[str]:
+    return frozenset(
+        accepted
+        for name, field in fields.items()
+        for accepted in _selected_names(name, field, by_alias, by_name)
+    )
+
+
 def _contains_only_known_fields(
     data: Mapping[object, object], fields: Mapping[str, FieldInfo]
 ) -> bool:
@@ -268,6 +287,17 @@ def _require_known_fields(data: Mapping[object, object], fields: Mapping[str, Fi
         _fail(ContractCode.UNKNOWN_FIELD)
 
 
+def _require_selected_fields(
+    data: Mapping[object, object],
+    fields: Mapping[str, FieldInfo],
+    by_alias: _OptionalBool,
+    by_name: _OptionalBool,
+) -> None:
+    allowed = _selected_allowed_names(fields, by_alias, by_name)
+    if not all(isinstance(key, str) and key in allowed for key in data):
+        _fail(ContractCode.UNKNOWN_FIELD)
+
+
 def _require_no_alias_duplicates(
     data: Mapping[object, object], fields: Mapping[str, FieldInfo]
 ) -> None:
@@ -299,13 +329,13 @@ class _ContractModel(BaseModel):
     _expected_method: ClassVar[str | None] = None
 
     def __init__(self, **data: object) -> None:
+        error: ContractValidationError
         try:
             super().__init__(**data)
-        except ValidationError:
-            pass
-        else:
             return
-        _fail(ContractCode.INVALID_CONTRACT)
+        except ValidationError:
+            error = ContractValidationError(ContractCode.INVALID_CONTRACT)
+        raise error from None
 
     @model_validator(mode="before")
     @classmethod
@@ -332,8 +362,18 @@ class _ContractModel(BaseModel):
         by_name: _OptionalBool = None,
     ) -> Self:
         _require_alias_config(by_alias, by_name)
+        cls._validate_selected_input(obj, by_alias, by_name)
         options = (strict, extra, from_attributes, context, by_alias, by_name)
         return cls._validate_python(obj, options)
+
+    @classmethod
+    def _validate_selected_input(
+        cls, obj: object, by_alias: _OptionalBool, by_name: _OptionalBool
+    ) -> None:
+        if not isinstance(obj, Mapping):
+            return
+        _require_no_alias_duplicates(obj, cls.model_fields)
+        _require_selected_fields(obj, cls.model_fields, by_alias, by_name)
 
     @classmethod
     def _validate_python(cls, obj: object, options: _PythonValidationOptions) -> Self:
@@ -349,8 +389,8 @@ class _ContractModel(BaseModel):
                 by_name=by_name,
             )
         except ValidationError:
-            pass
-        _fail(ContractCode.INVALID_CONTRACT)
+            error = ContractValidationError(ContractCode.INVALID_CONTRACT)
+        raise error from None
 
     @classmethod
     def model_validate_json(
@@ -588,11 +628,12 @@ def _validate_request_method(data: object) -> object:
 def parse_request(data: object) -> ScoreRequest:
     """Parse an in-memory request without exposing Pydantic's internal errors."""
     prepared = _validate_request_method(data)
+    error: ContractValidationError
     try:
         return _REQUEST_ADAPTER.validate_python(prepared)
     except ValidationError:
-        pass
-    _fail(ContractCode.INVALID_CONTRACT)
+        error = ContractValidationError(ContractCode.INVALID_CONTRACT)
+    raise error from None
 
 
 def parse_request_json(data: _JsonData) -> ScoreRequest:
