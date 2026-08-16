@@ -37,16 +37,33 @@ One-line definitions, since none of these terms carry themselves:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from statistics import fmean
+from typing import TYPE_CHECKING
 
-import numpy as np
-from ir_measures import AP, RR, Measure, P, R, calc_aggregate, nDCG
 from pydantic import BaseModel, ConfigDict
 
 from assay.errors import EmptyRelevantSet, InvalidRankingRequest
+from assay.metrics import require_metrics_extra
 from assay.models import RankedQuery
-from assay.settings import AssaySettings
 from assay.uncertainty import Estimate, mean_interval
+
+if TYPE_CHECKING:
+    from ir_measures import AP, RR, Measure, P, R, calc_aggregate, nDCG
+
+    from assay.settings import AssaySettings
+else:
+    try:
+        from ir_measures import AP, RR, Measure, P, R, calc_aggregate, nDCG
+    except ImportError:
+        AP = None
+        RR = None
+        Measure = object
+        P = None
+        R = None
+        calc_aggregate = None
+        nDCG = None
 
 type Judgments = Mapping[str, float]
 """Document id -> graded gain. Gain > 0 means relevant; larger means more relevant."""
@@ -115,7 +132,7 @@ def binary_judgments(doc_ids: Iterable[str]) -> dict[str, float]:
 
 def _require_positive_k(k: int) -> None:
     if k <= 0:
-        raise InvalidRankingRequest(f"k must be positive, got {k}")
+        raise InvalidRankingRequest
 
 
 def _require_ranked(ranked: Sequence[str]) -> None:
@@ -132,11 +149,9 @@ def _require_graded(relevant: Judgments) -> None:
     A fractional gain is refused rather than rounded. Rounding 0.5 down would move that
     document from relevant to irrelevant and quietly change the answer, and there is no
     reference semantics saying which way it should go."""
-    for doc, gain in relevant.items():
-        if gain < 0:
-            raise InvalidRankingRequest("relevance gains must be non-negative")
-        if gain != int(gain):
-            raise InvalidRankingRequest(f"relevance gain for {doc!r} is not whole: {gain}")
+    for gain in relevant.values():
+        if not math.isfinite(gain) or gain < 0 or gain != int(gain):
+            raise InvalidRankingRequest
 
 
 def _require_relevant(relevant: Judgments) -> None:
@@ -174,6 +189,7 @@ def _run(ranked: Sequence[str]) -> dict[str, dict[str, float]]:
 
 def _score(relevant: Judgments, ranked: Sequence[str], measure: Measure) -> float:
     """One trec_eval evaluation of one query. Validation is the caller's job."""
+    require_metrics_extra()
     return float(calc_aggregate([measure], _qrels(relevant), _run(ranked))[measure])
 
 
@@ -184,6 +200,7 @@ def precision_at_k(relevant: Judgments, ranked: Sequence[str], k: int) -> float:
     now trec_eval's own arithmetic. A result list shorter than k is a real cost to the
     user, and dividing by the list length would let a ranker score a perfect
     precision@10 by returning one good hit."""
+    require_metrics_extra()
     _validate_at_k(relevant, ranked, k)
     return _score(relevant, ranked, P @ k)
 
@@ -194,6 +211,7 @@ def recall_at_k(relevant: Judgments, ranked: Sequence[str], k: int) -> float:
     The denominator is the size of the relevant set and never ``k``. Dividing by ``k``
     is the classic recall bug: it silently reports precision under recall's name, so a
     ranker that misses half the relevant documents still looks complete."""
+    require_metrics_extra()
     _validate_at_k(relevant, ranked, k)
     return _score(relevant, ranked, R @ k)
 
@@ -217,12 +235,14 @@ def ndcg_at_k(relevant: Judgments, ranked: Sequence[str], k: int) -> float:
     Supports graded relevance: a gain of 3 at rank 1 outscores a gain of 1 at rank 1.
     The ideal is taken over every judged-relevant document, including ones the ranker
     never returned, so nDCG cannot be maximised by returning less."""
+    require_metrics_extra()
     _validate_at_k(relevant, ranked, k)
     return _score(relevant, ranked, nDCG @ k)
 
 
 def mrr(relevant: Judgments, ranked: Sequence[str]) -> float:
     """Reciprocal rank of the first relevant document; 0.0 if the list holds none."""
+    require_metrics_extra()
     _validate(relevant, ranked)
     return _score(relevant, ranked, RR)
 
@@ -233,6 +253,7 @@ def average_precision(relevant: Judgments, ranked: Sequence[str]) -> float:
     The denominator is the number of documents judged relevant *overall*, not the number
     retrieved, so retrieving 3 of 30 relevant documents flawlessly is AP 0.1 and not AP
     1.0. That is the classical definition, and trec_eval implements it directly."""
+    require_metrics_extra()
     _validate(relevant, ranked)
     return _score(relevant, ranked, AP)
 
@@ -241,7 +262,7 @@ def _gains(query: RankedQuery) -> dict[str, float]:
     """A query's judgments as a doc-id map, refusing a document judged twice."""
     gains = {judgment.doc_id: judgment.gain for judgment in query.judgments}
     if len(gains) != len(query.judgments):
-        raise InvalidRankingRequest(f"query {query.query!r} judges a document twice")
+        raise InvalidRankingRequest
     return gains
 
 
@@ -253,11 +274,11 @@ def _require_queries(queries: Sequence[RankedQuery]) -> None:
 def mean_average_precision(queries: Sequence[RankedQuery]) -> float:
     """MAP: the mean of every query's average precision."""
     _require_queries(queries)
-    return float(np.mean([average_precision(_gains(q), q.ranked) for q in queries]))
+    return fmean(average_precision(_gains(q), q.ranked) for q in queries)
 
 
 def _mean_of(rows: Sequence[QueryRanking], pick: Callable[[QueryRanking], float]) -> float:
-    return float(np.mean([pick(row) for row in rows]))
+    return fmean(pick(row) for row in rows)
 
 
 def _query_ranking(query: RankedQuery, k: int) -> QueryRanking:

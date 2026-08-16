@@ -15,9 +15,9 @@ __all__ = [
     "InvalidMethod",
     "InvalidRankingRequest",
     "InvalidScoreRequest",
+    "MetricsExtraMissing",
     "ReplayRefused",
     "ScoringCorePending",
-    "ScoringExtraMissing",
     "UnknownMetric",
 ]
 
@@ -120,10 +120,10 @@ class InsufficientSamples(AssayError):
     code: str = "assay.insufficient_samples"
 
 
-class ScoringExtraMissing(AssayError):
+class MetricsExtraMissing(AssayError):
     """An optional metric was requested without metric dependencies."""
 
-    code: str = "assay.scoring_extra_missing"
+    code: str = "assay.metrics_extra_missing"
 
 
 class ReplayRefused(AssayError):

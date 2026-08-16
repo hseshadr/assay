@@ -8,6 +8,8 @@ property, and would stay green through the exact bugs this module exists to catc
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -261,6 +263,18 @@ def test_should_refuse_a_fractional_relevance_gain() -> None:
         average_precision({"a": 0.5}, ("a", "b"))
     # And whole gains handed over as floats stay accepted — that is the public type
     assert ndcg_at_k({"a": 2.0, "b": 1.0}, ("a", "b"), 2) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("gain", [math.nan, math.inf, -math.inf])
+def test_should_refuse_nonfinite_relevance_gain_without_echoing_id(gain: float) -> None:
+    # Given a caller-owned identifier attached to a non-finite grade
+    private_id = "customer-private-document"
+    # When a graded ranking metric is requested
+    with pytest.raises(InvalidRankingRequest) as caught:
+        ndcg_at_k({private_id: gain}, (private_id,), 1)
+    # Then only the stable code crosses the failure boundary
+    assert str(caught.value) == "assay.invalid_ranking_request"
+    assert private_id not in str(caught.value)
 
 
 def test_should_refuse_a_document_judged_twice_in_one_query() -> None:

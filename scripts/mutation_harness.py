@@ -63,6 +63,8 @@ _MIN_VECTORS_TO_DROP_ONE = 2
 _RANKING = "src/assay/ranking.py"
 _AGREEMENT = "src/assay/agreement.py"
 _METRICS = "src/assay/metrics.py"
+_CALIBRATION = "src/assay/calibration.py"
+_UNCERTAINTY = "src/assay/uncertainty.py"
 _ENVELOPE = "src/avow/envelope.py"
 _LEDGER = "src/avow/ledger.py"
 _SETTINGS = "src/assay/settings.py"
@@ -242,9 +244,20 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         target=_RANKING,
         guard=("tests/test_ranking.py::test_should_refuse_a_fractional_relevance_gain",),
         edit=_replace_once(
-            "            raise InvalidRankingRequest("
-            'f"relevance gain for {doc!r} is not whole: {gain}")',
-            "            pass",
+            "        if not math.isfinite(gain) or gain < 0 or gain != int(gain):",
+            "        if not math.isfinite(gain) or gain < 0:",
+        ),
+    ),
+    Mutation(
+        name="ranking-refuses-a-nonfinite-gain",
+        claim="a non-finite relevance grade is refused before it reaches trec_eval",
+        target=_RANKING,
+        guard=(
+            "tests/test_ranking.py::test_should_refuse_nonfinite_relevance_gain_without_echoing_id",
+        ),
+        edit=_replace_once(
+            "        if not math.isfinite(gain) or gain < 0 or gain != int(gain):",
+            "        if gain < 0 or gain != int(gain):",
         ),
     ),
     Mutation(
@@ -366,6 +379,19 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         ),
     ),
     Mutation(
+        name="metrics-threshold-equality-is-positive",
+        claim="a score equal to the threshold is classified as positive",
+        target=_METRICS,
+        guard=(
+            "tests/test_metric_vectors.py::"
+            "test_classification_vector_replays_to_the_hand_computed_rates",
+        ),
+        edit=_replace_once(
+            "    return [1 if s >= threshold else 0 for s in y_score]",
+            "    return [1 if s > threshold else 0 for s in y_score]",
+        ),
+    ),
+    Mutation(
         name="metrics-false-negative-rate-counts-misses",
         claim="the FNR divides misses by real positives — it is not the false-ALARM rate",
         target=_METRICS,
@@ -374,7 +400,7 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
             "tests/test_metrics.py::test_should_make_the_false_negative_rate_the_exact_complement_of_recall",
         ),
         edit=_replace_once(
-            "    return counts.false_negatives / (counts.false_negatives + counts.true_positives)",
+            "    return counts.false_negatives / positives",
             "    return counts.false_positives / (counts.false_positives + counts.true_negatives)",
         ),
     ),
@@ -384,8 +410,61 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         target=_METRICS,
         guard=("tests/test_metrics.py::test_should_refuse_a_label_outside_zero_and_one",),
         edit=_replace_once(
-            '        raise InvalidScoreRequest(f"labels must be 0 or 1; got {outside}")',
-            "        pass",
+            "    if outside:\n        raise InvalidScoreRequest",
+            "    if outside:\n        pass",
+        ),
+    ),
+    Mutation(
+        name="metrics-missing-extra-has-a-stable-code",
+        claim="a base install never leaks the missing module name from an optional face",
+        target=_METRICS,
+        guard=(
+            "tests/test_optional_metrics_boundary.py::"
+            "test_should_raise_only_stable_redacted_code_when_metrics_extra_is_missing",
+        ),
+        edit=_replace_once(
+            "    except ImportError:\n        raise MetricsExtraMissing from None",
+            "    except ImportError:\n        raise",
+        ),
+    ),
+    Mutation(
+        name="calibration-ece-is-population-weighted",
+        claim="ECE weights each non-empty bin by its sample population",
+        target=_CALIBRATION,
+        guard=(
+            "tests/test_calibration.py::"
+            "test_should_not_average_reliability_gaps_as_equal_sized_bins",
+        ),
+        edit=_replace_once(
+            "    return sum(b.count / total * abs(b.mean_predicted - b.fraction_positive) "
+            "for b in bins)",
+            "    return sum(abs(b.mean_predicted - b.fraction_positive) for b in bins) / len(bins)",
+        ),
+    ),
+    Mutation(
+        name="calibration-validates-before-sklearn",
+        claim="invalid calibration inputs produce Assay's stable value-free code",
+        target=_CALIBRATION,
+        guard=(
+            "tests/test_calibration.py::"
+            "test_should_refuse_invalid_calibration_inputs_with_stable_code",
+        ),
+        edit=_replace_once(
+            "    _validate(y_true, y_score, n_bins)",
+            "    pass",
+        ),
+    ),
+    Mutation(
+        name="uncertainty-validates-before-scipy",
+        claim="invalid bootstrap bounds produce Assay's stable value-free code",
+        target=_UNCERTAINTY,
+        guard=(
+            "tests/test_uncertainty.py::"
+            "test_should_refuse_invalid_interval_bounds_with_stable_code",
+        ),
+        edit=_replace_once(
+            "    _validate(samples, settings)",
+            "    pass",
         ),
     ),
     # ----------------------------------------------------------------------------------

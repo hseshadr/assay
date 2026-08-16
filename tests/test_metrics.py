@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from assay.errors import InvalidScoreRequest
@@ -53,6 +55,31 @@ def test_should_raise_when_only_one_class_present() -> None:
         binary_scores([1, 1, 1], [0.2, 0.8, 0.5])
 
 
+@pytest.mark.parametrize("label", [0, 1])
+def test_should_allow_one_class_for_confusion_primitives(label: int) -> None:
+    # Given labels from only one binary class
+    y_true = [label, label, label]
+    y_score = [0.1, 0.5, 0.9]
+    # When threshold-only primitives are computed
+    counts = confusion_counts(y_true, y_score)
+    hits = correctness(y_true, y_score)
+    # Then no AUC-only both-class rule is applied
+    assert sum(vars(counts).values()) == 3
+    assert len(hits) == 3
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_should_refuse_nonfinite_classification_numbers(bad: float) -> None:
+    # Given a non-finite score or threshold
+    with pytest.raises(InvalidScoreRequest) as score_error:
+        binary_scores([0, 1], [0.1, bad])
+    with pytest.raises(InvalidScoreRequest) as threshold_error:
+        confusion_counts([0, 1], [0.1, 0.9], threshold=bad)
+    # Then only the stable, value-free request code is exposed
+    assert str(score_error.value) == "assay.invalid_request"
+    assert str(threshold_error.value) == "assay.invalid_request"
+
+
 # --------------------------------------------------------------------------------------
 # Confusion counts and the false-negative rate — what a screening system actually needs
 # --------------------------------------------------------------------------------------
@@ -64,6 +91,12 @@ def test_should_count_each_confusion_cell_by_hand() -> None:
     # When the confusion cells are counted at threshold 0.5
     counts = confusion_counts(_Y_TRUE, _Y_SCORE, threshold=0.5)
     # Then each cell is the hand count, and no two of them are interchangeable
+    assert tuple(vars(counts)) == (
+        "true_negatives",
+        "false_positives",
+        "false_negatives",
+        "true_positives",
+    )
     assert counts.true_positives == 3  # hand: 0.9, 0.8, 0.7 are positive and predicted 1
     assert counts.false_negatives == 2  # hand: 0.4, 0.1 are positive and predicted 0
     assert counts.false_positives == 1  # hand: 0.6 is negative and predicted 1

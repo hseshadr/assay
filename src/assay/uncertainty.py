@@ -8,12 +8,25 @@ seed (BCa can fail on low-variance samples)."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from statistics import fmean
+from typing import TYPE_CHECKING, Literal
 
-import numpy as np
-from scipy.stats import bootstrap
+from assay.errors import InvalidScoreRequest
+from assay.metrics import require_metrics_extra
+
+if TYPE_CHECKING:
+    import numpy as np
+    from scipy.stats import bootstrap
+else:
+    try:
+        import numpy as np
+        from scipy.stats import bootstrap
+    except ImportError:
+        np = None
+        bootstrap = None
 
 
 @dataclass(frozen=True)
@@ -49,7 +62,7 @@ class _BootstrapSettings:
     seed: int
 
 
-def _bootstrap_mean(data: np.ndarray, settings: _BootstrapSettings) -> tuple[float, float]:
+def _bootstrap_mean(data: Sequence[float], settings: _BootstrapSettings) -> tuple[float, float]:
     result = bootstrap(
         (data,),
         np.mean,
@@ -61,11 +74,14 @@ def _bootstrap_mean(data: np.ndarray, settings: _BootstrapSettings) -> tuple[flo
     return float(result.confidence_interval.low), float(result.confidence_interval.high)
 
 
-def _percentile_interval(data: np.ndarray, settings: _BootstrapSettings) -> Interval:
+def _percentile_interval(data: Sequence[float], settings: _BootstrapSettings) -> Interval:
+    if len(set(data)) == 1:
+        point = data[0]
+        return Interval(kind="interval", point=point, low=point, high=point)
     low, high = _bootstrap_mean(data, settings)
     return Interval(
         kind="interval",
-        point=float(np.mean(data)),
+        point=fmean(data),
         low=low,
         high=high,
     )
@@ -75,7 +91,25 @@ def _estimate(samples: Sequence[float], settings: _BootstrapSettings) -> Estimat
     count = len(samples)
     if count < settings.min_samples:
         return Abstention("abstention", "sample count below floor", count, settings.min_samples)
-    return _percentile_interval(np.asarray(samples, dtype=float), settings)
+    return _percentile_interval(samples, settings)
+
+
+def _validate_settings(settings: _BootstrapSettings) -> None:
+    if settings.min_samples <= 0 or settings.n_resamples <= 0:
+        raise InvalidScoreRequest
+    confidence = settings.confidence_level
+    if not math.isfinite(confidence) or not 0.0 < confidence < 1.0:
+        raise InvalidScoreRequest
+
+
+def _validate_samples(samples: Sequence[float]) -> None:
+    if not all(math.isfinite(sample) for sample in samples):
+        raise InvalidScoreRequest
+
+
+def _validate(samples: Sequence[float], settings: _BootstrapSettings) -> None:
+    _validate_settings(settings)
+    _validate_samples(samples)
 
 
 def mean_interval(
@@ -87,5 +121,7 @@ def mean_interval(
     seed: int,
 ) -> Estimate:
     """Bootstrap CI of the mean, or abstain below ``min_samples``."""
+    require_metrics_extra()
     settings = _BootstrapSettings(min_samples, n_resamples, confidence_level, seed)
+    _validate(samples, settings)
     return _estimate(samples, settings)

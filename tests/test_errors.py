@@ -12,9 +12,9 @@ from assay.errors import (
     InvalidAgreementRequest,
     InvalidRankingRequest,
     InvalidScoreRequest,
+    MetricsExtraMissing,
     ReplayRefused,
     ScoringCorePending,
-    ScoringExtraMissing,
     UnknownMetric,
 )
 
@@ -26,7 +26,7 @@ _ASSAY_CODES = [
     (EmptyRelevantSet, "assay.empty_relevant_set"),
     (UnknownMetric, "assay.unknown_metric"),
     (InsufficientSamples, "assay.insufficient_samples"),
-    (ScoringExtraMissing, "assay.scoring_extra_missing"),
+    (MetricsExtraMissing, "assay.metrics_extra_missing"),
     (ReplayRefused, "assay.replay_refused"),
     (ScoringCorePending, "assay.scoring_core_pending"),
 ]

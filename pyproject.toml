@@ -90,11 +90,11 @@ ignore = ["S101", "PLR0913"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "PLR2004", "C901", "PLR0911", "PLR0912"]
-# The domain-error catalog deliberately uses semantic names (SignatureInvalid,
-# PayloadHashMismatch, ...) that read as the failure condition, not Error-suffixed
-# names. These are the stable, coded public interface consumed across the API,
-# CLI and tests, so N818 (Error suffix) is scoped-off for this one module only.
+# Domain errors use semantic names such as InvalidRankingRequest. They are the stable,
+# coded interface consumed across Assay's calculators, CLI, and tests.
 "src/assay/errors.py" = ["N818"]
+# ir-measures intentionally exports its standard measure as ``nDCG``.
+"src/assay/ranking.py" = ["N816"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 5
@@ -138,8 +138,8 @@ exclude_lines = [
     "@abstractmethod",
     # Anchored to a bare `...` stub body ONLY. The unanchored `\.\.\.` this
     # replaces also matched the ellipsis inside `tuple[X, ...]` annotations, which
-    # silently excluded every function whose signature carried one — including the
-    # ledger's own read_all/verify_integrity. Coverage must not be able to hide code.
+    # silently excluded every function whose signature carried one. Coverage must not
+    # be able to hide code based on an annotation.
     "^\\s*\\.\\.\\.$",
 ]
 fail_under = 90.0
