@@ -1,13 +1,16 @@
 import { readFileSync } from "node:fs";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   ContractCode,
   ContractValidationError,
+  compose,
   parseRequest,
   parseRequestJson,
   parseScoreResult,
+  type WeightedMeanRequest,
+  weightedMean,
 } from "./index.js";
 
 interface Vector {
@@ -302,6 +305,145 @@ describe("request boundary mutations", () => {
       value: "private",
     });
     expectPrivateCode(() => parseRequest(weighted({ components: symbol })));
+  });
+
+  it("checks dense array membership in one pass", () => {
+    const count = 4096;
+    const components = Array.from({ length: count }, (_, index) => ({
+      ...component(),
+      id: `quality_${index}`,
+    }));
+    const originalIncludes = Array.prototype.includes;
+    let repeatedKeyScans = 0;
+    const includes = vi
+      .spyOn(Array.prototype, "includes")
+      .mockImplementation(function (
+        this: unknown[],
+        searchElement: unknown,
+        fromIndex?: number,
+      ): boolean {
+        if (this.length === count + 1 && this[this.length - 1] === "length") {
+          repeatedKeyScans += 1;
+        }
+        return Reflect.apply(originalIncludes, this, [
+          searchElement,
+          fromIndex,
+        ]);
+      });
+
+    try {
+      const parsed = parseRequest(weighted({ components }));
+      if (parsed.method === "additive") throw new Error("wrong request");
+      expect(parsed.components).toHaveLength(count);
+      expect(repeatedKeyScans).toBe(0);
+    } finally {
+      includes.mockRestore();
+    }
+  });
+
+  it("rejects request intervals that do not contain their point", () => {
+    const payloads = [
+      weighted({
+        components: [
+          { ...component(), value: 0.5, interval: { low: 0.1, high: 0.2 } },
+        ],
+      }),
+      {
+        method: "minimum",
+        method_version: "demo.v1",
+        components: [
+          {
+            ...component(),
+            value: 0.5,
+            interval: { low: 0.1, high: 0.2 },
+            weight: null,
+          },
+        ],
+        clamp: "reject",
+      },
+      {
+        method: "additive",
+        method_version: "demo.v1",
+        terms: [
+          {
+            id: "quality",
+            label: "Quality",
+            value: 0.5,
+            coefficient: 1,
+            operation: "add",
+            interval: { low: 0.1, high: 0.2 },
+          },
+        ],
+        clamp: null,
+      },
+    ];
+
+    for (const payload of payloads) {
+      expectCode(() => parseRequest(payload), "assay.invalid_interval");
+      expectCode(
+        () => parseRequestJson(JSON.stringify(payload)),
+        "assay.invalid_interval",
+      );
+    }
+
+    const copied = structuredClone(
+      weighted({
+        components: [
+          { ...component(), value: 0.5, interval: { low: 0.4, high: 0.6 } },
+        ],
+      }),
+    );
+    const copiedRows = copied.components as Array<Record<string, unknown>>;
+    const copiedFirst = copiedRows[0];
+    if (copiedFirst === undefined) throw new Error("missing copied row");
+    copiedFirst.value = 0.9;
+    expectCode(() => parseRequest(copied), "assay.invalid_interval");
+    expectCode(
+      () => weightedMean(copied as unknown as WeightedMeanRequest),
+      "assay.invalid_interval",
+    );
+  });
+
+  it("composes every method when each interval contains its point", () => {
+    const requests = [
+      weighted({
+        components: [
+          { ...component(), value: 0.5, interval: { low: 0.4, high: 0.6 } },
+        ],
+      }),
+      {
+        method: "minimum",
+        method_version: "demo.v1",
+        components: [
+          {
+            ...component(),
+            value: 0.5,
+            interval: { low: 0.4, high: 0.6 },
+            weight: null,
+          },
+        ],
+        clamp: "reject",
+      },
+      {
+        method: "additive",
+        method_version: "demo.v1",
+        terms: [
+          {
+            id: "quality",
+            label: "Quality",
+            value: 0.5,
+            coefficient: 1,
+            operation: "add",
+            interval: { low: 0.4, high: 0.6 },
+          },
+        ],
+        clamp: null,
+      },
+    ];
+
+    for (const request of requests) {
+      expect(compose(parseRequest(request)).components).toHaveLength(1);
+    }
   });
 
   it("takes a detached snapshot and rejects a shape that mutates during reflection", () => {

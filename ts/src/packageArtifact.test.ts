@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 const PACKAGE_ROOT = new URL("..", import.meta.url);
 const ARCHIVE_NAME = "edgeproc-assay-0.5.0-dev.0.tgz";
 const EXPECTED_ARCHIVE_SHA256 =
-  "55ebfa03c0a7ab1b987f9f97ea8574c480fe4b8ce973cd60e5acd8c8ea538088";
+  "cc77f89280d81269f3c3d145d7f047523cdb6d1ca1eebfb6edfa96031adfc25c";
 const EXPECTED_MEMBERS = [
   "package/LICENSE",
   "package/README.md",

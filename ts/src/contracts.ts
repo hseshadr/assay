@@ -192,10 +192,11 @@ function snapshotArray(
   const shape = reflectedShape(source);
   if (shape.prototype !== Array.prototype) invalidObject();
   const length = arrayLength(source, shape);
+  const keys = new Set(shape.keys);
   const output: unknown[] = [];
   for (let index = 0; index < length; index += 1) {
     const key = String(index);
-    if (!shape.keys.includes(key)) invalidObject();
+    if (!keys.has(key)) invalidObject();
     output.push(snapshotValue(dataValue(source, key), seen));
   }
   requireStableShape(source, shape);
@@ -398,20 +399,31 @@ function optionalInterval(value: unknown): Interval | null {
   return value === null ? null : parseInterval(value);
 }
 
+function requirePointInInterval(
+  value: number,
+  interval: Interval | null,
+): void {
+  if (interval !== null && (value < interval.low || value > interval.high)) {
+    fail(ContractCode.INVALID_INTERVAL);
+  }
+}
+
 function parseComponent(value: unknown): Component {
   const source = shape(
     value,
     ["id", "label", "value", "scale", "interval", "weight"],
     ["id", "label", "value", "scale"],
   );
-  return {
+  const parsed = {
     id: identifier(source.id),
     label: label(source.label),
     value: finite(source.value),
     scale: parseScale(source.scale),
     interval: optionalInterval(source.interval ?? null),
     weight: optionalPositive(source.weight ?? null),
-  };
+  } satisfies Component;
+  requirePointInInterval(parsed.value, parsed.interval);
+  return parsed;
 }
 
 function parseTerm(value: unknown): AdditiveTerm {
@@ -420,14 +432,16 @@ function parseTerm(value: unknown): AdditiveTerm {
     ["id", "label", "value", "coefficient", "operation", "interval"],
     ["id", "label", "value", "coefficient", "operation"],
   );
-  return {
+  const parsed = {
     id: identifier(source.id),
     label: label(source.label),
     value: finite(source.value),
     coefficient: nonnegative(source.coefficient),
     operation: operation(source.operation),
     interval: optionalInterval(source.interval ?? null),
-  };
+  } satisfies AdditiveTerm;
+  requirePointInInterval(parsed.value, parsed.interval);
+  return parsed;
 }
 
 function array(value: unknown): ReadonlyArray<unknown> {

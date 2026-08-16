@@ -81,7 +81,8 @@ function resultInterval(
   const highs = rows.map(
     (item) => item.contribution_interval?.high ?? item.contribution,
   );
-  return { low: leftAdd(lows), high: leftAdd(highs) };
+  const result = { low: leftAdd(lows), high: leftAdd(highs) };
+  return result.low === result.high ? null : result;
 }
 
 export function weightedMean(input: WeightedMeanRequest): ScoreResult {

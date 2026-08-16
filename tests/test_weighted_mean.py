@@ -115,6 +115,36 @@ def test_should_reuse_effective_coefficient_for_point_and_interval_endpoints() -
     assert result.components[0].contribution_interval == result.interval
 
 
+def test_should_collapse_distinct_row_bounds_after_ordered_summation() -> None:
+    # Given row bounds that remain distinct but sum to the same binary64 value
+    request = WeightedMeanRequest(
+        method="weighted_mean",
+        method_version="collapse.v1",
+        components=(
+            Component(id="first", label="First", value=1.0, scale=_scale(0.0, 1.0), weight=1.0),
+            Component(
+                id="second",
+                label="Second",
+                value=1.0000000000000001e-16,
+                interval=Interval(low=1e-16, high=1.0000000000000002e-16),
+                scale=_scale(0.0, 1.0),
+                weight=1.0,
+            ),
+        ),
+        clamp=ClampPolicy.REJECT,
+    )
+
+    # When both runtimes add the row bounds in declaration order
+    result = compose(request)
+
+    # Then the aggregate deterministic interval collapses and the digest stays exact
+    assert result.score == 0.5
+    assert result.interval is None
+    assert result.inputs_hash == (
+        "sha256:db971d392461287de1798999a33f4afbfda3f9ec433f76104347aec7a11ca1a7"
+    )
+
+
 def test_should_emit_method_schema_determinism_and_pinned_inputs_hash() -> None:
     # Given one deterministic literal request with a cross-language preimage
     request = _request(

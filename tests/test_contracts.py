@@ -27,6 +27,7 @@ from assay import (
     ScoreRequest,
     ScoreResult,
     WeightedMeanRequest,
+    compose,
     parse_request,
     parse_request_json,
 )
@@ -518,6 +519,94 @@ def test_should_revalidate_model_copy_updates() -> None:
         _component().model_copy(update={"value": math.inf})
     with pytest.raises(ContractValidationError, match=r"assay\.invalid_method"):
         _weighted_request().model_copy(update={"method": "minimum"})
+
+
+def test_should_require_request_intervals_to_contain_their_point_at_every_boundary() -> None:
+    # Given component and term intervals that exclude their declared point
+    interval = {"low": 0.1, "high": 0.2}
+    component = {
+        "id": "quality",
+        "label": "Quality",
+        "value": 0.5,
+        "scale": {
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "direction": "higher_is_better",
+        },
+        "interval": interval,
+        "weight": 1.0,
+    }
+    term = {
+        "id": "quality",
+        "label": "Quality",
+        "value": 0.5,
+        "coefficient": 1.0,
+        "operation": "add",
+        "interval": interval,
+    }
+
+    # When they enter through object, JSON, copy, or forged-model paths
+    for model, payload in ((Component, component), (AdditiveTerm, term)):
+        with pytest.raises(ContractValidationError, match=r"assay\.invalid_interval"):
+            model.model_validate(payload)
+        with pytest.raises(ContractValidationError, match=r"assay\.invalid_interval"):
+            model.model_validate_json(json.dumps(payload))
+
+    valid_component = Component.model_validate({**component, "interval": {"low": 0.4, "high": 0.6}})
+    valid_term = AdditiveTerm.model_validate({**term, "interval": {"low": 0.4, "high": 0.6}})
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_interval"):
+        valid_component.model_copy(update={"value": 0.9})
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_interval"):
+        valid_term.model_copy(update={"value": 0.9})
+
+    forged = Component.model_construct(**component)
+    request_payload = _weighted_request().model_dump()
+    request_payload["components"] = (forged,)
+    with pytest.raises(ContractValidationError, match=r"assay\.invalid_interval"):
+        WeightedMeanRequest.model_validate(request_payload)
+
+
+def test_should_compose_every_method_when_request_intervals_contain_their_point() -> None:
+    # Given one valid uncertain request for every combiner
+    component = Component(
+        id="quality",
+        label="Quality",
+        value=0.5,
+        scale=NativeScale(minimum=0, maximum=1, direction=Direction.HIGHER_IS_BETTER),
+        interval=Interval(low=0.4, high=0.6),
+        weight=1.0,
+    )
+    term = AdditiveTerm(
+        id="quality",
+        label="Quality",
+        value=0.5,
+        coefficient=1.0,
+        operation=Operation.ADD,
+        interval=Interval(low=0.4, high=0.6),
+    )
+    requests: tuple[ScoreRequest, ...] = (
+        WeightedMeanRequest(
+            method="weighted_mean",
+            method_version="total.v1",
+            components=(component,),
+            clamp=ClampPolicy.REJECT,
+        ),
+        MinimumRequest(
+            method="minimum",
+            method_version="total.v1",
+            components=(component.model_copy(update={"weight": None}),),
+            clamp=ClampPolicy.REJECT,
+        ),
+        AdditiveRequest(
+            method="additive",
+            method_version="total.v1",
+            terms=(term,),
+            clamp=None,
+        ),
+    )
+
+    # When they compose, result containment remains total
+    assert all(len(compose(request).components) == 1 for request in requests)
 
 
 def test_should_revalidate_forged_nested_scale_instances() -> None:

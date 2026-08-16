@@ -879,6 +879,19 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
 
 _COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
+        name="request-interval-contains-declared-point",
+        claim="every accepted request interval contains its declared point value",
+        target="src/assay/contracts.py",
+        guard=(
+            "tests/test_contracts.py::"
+            "test_should_require_request_intervals_to_contain_their_point_at_every_boundary",
+        ),
+        edit=_replace_once(
+            "    if interval is not None and not interval.low <= value <= interval.high:",
+            "    if False:",
+        ),
+    ),
+    Mutation(
         name="composition-honors-normalization-direction",
         claim="lower-is-better endpoints reverse before weighted composition",
         target="src/assay/normalize.py",
@@ -918,6 +931,19 @@ _COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
             "    total = _total_weight(request)\n"
             "    return interval_or_none(finite_output(low * _weight(component) / total), "
             "finite_output(high * _weight(component) / total))",
+        ),
+    ),
+    Mutation(
+        name="weighted-aggregate-interval-collapses-after-summation",
+        claim="equal aggregate binary64 bounds serialize as a deterministic null interval",
+        target="src/assay/weighted_mean.py",
+        guard=(
+            "tests/test_weighted_mean.py::"
+            "test_should_collapse_distinct_row_bounds_after_ordered_summation",
+        ),
+        edit=_replace_once(
+            "    return interval_or_none(low, high)",
+            "    return Interval(low=low, high=high)",
         ),
     ),
     Mutation(
@@ -1017,9 +1043,10 @@ _COMPOSITION_MUTATIONS: tuple[Mutation, ...] = (
             "test_should_reject_declared_row_weight_on_nonweighted_results[_additive]",
         ),
         edit=_replace_once(
-            "        row.normalized is None and row.declared_weight is None "
-            "and row.contribution == contribution",
-            "        row.normalized is None and row.contribution == contribution",
+            "        row.normalized is None\n"
+            "        and row.declared_weight is None\n"
+            "        and row.contribution == contribution",
+            "        row.normalized is None\n        and row.contribution == contribution",
         ),
     ),
     Mutation(

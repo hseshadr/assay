@@ -459,6 +459,11 @@ class Interval(_ContractModel):
         return self
 
 
+def _require_point_in_interval(value: float, interval: Interval | None) -> None:
+    if interval is not None and not interval.low <= value <= interval.high:
+        _fail(ContractCode.INVALID_INTERVAL)
+
+
 class Component(_ContractModel):
     """A measurement on its declared native scale."""
 
@@ -470,6 +475,11 @@ class Component(_ContractModel):
     scale: NativeScale
     interval: Interval | None = None
     weight: _PositiveWeight | None = None
+
+    @model_validator(mode="after")
+    def _require_interval_to_contain_value(self) -> Self:
+        _require_point_in_interval(self.value, self.interval)
+        return self
 
 
 class AdditiveTerm(_ContractModel):
@@ -483,6 +493,11 @@ class AdditiveTerm(_ContractModel):
     coefficient: _NonnegativeCoefficient
     operation: _ExplicitOperation
     interval: Interval | None = None
+
+    @model_validator(mode="after")
+    def _require_interval_to_contain_value(self) -> Self:
+        _require_point_in_interval(self.value, self.interval)
+        return self
 
 
 class ExplainedComponent(_ContractModel):

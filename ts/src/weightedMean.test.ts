@@ -135,6 +135,40 @@ describe("weightedMean", () => {
     expect(result.components[0]?.contribution_interval).toBeNull();
   });
 
+  it("matches Python when distinct row bounds collapse after ordered summation", () => {
+    const request = parseRequest({
+      method: "weighted_mean",
+      method_version: "collapse.v1",
+      components: [
+        {
+          id: "first",
+          label: "First",
+          value: 1,
+          scale: { minimum: 0, maximum: 1, direction: "higher_is_better" },
+          weight: 1,
+        },
+        {
+          id: "second",
+          label: "Second",
+          value: 1.0000000000000001e-16,
+          scale: { minimum: 0, maximum: 1, direction: "higher_is_better" },
+          interval: { low: 1e-16, high: 1.0000000000000002e-16 },
+          weight: 1,
+        },
+      ],
+      clamp: "reject",
+    });
+    if (request.method !== "weighted_mean") throw new Error("wrong request");
+
+    const result = weightedMean(request);
+
+    expect(result.score).toBe(0.5);
+    expect(result.interval).toBeNull();
+    expect(result.inputs_hash).toBe(
+      "sha256:db971d392461287de1798999a33f4afbfda3f9ec433f76104347aec7a11ca1a7",
+    );
+  });
+
   it("rejects non-finite weighted arithmetic", () => {
     const request = parseRequest({
       method: "weighted_mean",
