@@ -3,11 +3,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib
+import io
 import json
 import shutil
 import subprocess
 import sys
+import tarfile
 import urllib.error
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -26,12 +29,44 @@ def _identity_fixture(tmp_path: Path, *, python_version: str, npm_version: str) 
     package = json.loads(Path("ts/package.json").read_text(encoding="utf-8"))
     package["version"] = npm_version
     (root / "ts/package.json").write_text(json.dumps(package), encoding="utf-8")
+    _initialize_repository(root)
     return root / "scripts/verify_release_identity.py"
 
 
-def _run_identity(script: Path, tag: str) -> subprocess.CompletedProcess[str]:
+def _git(root: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", *arguments], cwd=root, check=True, capture_output=True, text=True
+    )
+    return result.stdout.strip()
+
+
+def _initialize_repository(root: Path) -> None:
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "assay-tests@example.invalid")
+    _git(root, "config", "user.name", "Assay Tests")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "fixture")
+
+
+def _tag(root: Path, tag: str, *, annotated: bool = False, target: str = "HEAD") -> None:
+    arguments = ("tag", "-am", "fixture tag", tag, target) if annotated else ("tag", tag, target)
+    _git(root, *arguments)
+
+
+def _run_identity(
+    script: Path,
+    tag: str,
+    *,
+    annotated: bool = False,
+    target: str = "HEAD",
+    github_sha: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    root = script.parents[1]
+    _tag(root, tag, annotated=annotated, target=target)
+    expected = github_sha or _git(root, "rev-parse", "HEAD")
     return subprocess.run(
-        [sys.executable, script, tag],
+        [sys.executable, script, tag, expected],
+        cwd=root,
         check=False,
         capture_output=True,
         text=True,
@@ -55,6 +90,43 @@ def test_should_accept_exact_stable_and_dev_release_identities(
         f"verified release identity: {tag}\n",
         "",
     )
+
+
+@pytest.mark.parametrize("annotated", [False, True], ids=("lightweight", "annotated"))
+def test_should_peel_the_release_tag_to_the_exact_head_commit(
+    tmp_path: Path, annotated: bool
+) -> None:
+    # Given either supported Git tag representation at the checked-out release commit
+    script = _identity_fixture(tmp_path, python_version="0.5.0.dev0", npm_version="0.5.0-dev.0")
+    # When source identities, peeled tag target, HEAD, and hosted SHA are verified together
+    result = _run_identity(script, "v0.5.0-dev.0", annotated=annotated)
+    # Then both tag forms bind to the same immutable release commit
+    assert (result.returncode, result.stderr) == (0, "")
+
+
+def test_should_reject_a_release_tag_pointing_away_from_head(tmp_path: Path) -> None:
+    # Given a release tag on the first commit and a newer checked-out HEAD
+    script = _identity_fixture(tmp_path, python_version="0.5.0.dev0", npm_version="0.5.0-dev.0")
+    root = script.parents[1]
+    tagged = _git(root, "rev-parse", "HEAD")
+    (root / "README").write_text("new head\n", encoding="utf-8")
+    _git(root, "add", "README")
+    _git(root, "commit", "-qm", "advance head")
+    # When the old commit is tagged for the new release
+    result = _run_identity(script, "v0.5.0-dev.0", target=tagged)
+    # Then release eligibility fails closed
+    assert (result.returncode, result.stdout) == (1, "")
+    assert result.stderr == "release tag, commit, and artifact versions do not match\n"
+
+
+def test_should_reject_a_hosted_sha_different_from_tag_and_head(tmp_path: Path) -> None:
+    # Given an exact tag at HEAD but a different hosted SHA
+    script = _identity_fixture(tmp_path, python_version="0.5.0.dev0", npm_version="0.5.0-dev.0")
+    # When release eligibility checks the mismatched hosted context
+    result = _run_identity(script, "v0.5.0-dev.0", github_sha="f" * 40)
+    # Then it cannot publish artifacts from an unbound commit
+    assert (result.returncode, result.stdout) == (1, "")
+    assert result.stderr == "release tag, commit, and artifact versions do not match\n"
 
 
 @pytest.mark.parametrize(
@@ -91,6 +163,14 @@ def _load_guard() -> object:
     sys.path.insert(0, str(Path.cwd()))
     try:
         return importlib.import_module("scripts.registry_release_guard")
+    finally:
+        sys.path.pop(0)
+
+
+def _load_module(name: str) -> object:
+    sys.path.insert(0, str(Path.cwd()))
+    try:
+        return importlib.import_module(name)
     finally:
         sys.path.pop(0)
 
@@ -177,6 +257,17 @@ def test_should_bind_pypi_provenance_to_filename_digest_and_publisher() -> None:
     assert guard.pypi_provenance_valid(payload, filename, "b" * 64) is False
     wrong = _pypi_attestation(filename=filename, sha256="a" * 64, repository="elsewhere/assay")
     assert guard.pypi_provenance_valid(wrong, filename, "a" * 64) is False
+
+
+def test_should_reject_duplicate_pypi_filename_records() -> None:
+    # Given two PyPI records that repeat one filename even with the same digest
+    guard = _load_guard()
+    record = {"filename": "assay_engine-1.2.3.tar.gz", "digests": {"sha256": "a" * 64}}
+    payload = {"urls": [record, record]}
+    # When registry filenames are normalized for exact-set comparison
+    # Then duplicates cannot disappear through dictionary overwrite
+    with pytest.raises(ValueError, match="duplicate PyPI filename"):
+        guard._pypi_digests(payload)
 
 
 def test_should_bind_npm_provenance_to_repository_workflow_tag_and_sha(tmp_path: Path) -> None:
@@ -359,6 +450,121 @@ def test_should_reproduce_python_artifacts_across_independent_builds(tmp_path: P
     assert len(tuple(first.glob("*.tar.gz"))) == 1
 
 
+def test_should_derive_the_build_epoch_only_from_packaged_python_sources(tmp_path: Path) -> None:
+    # Given a package-source commit followed by a later report-only commit
+    epoch = _load_module("scripts.release_epoch")
+    (tmp_path / "src/assay").mkdir(parents=True)
+    (tmp_path / "src/assay/module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[build-system]\n", encoding="utf-8")
+    _initialize_repository(tmp_path)
+    source_epoch = epoch.source_date_epoch(tmp_path)
+    (tmp_path / "implementation-report.md").write_text("evidence\n", encoding="utf-8")
+    _git(tmp_path, "add", "implementation-report.md")
+    _git(tmp_path, "commit", "-qm", "report only")
+    # When the release epoch is derived again at the newer repository HEAD
+    # Then report-only history cannot perturb wheel or sdist timestamps
+    assert epoch.source_date_epoch(tmp_path) == source_epoch
+
+
+@pytest.fixture(scope="module")
+def release_bundle(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("release-bundle") / "release"
+    result = subprocess.run(
+        ["bash", "scripts/build_release_artifacts.sh", root],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return root
+
+
+def _rewrite_manifest(root: Path) -> None:
+    files = tuple(
+        sorted(path for path in root.rglob("*") if path.is_file() and path.name != "SHA256SUMS")
+    )
+    lines = (
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}"
+        for path in files
+    )
+    (root / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "python/assay_engine-0.5.0.dev0-py3-none-any.whl",
+        "python/assay_engine-0.5.0.dev0.tar.gz",
+        "npm/edgeproc-assay-0.5.0-dev.0.tgz",
+    ],
+)
+def test_should_reject_renamed_release_artifacts_even_with_a_new_manifest(
+    release_bundle: Path, tmp_path: Path, relative: str
+) -> None:
+    # Given valid bytes renamed away from their exact source-version-derived filename
+    root = tmp_path / "release"
+    shutil.copytree(release_bundle, root)
+    artifact = root / relative
+    artifact.rename(artifact.with_name(f"renamed-{artifact.name}"))
+    _rewrite_manifest(root)
+    # When the preflight verifier checks the recomputed envelope
+    verifier = _load_module("scripts.verify_release_artifacts")
+    # Then filenames cannot be discovered and trusted after the fact
+    with pytest.raises(ValueError, match="release artifact filename mismatch"):
+        verifier.verify_release_bundle(root)
+
+
+def test_should_reject_a_duplicate_wheel_record(release_bundle: Path, tmp_path: Path) -> None:
+    # Given a valid wheel with a duplicate archive record and a recomputed manifest
+    root = tmp_path / "release"
+    shutil.copytree(release_bundle, root)
+    wheel = next((root / "python").glob("*.whl"))
+    with pytest.warns(UserWarning, match=r"Duplicate name: 'assay/py\.typed'"):
+        with zipfile.ZipFile(wheel, "a") as archive:
+            archive.writestr("assay/py.typed", b"")
+    _rewrite_manifest(root)
+    # When exact member validation runs
+    verifier = _load_module("scripts.verify_release_artifacts")
+    # Then a duplicate cannot be hidden by set normalization
+    with pytest.raises(ValueError, match="duplicate wheel member"):
+        verifier.verify_release_bundle(root)
+
+
+def _append_tar_link(path: Path, *, link_type: bytes) -> None:
+    replacement = path.with_suffix(".replacement")
+    with tarfile.open(path, "r:gz") as source, tarfile.open(replacement, "w:gz") as target:
+        for member in source.getmembers():
+            payload = source.extractfile(member)
+            target.addfile(member, payload)
+        link = tarfile.TarInfo("unexpected-link")
+        link.type = link_type
+        link.linkname = "package/package.json"
+        target.addfile(link, io.BytesIO())
+    replacement.replace(path)
+
+
+@pytest.mark.parametrize(
+    ("relative", "link_type"),
+    [
+        ("python/assay_engine-0.5.0.dev0.tar.gz", tarfile.SYMTYPE),
+        ("npm/edgeproc-assay-0.5.0-dev.0.tgz", tarfile.LNKTYPE),
+    ],
+)
+def test_should_reject_every_nonregular_tar_member(
+    release_bundle: Path, tmp_path: Path, relative: str, link_type: bytes
+) -> None:
+    # Given an otherwise valid sdist/npm tarball with an extra link and recomputed checksum
+    root = tmp_path / "release"
+    shutil.copytree(release_bundle, root)
+    _append_tar_link(root / relative, link_type=link_type)
+    _rewrite_manifest(root)
+    # When preflight inspects the complete archive member stream
+    verifier = _load_module("scripts.verify_release_artifacts")
+    # Then symlinks, hardlinks, devices, and other non-regular entries fail closed
+    with pytest.raises(ValueError, match="non-regular tar member"):
+        verifier.verify_release_bundle(root)
+
+
 def test_should_freeze_scoring_only_benchmark_workloads_and_budgets() -> None:
     # Given executable Python and TypeScript release benchmark entry points
     python = Path("benchmarks/release.py").read_text(encoding="utf-8")
@@ -373,6 +579,254 @@ def test_should_freeze_scoring_only_benchmark_workloads_and_budgets() -> None:
     assert all(token in operations for token in expected)
     assert "receipt" not in python.lower() + typescript.lower()
     assert "ledger" not in python.lower() + typescript.lower()
+
+
+def test_should_report_typescript_peak_rss_from_the_process_high_water_mark() -> None:
+    # Given a deterministic resource-usage high-water mark
+    program = (
+        "import { peakRssMib } from './ts/benchmarks/resourceUsage.mjs';"
+        "console.log(peakRssMib({maxRSS: 2048}));"
+    )
+    # When the benchmark helper normalizes Node's KiB maxRSS value
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    # Then it reports the real 2 MiB high-water mark, not current RSS
+    assert (result.returncode, result.stdout, result.stderr) == (0, "2\n", "")
+    source = Path("ts/benchmarks/release.mjs").read_text(encoding="utf-8")
+    assert "process.memoryUsage().rss" not in source
+    assert "peakRssMib(process.resourceUsage())" in source
+
+
+def _served_payloads(root: Path) -> tuple[dict[str, object], dict[str, object], dict[str, bytes]]:
+    python_files = tuple(sorted((root / "python").iterdir()))
+    npm = next((root / "npm").glob("*.tgz"))
+    downloads = {
+        f"https://files.pythonhosted.org/{path.name}": path.read_bytes() for path in python_files
+    }
+    npm_url = f"https://registry.npmjs.org/@edgeproc/assay/-/{npm.name}"
+    downloads[npm_url] = npm.read_bytes()
+    pypi = {
+        "urls": [
+            {"filename": path.name, "url": f"https://files.pythonhosted.org/{path.name}"}
+            for path in python_files
+        ]
+    }
+    return pypi, {"dist": {"tarball": npm_url}}, downloads
+
+
+def test_should_materialize_and_verify_the_actual_registry_served_bytes(
+    release_bundle: Path, tmp_path: Path
+) -> None:
+    # Given authoritative registry metadata whose download URLs serve the reviewed bytes
+    verifier = _load_module("scripts.verify_published_release")
+    pypi, npm, downloads = _served_payloads(release_bundle)
+    served = tmp_path / "served"
+
+    def fetch(url: str, _deadline: float, expected_size: int) -> bytes:
+        assert len(downloads[url]) == expected_size
+        return downloads[url]
+
+    # When final verification materializes the registry responses
+    verifier.materialize_served_bundle(release_bundle, served, pypi, npm, fetch, 600.0)
+    # Then all three local files came from the served responses and form the exact envelope
+    expected = {
+        path.relative_to(release_bundle): path.read_bytes()
+        for path in release_bundle.rglob("*")
+        if path.is_file()
+    }
+    actual = {
+        path.relative_to(served): path.read_bytes() for path in served.rglob("*") if path.is_file()
+    }
+    assert actual == expected
+
+
+def test_should_retry_only_authoritative_propagation_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given registry state that is authoritatively absent twice before becoming ready
+    verifier = _load_module("scripts.verify_published_release")
+    now = [0.0]
+    attempts = [0]
+    sleeps: list[float] = []
+    monkeypatch.setattr(verifier.time, "monotonic", lambda: now[0])
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    def verify(deadline: float) -> None:
+        assert deadline == 600.0
+        attempts[0] += 1
+        if attempts[0] < 3:
+            raise verifier.PropagationPending("registry object is absent")
+
+    monkeypatch.setattr(verifier.time, "sleep", sleep)
+    # When bounded polling runs
+    verifier.poll_until_verified(verify, timeout_seconds=600.0)
+    # Then only the two explicit absences were retried within the one global deadline
+    assert (attempts, sleeps, now) == ([3], [10.0, 10.0], [20.0])
+
+
+def test_should_fail_immediately_on_permanent_registry_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a permanent byte/provenance/channel conflict
+    verifier = _load_module("scripts.verify_published_release")
+    sleeps: list[float] = []
+    monkeypatch.setattr(verifier.time, "sleep", sleeps.append)
+
+    def verify(_deadline: float) -> None:
+        raise ValueError("registry artifact mismatch")
+
+    # When final verification runs
+    with pytest.raises(ValueError, match="registry artifact mismatch"):
+        verifier.poll_until_verified(verify, timeout_seconds=600.0)
+    # Then it does not turn a permanent failure into ten minutes of retries
+    assert sleeps == []
+
+
+def test_should_bound_http_and_sleep_to_one_global_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given only five seconds remain in the complete verification budget
+    verifier = _load_module("scripts.verify_published_release")
+    observed: list[float] = []
+    monkeypatch.setattr(verifier.time, "monotonic", lambda: 595.0)
+
+    def open_url(_url: str, *, timeout: float) -> object:
+        observed.append(timeout)
+        raise urllib.error.HTTPError("https://registry.npmjs.org/x", 503, "", {}, None)
+
+    monkeypatch.setattr(verifier.urllib.request, "urlopen", open_url)
+    # When one HTTP read starts against the absolute 600-second deadline
+    with pytest.raises(urllib.error.HTTPError):
+        verifier.read_served_bytes("https://registry.npmjs.org/x", 600.0, 4)
+    # Then the HTTP timeout consumes no more than the remaining global budget
+    assert observed == [5.0]
+
+
+class _Response(io.BytesIO):
+    def __init__(self, payload: bytes, headers: dict[str, str] | None = None) -> None:
+        super().__init__(payload)
+        self.headers = headers or {}
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *_arguments: object) -> None:
+        self.close()
+
+
+@pytest.mark.parametrize("headers", [{}, {"Content-Length": "1"}])
+def test_should_bound_registry_json_when_content_length_is_absent_or_lies(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+) -> None:
+    # Given an oversized registry response with no trustworthy size declaration
+    guard = _load_guard()
+    payload = b'"' + b"x" * guard._METADATA_LIMIT + b'"'
+    monkeypatch.setattr(
+        guard.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _Response(payload, headers),
+    )
+    # When metadata is streamed
+    # Then the explicit cap wins over absent or dishonest Content-Length
+    with pytest.raises(ValueError, match="registry metadata exceeds limit"):
+        guard._read_json("https://registry.example/metadata", 5.0)
+
+
+@pytest.mark.parametrize("headers", [{}, {"Content-Length": "4"}])
+def test_should_bound_served_artifacts_to_the_reviewed_local_size(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+) -> None:
+    # Given a registry artifact response larger than the reviewed four-byte candidate
+    verifier = _load_module("scripts.verify_published_release")
+    monkeypatch.setattr(
+        verifier.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _Response(b"abcde", headers),
+    )
+    monkeypatch.setattr(verifier.time, "monotonic", lambda: 0.0)
+    # When actual served bytes are read
+    # Then both absent and lying lengths fail before unbounded memory or disk use
+    with pytest.raises(ValueError, match="registry artifact size mismatch"):
+        verifier.read_served_bytes("https://registry.npmjs.org/artifact", 5.0, 4)
+
+
+def test_should_use_five_isolated_heavy_samples_and_nearest_rank_percentiles() -> None:
+    # Given the frozen benchmark contracts in both runtimes
+    contracts = _load_module("benchmarks._contracts")
+    python = Path("benchmarks/release.py").read_text(encoding="utf-8")
+    typescript = Path("ts/benchmarks/release.mjs").read_text(encoding="utf-8")
+    # When the heavy workload distribution is inspected
+    # Then one observation can never masquerade as three percentiles
+    assert contracts.HEAVY_SAMPLES == 5
+    assert contracts.percentile([5.0, 1.0, 3.0, 2.0, 4.0], 0.50) == 3.0
+    assert contracts.percentile([5.0, 1.0, 3.0, 2.0, 4.0], 0.95) == 5.0
+    assert "range(HEAVY_SAMPLES)" in python
+    assert "const HEAVY_SAMPLES = 5" in typescript
+    assert "--sample" in python
+    assert "--sample" in typescript
+
+
+def test_should_time_out_a_hung_python_benchmark_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a child process that exceeds its workload-specific execution bound
+    release = _load_module("benchmarks.release")
+
+    def hang(*_args: object, **_kwargs: object) -> object:
+        raise subprocess.TimeoutExpired("python", 65.0)
+
+    monkeypatch.setattr(release.subprocess, "run", hang)
+    # When the isolated sampler waits for it
+    # Then it fails with a stable bounded-execution error
+    with pytest.raises(RuntimeError, match="benchmark child timed out"):
+        release._run_sample("minimum")
+
+
+def test_should_inventory_ignored_release_outputs_but_not_managed_dependencies(
+    tmp_path: Path,
+) -> None:
+    # Given generated release outputs alongside managed Python and Node dependencies
+    harness = _load_module("scripts.mutation_harness")
+    (tmp_path / ".venv/lib").mkdir(parents=True)
+    (tmp_path / ".venv/lib/managed").write_text("managed\n", encoding="utf-8")
+    (tmp_path / "ts/node_modules/pkg").mkdir(parents=True)
+    (tmp_path / "ts/node_modules/pkg/index.js").write_text("managed\n", encoding="utf-8")
+    (tmp_path / "dist/release/python").mkdir(parents=True)
+    (tmp_path / "dist/release/python/assay.whl").write_bytes(b"wheel")
+    (tmp_path / "dist/publish-tools").mkdir(parents=True)
+    (tmp_path / "dist/publish-tools/npm.tgz").write_bytes(b"npm")
+    # When the whole-tree cleanliness inventory is captured
+    inventory = harness._generated_inventory(tmp_path)
+    # Then ignored release products remain visible without hashing managed environments
+    assert inventory == (
+        "dist/publish-tools/npm.tgz",
+        "dist/release/python/assay.whl",
+    )
+
+
+def test_should_remove_every_generated_release_output_when_the_local_gate_exits() -> None:
+    # Given the complete local release candidate script
+    source = Path("scripts/verify_release_candidate.sh").read_text(encoding="utf-8")
+    # Then success and failure both clean the configurable artifact and staged-publisher roots
+    assert "trap cleanup EXIT" in source
+    assert 'rm -rf -- "$artifact_root" "$publisher_root"' in source
+    assert 'artifact_root="${ASSAY_ARTIFACT_ROOT:-dist/release}"' in source
+    assert 'publisher_root="${ASSAY_PUBLISHER_ROOT:-dist/publish-tools}"' in source
+
+
+def test_should_describe_only_current_assay_mutation_surfaces() -> None:
+    # Given the mutation harness is also the operator-facing map of retained guards
+    source = Path("scripts/mutation_harness.py").read_text(encoding="utf-8")
+    # Then deleted Avow concepts and obsolete vector-workaround commentary stay absent
+    assert "Legacy Avow" not in source
+    assert "A one-item file has nothing to drop" not in source
 
 
 def test_should_keep_oidc_jobs_free_of_source_execution_and_long_lived_secrets() -> None:

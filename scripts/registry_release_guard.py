@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from scripts.verify_release_artifacts import verify_release_bundle
 
@@ -30,6 +30,17 @@ _REPOSITORY = "https://github.com/hseshadr/assay"
 _PYPI_REPOSITORY = "hseshadr/assay"
 _WORKFLOW = ".github/workflows/publish.yml"
 _FETCH_ATTEMPTS = 3
+_METADATA_LIMIT = 1_048_576
+
+
+class _Headers(Protocol):
+    def get(self, name: str) -> str | None: ...
+
+
+class _ReadableResponse(Protocol):
+    headers: _Headers
+
+    def read(self, size: int = -1) -> bytes: ...
 
 
 @dataclass(frozen=True)
@@ -84,11 +95,14 @@ def _local_python_digests(root: Path) -> dict[str, str]:
 
 def _pypi_digests(payload: object) -> dict[str, str]:
     urls = _sequence(_mapping(payload).get("urls"))
-    records = (_mapping(item) for item in urls)
-    return {
-        str(record.get("filename")): str(_mapping(record.get("digests")).get("sha256"))
-        for record in records
-    }
+    digests: dict[str, str] = {}
+    for item in urls:
+        record = _mapping(item)
+        filename = str(record.get("filename"))
+        if filename in digests:
+            raise ValueError("duplicate PyPI filename")
+        digests[filename] = str(_mapping(record.get("digests")).get("sha256"))
+    return digests
 
 
 def pypi_release_state(root: Path, payload: object | None, provenance: set[str]) -> bool:
@@ -334,9 +348,32 @@ def npm_release_state(
     return False
 
 
+def _declared_length(headers: _Headers) -> int | None:
+    raw = headers.get("Content-Length")
+    if raw is None:
+        return None
+    try:
+        length = int(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError("registry metadata length is malformed") from error
+    if length < 0:
+        raise ValueError("registry metadata length is malformed")
+    return length
+
+
+def _bounded_response(response: _ReadableResponse, limit: int) -> bytes:
+    declared = _declared_length(response.headers)
+    if declared is not None and declared > limit:
+        raise ValueError("registry metadata exceeds limit")
+    payload = response.read(limit + 1)
+    if len(payload) > limit:
+        raise ValueError("registry metadata exceeds limit")
+    return payload
+
+
 def _read_json(url: str, timeout: float) -> object:
     with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
-        payload = cast(object, json.load(response))
+        payload = cast(object, json.loads(_bounded_response(response, _METADATA_LIMIT)))
     if payload is None:
         raise ValueError("registry metadata is malformed")
     return payload
@@ -468,8 +505,8 @@ def _write_decision(path: Path, decision: ReleaseDecision) -> None:
             (
                 f"dist-tag={decision.channel}",
                 f"publish-tag={decision.publish_tag}",
-                f"channel-version={decision.channel_version or ''}",
-                f"publish-tag-version={decision.publish_tag_version or ''}",
+                f"channel-version={decision.channel_version or '__ABSENT__'}",
+                f"publish-tag-version={decision.publish_tag_version or '__ABSENT__'}",
             )
         )
     with path.open("a", encoding="utf-8") as output:

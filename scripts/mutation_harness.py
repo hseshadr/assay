@@ -23,8 +23,7 @@ The mutation is read back off disk before the second run, so an edit that silent
 failed to apply can never be reported as a guard that held.
 
 The active release set covers the complete Assay Python and TypeScript scoring
-surfaces plus the dependency-quarantine policy. Legacy Avow receipt and ledger
-declarations are intentionally absent: they are not part of the Assay distribution.
+surfaces plus the dependency-quarantine policy.
 
 Run it::
 
@@ -58,8 +57,8 @@ _NOTHING_COLLECTED = 5
 _PYTEST = "pytest"
 _VITEST = "vitest"
 
-# A one-item file has nothing to drop, so the vector-count mutation could not apply.
 _MIN_VECTORS_TO_DROP_ONE = 2
+_GENERATED_ROOTS = ("dist/publish-tools", "dist/release", "publish-tools", "release")
 
 _RANKING = "src/assay/ranking.py"
 _AGREEMENT = "src/assay/agreement.py"
@@ -581,7 +580,7 @@ _MIXED_PRODUCT_MUTATIONS: tuple[Mutation, ...] = (
         edit=_replace_once("minimumReleaseAge: 1440", "minimumReleaseAge: 0"),
     ),
     # ----------------------------------------------------------------------------------
-    # `@edgeproc/avow`'s metrics face. These run under VITEST, not pytest. The claims
+    # The TypeScript metrics face. These run under VITEST, not pytest. The claims
     # are the same claims the Python block above makes, because the two faces are
     # pinned to one another — so the guards have to be able to fail in both languages.
     # The verdict comes from vitest's JSON pass/fail counts; see the module docstring
@@ -1732,7 +1731,21 @@ def _tree_snapshot() -> str:
     for command in commands:
         completed = subprocess.run(command, cwd=_ROOT, capture_output=True, check=True)  # noqa: S603
         digest.update(completed.stdout)
+    for relative in _generated_inventory(_ROOT):
+        digest.update(relative.encode())
+        digest.update((_ROOT / relative).read_bytes())
     return digest.hexdigest()
+
+
+def _generated_inventory(root: Path) -> tuple[str, ...]:
+    """List ignored release products without traversing managed dependencies."""
+    files = (
+        path
+        for relative in _GENERATED_ROOTS
+        for path in (root / relative).rglob("*")
+        if path.is_file()
+    )
+    return tuple(sorted(path.relative_to(root).as_posix() for path in files))
 
 
 def _split_guards(guard: Sequence[str]) -> tuple[list[str], str]:

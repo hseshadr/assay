@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 COMPOSITION_BATCH_COUNT: Final[int] = 2_000
 COMPOSITION_SAMPLES: Final[int] = 5
+HEAVY_SAMPLES: Final[int] = 5
 MINIMUM_COMPONENT_COUNT: Final[int] = 150_000
 BINARY_ITEM_COUNT: Final[int] = 10_000
 BINARY_BOOTSTRAP_RESAMPLES: Final[int] = 99
@@ -35,6 +36,7 @@ class BenchmarkReport(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     workload: str
     count: int
+    samples: int
     p50_ms: float
     p95_ms: float
     p99_ms: float

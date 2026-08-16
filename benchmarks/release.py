@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import time
@@ -20,10 +21,11 @@ from assay import (
     measure,
 )
 from benchmarks._contracts import (
+    BENCHMARK_BUDGETS_MS,
     BINARY_BOOTSTRAP_RESAMPLES,
     BINARY_ITEM_COUNT,
     COMPOSITION_BATCH_COUNT,
-    COMPOSITION_SAMPLES,
+    HEAVY_SAMPLES,
     MINIMUM_COMPONENT_COUNT,
     BenchmarkReport,
     exact_sha,
@@ -34,6 +36,7 @@ from benchmarks._contracts import (
 )
 
 _CHILD_ARGUMENT_COUNT = 3
+_TIMEOUT_MARGIN_SECONDS = 15.0
 
 
 def _component(index: int, value: float) -> Component:
@@ -54,39 +57,39 @@ def _small_request() -> MinimumRequest:
     )
 
 
-def _timings(operation: Callable[[], object], samples: int) -> tuple[float, ...]:
-    values = []
-    for _ in range(samples):
-        started = time.perf_counter()
-        operation()
-        values.append((time.perf_counter() - started) * 1_000.0)
-    return tuple(values)
+def _timing(operation: Callable[[], object]) -> float:
+    started = time.perf_counter()
+    operation()
+    return (time.perf_counter() - started) * 1_000.0
 
 
-def _report(workload: str, count: int, timings: tuple[float, ...]) -> BenchmarkReport:
+def _report(
+    workload: str, count: int, timings: tuple[float, ...], peaks: tuple[float, ...]
+) -> BenchmarkReport:
     python, system = toolchain()
+    p50, p95, p99 = (percentile(timings, value) for value in (0.50, 0.95, 0.99))
     return BenchmarkReport(
         workload=workload,
         count=count,
-        p50_ms=percentile(timings, 0.50),
-        p95_ms=percentile(timings, 0.95),
-        p99_ms=percentile(timings, 0.99),
-        peak_rss_mib=peak_rss_mib(),
+        samples=len(timings),
+        p50_ms=p50,
+        p95_ms=p95,
+        p99_ms=p99,
+        peak_rss_mib=max(peaks),
         python=python,
         platform=system,
         sha=exact_sha(),
     )
 
 
-def _composition_batch() -> BenchmarkReport:
+def _composition_batch() -> tuple[int, Callable[[], object]]:
     request = _small_request()
 
     def run() -> None:
         for _ in range(COMPOSITION_BATCH_COUNT):
             compose(request)
 
-    timings = _timings(run, COMPOSITION_SAMPLES)
-    return _report("python-composition-batch", COMPOSITION_BATCH_COUNT, timings)
+    return COMPOSITION_BATCH_COUNT, run
 
 
 def _minimum_request() -> MinimumRequest:
@@ -101,15 +104,14 @@ def _minimum_request() -> MinimumRequest:
     )
 
 
-def _minimum_compose_replay() -> BenchmarkReport:
+def _minimum_compose_replay() -> tuple[int, Callable[[], object]]:
     request = _minimum_request()
 
     def run() -> None:
         result = compose(request)
         ScoreResult.model_validate_json(result.model_dump_json(by_alias=True))
 
-    timings = _timings(run, 1)
-    return _report("python-minimum-compose-replay", MINIMUM_COMPONENT_COUNT, timings)
+    return MINIMUM_COMPONENT_COUNT, run
 
 
 def _binary_controls() -> BinaryMetricControls:
@@ -135,39 +137,75 @@ def _binary_request() -> BinaryMeasurementRequest:
     )
 
 
-def _binary_measurement() -> BenchmarkReport:
+def _binary_measurement() -> tuple[int, Callable[[], object]]:
     request = _binary_request()
-    timings = _timings(lambda: measure(request), 1)
-    return _report("python-binary-measurement", BINARY_ITEM_COUNT, timings)
+    return BINARY_ITEM_COUNT, lambda: measure(request)
 
 
-_RUNNERS: dict[str, Callable[[], BenchmarkReport]] = {
+_RUNNERS: dict[str, Callable[[], tuple[int, Callable[[], object]]]] = {
     "composition": _composition_batch,
     "minimum": _minimum_compose_replay,
     "binary": _binary_measurement,
 }
 
+_WORKLOADS = {
+    "composition": "python-composition-batch",
+    "minimum": "python-minimum-compose-replay",
+    "binary": "python-binary-measurement",
+}
+_COUNTS = {
+    "composition": COMPOSITION_BATCH_COUNT,
+    "minimum": MINIMUM_COMPONENT_COUNT,
+    "binary": BINARY_ITEM_COUNT,
+}
 
-def _run_child(name: str) -> BenchmarkReport:
-    completed = subprocess.run(  # noqa: S603 - fixed interpreter and internal runner key
-        [sys.executable, "-m", "benchmarks.release", "--workload", name],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return BenchmarkReport.model_validate_json(completed.stdout)
+
+def _sample_timeout(name: str) -> float:
+    budget = BENCHMARK_BUDGETS_MS[_WORKLOADS[name]] / 1_000.0
+    return budget + _TIMEOUT_MARGIN_SECONDS
+
+
+def _run_sample(name: str) -> tuple[float, float]:
+    try:
+        completed = subprocess.run(  # noqa: S603
+            [sys.executable, "-m", "benchmarks.release", "--sample", name],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_sample_timeout(name),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("benchmark child timed out") from error
+    payload = json.loads(completed.stdout)
+    return float(payload["elapsed_ms"]), float(payload["peak_rss_mib"])
+
+
+def _isolated_report(name: str) -> BenchmarkReport:
+    samples = tuple(_run_sample(name) for _ in range(HEAVY_SAMPLES))
+    timings = tuple(sample[0] for sample in samples)
+    peaks = tuple(sample[1] for sample in samples)
+    return _report(_WORKLOADS[name], _COUNTS[name], timings, peaks)
+
+
+def _run_one_sample(name: str) -> None:
+    _count, operation = _RUNNERS[name]()
+    payload = {"elapsed_ms": _timing(operation), "peak_rss_mib": peak_rss_mib()}
+    print(json.dumps(payload, separators=(",", ":")))
 
 
 def _run_all() -> None:
     for name in _RUNNERS:
-        report = _run_child(name)
+        report = _isolated_report(name)
         require_budget(report)
         print(report.model_dump_json())
 
 
 def main() -> None:
+    if len(sys.argv) == _CHILD_ARGUMENT_COUNT and sys.argv[1] == "--sample":
+        _run_one_sample(sys.argv[2])
+        return
     if len(sys.argv) == _CHILD_ARGUMENT_COUNT and sys.argv[1] == "--workload":
-        report = _RUNNERS[sys.argv[2]]()
+        report = _isolated_report(sys.argv[2])
         require_budget(report)
         print(report.model_dump_json())
         return
@@ -175,4 +213,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from None

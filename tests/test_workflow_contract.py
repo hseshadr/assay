@@ -34,6 +34,21 @@ _ACTION_PINS = {
     "gitleaks/gitleaks-action": "e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e",
     "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
 }
+_ACTION_VERSIONS = {
+    "actions/checkout": "v7.0.1",
+    "actions/setup-python": "v7.0.0",
+    "astral-sh/setup-uv": "v9.0.0",
+    "actions/setup-node": "v7.0.0",
+    "pnpm/action-setup": "v6.0.9",
+    "actions/upload-artifact": "v4.6.2",
+    "actions/download-artifact": "v4.3.0",
+    "gitleaks/gitleaks-action": "v3.0.0",
+    "pypa/gh-action-pypi-publish": "v1.14.2",
+}
+_NPM_PUBLISHER_SHA512 = (
+    "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf"
+    "9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
+)
 
 
 def _mapping(value: object) -> dict[str, object]:
@@ -87,12 +102,28 @@ def _release_fixture(tmp_path: Path, *, npm_version: str) -> Path:
     package = json.loads(Path("ts/package.json").read_text(encoding="utf-8"))
     package["version"] = npm_version
     (tmp_path / "ts/package.json").write_text(json.dumps(package), encoding="utf-8")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "assay-tests@example.invalid")
+    _git(tmp_path, "config", "user.name", "Assay Tests")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "fixture")
     return tmp_path / "scripts/verify_release_identity.py"
 
 
+def _git(root: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", *arguments], cwd=root, check=True, capture_output=True, text=True
+    )
+    return result.stdout.strip()
+
+
 def _run_identity(script: Path, tag: str) -> subprocess.CompletedProcess[str]:
+    root = script.parents[1]
+    _git(root, "tag", tag)
+    sha = _git(root, "rev-parse", "HEAD")
     return subprocess.run(
-        ["python", str(script), tag],
+        ["python", str(script), tag, sha],
+        cwd=root,
         check=False,
         capture_output=True,
         text=True,
@@ -195,6 +226,22 @@ def test_should_pin_every_third_party_action_to_an_immutable_commit() -> None:
     } == _ACTION_PINS
 
 
+def test_should_bind_every_action_sha_to_its_exact_documented_version() -> None:
+    # Given every immutable action reference in every standalone workflow
+    source = "\n".join(
+        (_WORKFLOW_DIR / name).read_text(encoding="utf-8") for name in _WORKFLOW_NAMES
+    )
+    pattern = re.compile(r"uses:\s+([^@\s]+)@([0-9a-f]{40})\s+#\s+(v\S+)")
+    documented = {name: (sha, version) for name, sha, version in pattern.findall(source)}
+    expected = {name: (_ACTION_PINS[name], _ACTION_VERSIONS[name]) for name in _ACTION_PINS}
+    # When SHA pins are tied back to reviewed upstream releases
+    # Then no bare digest can silently lose its human-auditable version identity
+    assert documented == expected
+    assert len(pattern.findall(source)) == sum(
+        len(_action_uses(_workflow(name))) for name in _WORKFLOW_NAMES
+    )
+
+
 def test_should_isolate_oidc_write_in_the_minimal_publish_job() -> None:
     # Given all workflow and job permissions
     workflows = {name: _workflow(name) for name in _WORKFLOW_NAMES}
@@ -267,6 +314,46 @@ def test_should_provision_node_and_pnpm_for_the_cross_runtime_python_gate() -> N
     assert _mapping(actions["pnpm/action-setup"]["with"])["version"] == "11.5.0"
 
 
+def _clean_checkout(destination: Path) -> str:
+    ignored = shutil.ignore_patterns(
+        ".git", ".venv", "node_modules", "dist", "coverage", ".pytest_cache", "__pycache__"
+    )
+    shutil.copytree(Path.cwd(), destination, ignore=ignored)
+    _git(destination, "init", "-q")
+    _git(destination, "config", "user.email", "assay-tests@example.invalid")
+    _git(destination, "config", "user.name", "Assay Tests")
+    _git(destination, "add", ".")
+    _git(destination, "commit", "-qm", "clean checkout")
+    return _git(destination, "rev-parse", "HEAD")
+
+
+def test_should_rehearse_the_installed_measurement_job_from_a_dependency_clean_checkout(
+    tmp_path: Path,
+) -> None:
+    # Given the exact installed-artifact command and a checkout with no managed environments
+    checkout = tmp_path / "checkout"
+    sha = _clean_checkout(checkout)
+    steps = _steps(_job(_workflow("ci.yml"), "example"))
+    command = next(
+        str(step["run"]) for step in steps if "installed Python/npm example" in str(step)
+    )
+    assert "uv sync --frozen --all-groups --all-extras" in command
+    assert not (checkout / ".venv").exists()
+    assert not (checkout / "ts/node_modules").exists()
+    # When the hosted command runs with its exact SHA and Node toolchain
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", command],
+        cwd=checkout,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_node_environment() | {"GITHUB_SHA": sha},
+    )
+    # Then optional measurement dependencies were actually provisioned and the job is green
+    assert result.returncode == 0, result.stderr
+    assert "754" not in result.stdout  # the isolated job runs only its owned evidence
+
+
 def test_should_build_and_clean_install_every_release_artifact() -> None:
     # Given the CI artifact job and unprivileged release build
     ci_artifacts = _commands(_job(_workflow("ci.yml"), "artifacts"))
@@ -337,6 +424,32 @@ def test_should_build_with_workflow_pinned_pnpm_without_invoking_corepack(tmp_pa
     assert len(tuple((artifacts / "python").glob("*.whl"))) == 1
     assert len(tuple((artifacts / "python").glob("*.tar.gz"))) == 1
     assert len(tuple((artifacts / "npm").glob("*.tgz"))) == 1
+
+
+def test_should_stage_npm_with_a_present_but_non_gnu_sha512sum(
+    tmp_path: Path,
+) -> None:
+    # Given Darwin-like tools where sha512sum exists but has no GNU check/status flags
+    source = _node_environment()
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for command in ("node", "npm", "python3"):
+        _expose_command(tools, command, source)
+    shim = tools / "sha512sum"
+    shim.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+    shim.chmod(0o755)
+    destination = tmp_path / "publisher"
+    # When the unprivileged staging script verifies the fixed npm archive
+    result = subprocess.run(
+        ["bash", "scripts/stage_npm_publisher.sh", destination],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=source | {"PATH": f"{tools}:/usr/bin:/bin"},
+    )
+    # Then it uses portable hashlib verification rather than probing command presence
+    assert result.returncode == 0, result.stderr
+    assert {path.name for path in destination.iterdir()} == {"npm-12.0.2.tgz"}
 
 
 def test_should_preserve_a_self_relative_hosted_pnpm_launcher(
@@ -461,10 +574,12 @@ def test_should_recheck_digest_metadata_and_registries_after_publish() -> None:
     assert preflights <= set(_job(workflow, "publish-python")["needs"])
     assert preflights <= set(_job(workflow, "publish-npm")["needs"])
     assert {"publish-python", "publish-npm"} <= set(_job(workflow, "verify-published")["needs"])
-    assert "scripts.registry_release_guard" in registry
-    assert "pypi release/python" in registry
-    assert "npm release/npm" in registry
-    assert registry.count("publish=false") == 2
+    assert "scripts/verify_published_release.py" in registry
+    assert "release" in registry
+    verifier = Path("scripts/verify_published_release.py").read_text(encoding="utf-8")
+    assert "materialize_served_bundle" in verifier
+    assert "verify_release_artifacts.py" in verifier
+    assert "timeout_seconds=600.0" in verifier
 
 
 def test_should_skip_only_identical_provenanced_registry_artifacts(tmp_path: Path) -> None:
@@ -525,6 +640,25 @@ def test_should_run_python_benchmark_in_the_complete_release_gate() -> None:
     assert "uv run python -m benchmarks.release" in commands
 
 
+def test_should_pin_and_record_every_local_release_tool() -> None:
+    # Given the local gate is the release build's executable truth
+    source = Path("scripts/verify_release_candidate.sh").read_text(encoding="utf-8")
+    # Then ambient developer tools cannot silently differ from hosted release tools
+    for expected in ("3.13", "uv 0.11.32", "1.7.12", "8.30.1"):
+        assert expected in source
+    assert "shellcheck --version" in source
+
+
+def test_should_bound_the_hosted_benchmark_job_and_typescript_children() -> None:
+    # Given heavy performance evidence executes in hosted CI and isolated Node children
+    job = _job(_workflow("ci.yml"), "benchmarks")
+    source = Path("ts/benchmarks/release.mjs").read_text(encoding="utf-8")
+    # Then hung work is killed above the frozen per-workload budgets
+    assert job["timeout-minutes"] == "15"
+    assert "timeout:" in source
+    assert "benchmark child timed out" in source
+
+
 def test_should_pin_supported_npm_only_in_the_npm_publish_lane() -> None:
     # Given npm trusted publishing requires a known OIDC-capable client
     workflow = _workflow("publish.yml")
@@ -532,11 +666,61 @@ def test_should_pin_supported_npm_only_in_the_npm_publish_lane() -> None:
     npm_lane = _commands(_job(workflow, "publish-npm"))
     # Then the exact staged client is checksum-verified and confined to that lane
     assert "publish-tools/npm-12.0.2.tgz" in npm_lane
-    assert "sha512sum --check SHA512SUMS" in npm_lane
+    assert _NPM_PUBLISHER_SHA512 in npm_lane
+    assert "SHA512SUMS" not in npm_lane
+    assert "sha512sum --check" in npm_lane
     assert "package/bin/npm-cli.js --version" in npm_lane
     assert "package/bin/npm-cli.js publish" in npm_lane
     assert "npm install" not in npm_lane
-    assert source.count('node-version: "24.15.0"') == 2
+    assert source.count('node-version: "24.15.0"') == 1
+
+
+def test_should_pin_python_313_in_every_registry_observer() -> None:
+    # Given both preflights and final downloaded-byte verification execute Python tooling
+    workflow = _workflow("publish.yml")
+    for name in ("preflight-python", "preflight-npm", "verify-published"):
+        actions = {
+            str(step.get("uses", "")).partition("@")[0]: step
+            for step in _steps(_job(workflow, name))
+        }
+        assert "actions/setup-python" in actions
+        assert _mapping(actions["actions/setup-python"]["with"])["python-version"] == "3.13"
+
+
+def test_should_make_the_privileged_channel_recheck_authoritative_and_fail_closed() -> None:
+    # Given the only package publisher rechecks canonical and selected tags immediately
+    command = _commands(_job(_workflow("publish.yml"), "publish-npm"))
+    # Then only HTTP/package-key absence maps to the explicit marker; malformed state is an error
+    assert "__ABSENT__" in command
+    assert "has($tag)" in command
+    assert 'type != "object"' in command
+    assert '// ""' not in command
+    assert "EXPECTED_CHANNEL_VERSION" in command
+    assert "EXPECTED_PUBLISH_TAG_VERSION" in command
+    assert "--max-filesize 1048576" in command
+
+
+def test_should_bound_final_polling_and_avoid_shell_dist_tag_fallbacks() -> None:
+    # Given the final registry verifier
+    command = _commands(_job(_workflow("publish.yml"), "verify-published"))
+    source = Path("scripts/verify_published_release.py").read_text(encoding="utf-8")
+    # Then one monotonic 600-second budget includes HTTP and only explicit absence is retried
+    assert "scripts/verify_published_release.py" in command
+    assert "npm view" not in command
+    assert "seq 1 60" not in command
+    assert "sleep 10" not in command
+    assert "time.monotonic" in source
+    assert "PropagationPending" in source
+
+
+def test_should_rebuild_uploadable_artifacts_after_the_clean_local_gate() -> None:
+    # Given the local gate removes every ignored release output on exit
+    commands = _commands(_job(_workflow("publish.yml"), "build"))
+    # Then the unprivileged build recreates the reviewed envelope before upload
+    gate = commands.index("ASSAY_ARTIFACT_ROOT=release uv run poe release-candidate")
+    rebuild = commands.index("bash scripts/build_release_artifacts.sh release")
+    stage = commands.index("bash scripts/stage_npm_publisher.sh publish-tools")
+    assert gate < rebuild < stage
 
 
 def test_should_keep_npm_prereleases_off_the_latest_channel() -> None:
@@ -565,7 +749,42 @@ def test_should_keep_npm_prereleases_off_the_latest_channel() -> None:
         "package/bin/npm-cli.js publish"
     )
     registry = _commands(_job(workflow, "verify-published"))
-    assert 'npm view @edgeproc/assay dist-tags."$NPM_DIST_TAG"' in registry
+    assert "scripts/verify_published_release.py" in registry
+    assert "npm view" not in registry
+
+
+def test_should_provision_exact_clean_install_tools_for_final_registry_bytes() -> None:
+    # Given final verification clean-installs the bytes downloaded from both registries
+    steps = _steps(_job(_workflow("publish.yml"), "verify-published"))
+    actions = {str(step.get("uses", "")).partition("@")[0]: step for step in steps}
+    # Then no ambient Python, uv, Node, or pnpm runtime can influence that evidence
+    assert _mapping(actions["actions/setup-python"]["with"])["python-version"] == "3.13"
+    assert _mapping(actions["astral-sh/setup-uv"]["with"])["version"] == "0.11.32"
+    assert _mapping(actions["actions/setup-node"]["with"])["node-version"] == "22.13.0"
+    assert _mapping(actions["pnpm/action-setup"]["with"])["version"] == "11.5.0"
+
+
+def test_should_document_the_single_internal_npm_publisher_invariant() -> None:
+    # Given package-wide workflow concurrency serializes this repository's releases
+    workflow = _workflow("publish.yml")
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    # Then docs do not overclaim protection against external registry writers
+    assert _mapping(workflow["concurrency"]) == {
+        "group": "publish-assay",
+        "cancel-in-progress": "false",
+    }
+    assert "only Assay publisher invariant" in operations
+    assert "external publisher" in operations
+    assert "fails closed" in operations
+
+
+def test_should_name_only_the_unpublished_candidate_versions_in_security_docs() -> None:
+    # Given the security model describes registry identities under review
+    source = Path("SECURITY.md").read_text(encoding="utf-8")
+    # Then it cannot imply that stable 0.5.0 is already the candidate
+    assert "0.5.0.dev0" in source
+    assert "0.5.0-dev.0" in source
+    assert "future 0.5.0" in source
 
 
 def test_should_skip_the_entire_oidc_job_for_identical_registry_releases() -> None:

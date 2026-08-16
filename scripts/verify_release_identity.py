@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_ARGUMENT_COUNT = 2
+_ARGUMENT_COUNT = 3
 _CORE = r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
 _STABLE = re.compile(rf"^{_CORE}$")
 _PYTHON_PRERELEASE = re.compile(rf"^({_CORE})\.dev(0|[1-9]\d*)$")
@@ -46,14 +47,49 @@ def _identities_match(python_version: str, npm_version: str, tag: str) -> bool:
     return normalized == npm_version and npm_supported is not None and tag == f"v{npm_version}"
 
 
-def main() -> int:
+def _revision(revision: str) -> str:
+    result = subprocess.run(  # noqa: S603
+        ["git", "rev-parse", "--verify", revision],  # noqa: S607
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _release_commit_matches(tag: str, github_sha: str) -> bool:
+    if re.fullmatch(r"[0-9a-f]{40}", github_sha) is None:
+        return False
+    return _revision("HEAD") == github_sha == _revision(f"refs/tags/{tag}^{{commit}}")
+
+
+def _arguments() -> tuple[str, str] | None:
     if len(sys.argv) != _ARGUMENT_COUNT:
-        print("usage: verify_release_identity.py vX.Y.Z", file=sys.stderr)
+        print("usage: verify_release_identity.py vX.Y.Z GITHUB_SHA", file=sys.stderr)
+        return None
+    return sys.argv[1], sys.argv[2]
+
+
+def _commit_matches(tag: str, github_sha: str) -> bool:
+    try:
+        return _release_commit_matches(tag, github_sha)
+    except subprocess.CalledProcessError:
+        return False
+
+
+def main() -> int:
+    arguments = _arguments()
+    if arguments is None:
         return 1
+    tag, github_sha = arguments
     python_version, typescript_version = _python_version(), _typescript_version()
     expected = f"v{typescript_version}"
-    if not _identities_match(python_version, typescript_version, sys.argv[1]):
+    if not _identities_match(python_version, typescript_version, tag):
         print("release tag and artifact versions do not match", file=sys.stderr)
+        return 1
+    if not _commit_matches(tag, github_sha):
+        print("release tag, commit, and artifact versions do not match", file=sys.stderr)
         return 1
     print(f"verified release identity: {expected}")
     return 0

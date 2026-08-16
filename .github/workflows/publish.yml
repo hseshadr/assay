@@ -17,26 +17,26 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.11.32"
           enable-cache: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22.13.0"
           package-manager-cache: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: "11.5.0"
           run_install: false
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_ENABLE_COMMENTS: "false"
@@ -51,20 +51,21 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           uv sync --frozen --all-groups
-          uv run python scripts/verify_release_identity.py "$RELEASE_TAG"
+          uv run python scripts/verify_release_identity.py "$RELEASE_TAG" "$GITHUB_SHA"
       - name: Run the complete release candidate gate
         run: ASSAY_ARTIFACT_ROOT=release uv run poe release-candidate
+      - name: Rebuild the reviewed release envelope after cleanup
+        run: bash scripts/build_release_artifacts.sh release
       - name: Stage the checksum-pinned npm 12.0.2 publisher
         run: bash scripts/stage_npm_publisher.sh publish-tools
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: assay-release-${{ github.sha }}
           path: release/
           if-no-files-found: error
           retention-days: 1
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: assay-npm-publisher-${{ github.sha }}
           path: publish-tools/
@@ -81,10 +82,13 @@ jobs:
     outputs:
       publish: ${{ steps.registry.outputs.publish }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: assay-release-${{ github.sha }}
           path: release
@@ -94,7 +98,6 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          (cd release && sha256sum --check SHA256SUMS)
           VERSION="${RELEASE_TAG#v}"
           PYTHON_VERSION="${VERSION/-dev./.dev}"
           python3 -m scripts.registry_release_guard pypi release/python "$PYTHON_VERSION" "$GITHUB_OUTPUT"
@@ -113,10 +116,13 @@ jobs:
       channel-version: ${{ steps.registry.outputs.channel-version }}
       publish-tag-version: ${{ steps.registry.outputs.publish-tag-version }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: assay-release-${{ github.sha }}
           path: release
@@ -126,7 +132,6 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          (cd release && sha256sum --check SHA256SUMS)
           VERSION="${RELEASE_TAG#v}"
           python3 -m scripts.registry_release_guard npm release/npm "$VERSION" "$GITHUB_OUTPUT"
 
@@ -139,12 +144,12 @@ jobs:
       actions: read # Download the reviewed Python artifacts.
       id-token: write # Request a short-lived PyPI publishing identity.
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: assay-release-${{ github.sha }}
           path: release
       - name: Publish Python artifacts
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: release/python/
           attestations: true
@@ -159,15 +164,15 @@ jobs:
       actions: read # Download the reviewed npm artifact.
       id-token: write # Request a short-lived npm publishing identity.
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: assay-release-${{ github.sha }}
           path: release
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: assay-npm-publisher-${{ github.sha }}
           path: publish-tools
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24.15.0"
           package-manager-cache: false
@@ -179,19 +184,21 @@ jobs:
           NPM_PUBLISH_TAG: ${{ needs.preflight-npm.outputs.publish-tag }}
         run: |
           set -euo pipefail
-          (cd publish-tools && sha512sum --check SHA512SUMS)
+          NPM_PUBLISHER_SHA512="b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
+          printf '%s  %s\n' "$NPM_PUBLISHER_SHA512" publish-tools/npm-12.0.2.tgz | sha512sum --check --status
           mkdir /tmp/npm-publisher
           tar -xzf publish-tools/npm-12.0.2.tgz -C /tmp/npm-publisher
           test "$(node /tmp/npm-publisher/package/bin/npm-cli.js --version)" = "12.0.2"
           status="$(curl --silent --show-error --output /tmp/npm-package.json \
-            --write-out '%{http_code}' --connect-timeout 5 --max-time 20 \
+            --write-out '%{http_code}' --connect-timeout 5 --max-time 20 --max-filesize 1048576 \
             https://registry.npmjs.org/%40edgeproc%2Fassay)"
           if test "$status" = 404; then
-            current_channel=""
-            current_publish_tag=""
+            current_channel="__ABSENT__"
+            current_publish_tag="__ABSENT__"
           elif test "$status" = 200; then
-            current_channel="$(jq -er --arg tag "$NPM_CHANNEL" '."dist-tags"[$tag] // ""' /tmp/npm-package.json)"
-            current_publish_tag="$(jq -er --arg tag "$NPM_PUBLISH_TAG" '."dist-tags"[$tag] // ""' /tmp/npm-package.json)"
+            jq -e 'if type != "object" or (."dist-tags" | type != "object") then error("malformed registry state") else . end' /tmp/npm-package.json >/dev/null
+            current_channel="$(jq -er --arg tag "$NPM_CHANNEL" '."dist-tags" as $tags | if $tags | has($tag) then $tags[$tag] | if type == "string" then . else error("malformed tag") end else "__ABSENT__" end' /tmp/npm-package.json)"
+            current_publish_tag="$(jq -er --arg tag "$NPM_PUBLISH_TAG" '."dist-tags" as $tags | if $tags | has($tag) then $tags[$tag] | if type == "string" then . else error("malformed tag") end else "__ABSENT__" end' /tmp/npm-package.json)"
           else
             echo "npm registry channel recheck failed with HTTP $status" >&2
             exit 1
@@ -218,17 +225,28 @@ jobs:
       actions: read # Download the reviewed bytes for registry comparison.
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: assay-release-${{ github.sha }}
           path: release
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          node-version: "24.15.0"
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.32"
+          enable-cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.13.0"
           package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: "11.5.0"
+          run_install: false
       - name: Verify registries serve the reviewed bytes and provenance
         env:
           NPM_DIST_TAG: ${{ needs.preflight-npm.outputs.dist-tag }}
@@ -237,26 +255,6 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          VERSION="${RELEASE_TAG#v}"
-          PYTHON_VERSION="${VERSION/-dev./.dev}"
-          for attempt in $(seq 1 60); do
-            : > /tmp/pypi-state
-            : > /tmp/npm-state
-            if python3 -m scripts.registry_release_guard \
-                pypi release/python "$PYTHON_VERSION" /tmp/pypi-state && \
-              python3 -m scripts.registry_release_guard \
-                npm release/npm "$VERSION" /tmp/npm-state && \
-              grep -qx 'publish=false' /tmp/pypi-state && \
-              grep -qx 'publish=false' /tmp/npm-state && \
-              CURRENT_TAG="$(npm view @edgeproc/assay dist-tags."$NPM_DIST_TAG")" && \
-              python3 scripts/verify_npm_dist_tag.py "$VERSION" "$CURRENT_TAG" && \
-              { test "$NPM_PUBLISH" != true || \
-                test "$(npm view @edgeproc/assay dist-tags."$NPM_PUBLISH_TAG")" = "$VERSION"; }; then
-              echo "verified registry bytes for assay ${PYTHON_VERSION} and @edgeproc/assay ${VERSION}"
-              exit 0
-            fi
-            echo "attempt ${attempt}/60: registry bytes are not ready"
-            sleep 10
-          done
-          echo "registry verification timed out" >&2
-          exit 1
+          python3 scripts/verify_release_identity.py "$RELEASE_TAG" "$GITHUB_SHA"
+          python3 scripts/verify_published_release.py \
+            release "$NPM_DIST_TAG" "$NPM_PUBLISH_TAG" "$NPM_PUBLISH"

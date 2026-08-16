@@ -166,7 +166,9 @@ def test_should_accept_only_an_exact_release_identity() -> None:
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
     assert {"build", "preflight-python", "preflight-npm"} <= set(jobs)
-    assert "verify_release_identity.py" in str(jobs["build"])
+    command = str(jobs["build"])
+    assert "verify_release_identity.py" in command
+    assert '"$RELEASE_TAG" "$GITHUB_SHA"' in command
     attempt = subprocess.run(
         [sys.executable, "scripts/verify_release_identity.py", "v0.5.0-dev.0"],
         cwd=ROOT,
@@ -174,11 +176,8 @@ def test_should_accept_only_an_exact_release_identity() -> None:
         capture_output=True,
         text=True,
     )
-    assert (attempt.returncode, attempt.stdout, attempt.stderr) == (
-        0,
-        "verified release identity: v0.5.0-dev.0\n",
-        "",
-    )
+    assert (attempt.returncode, attempt.stdout) == (1, "")
+    assert attempt.stderr == "usage: verify_release_identity.py vX.Y.Z GITHUB_SHA\n"
 
 
 def test_should_gate_every_publication_lane_behind_both_preflights() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import stat
 import subprocess
 import sys
 import tarfile
@@ -95,13 +96,30 @@ def _only(paths: tuple[Path, ...], kind: str) -> Path:
     return paths[0]
 
 
-def _artifacts(root: Path) -> Artifacts:
-    python = root / "python"
+def _source_versions() -> tuple[str, str]:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "src/assay/_version.py").read_text(encoding="utf-8")
+    match = re.search(r'^__version__ = "([^"]+)"$', source, re.MULTILINE)
+    package = json.loads((root / "ts/package.json").read_text(encoding="utf-8"))
+    npm = package.get("version") if isinstance(package, dict) else None
+    if match is None or not isinstance(npm, str):
+        raise ValueError("release source version is missing")
+    return match.group(1), npm
+
+
+def _expected_artifacts(root: Path, python_version: str, npm_version: str) -> Artifacts:
     return Artifacts(
-        wheel=_only(tuple(python.glob("*.whl")), "wheel"),
-        sdist=_only(tuple(python.glob("*.tar.gz")), "sdist"),
-        npm=_only(tuple((root / "npm").glob("*.tgz")), "npm tarball"),
+        wheel=root / "python" / f"assay_engine-{python_version}-py3-none-any.whl",
+        sdist=root / "python" / f"assay_engine-{python_version}.tar.gz",
+        npm=root / "npm" / f"edgeproc-assay-{npm_version}.tgz",
     )
+
+
+def _artifacts(root: Path) -> Artifacts:
+    artifacts = _expected_artifacts(root, *_source_versions())
+    if not all(path.is_file() for path in _artifact_paths(artifacts)):
+        raise ValueError("release artifact filename mismatch")
+    return artifacts
 
 
 def _wheel_metadata(path: Path) -> bytes:
@@ -177,24 +195,53 @@ def _wheel_member_valid(member: str, sources: frozenset[str]) -> bool:
 
 def _validate_wheel_members(path: Path) -> None:
     with zipfile.ZipFile(path) as archive:
-        members = frozenset(archive.namelist())
+        members = _wheel_names(tuple(archive.infolist()))
     sources = _source_members()
     if not sources <= members or any(not _wheel_member_valid(item, sources) for item in members):
         raise ValueError("wheel membership mismatch")
 
 
+def _wheel_names(records: tuple[zipfile.ZipInfo, ...]) -> frozenset[str]:
+    names = tuple(record.filename for record in records)
+    if len(names) != len(set(names)):
+        raise ValueError("duplicate wheel member")
+    if any(not _regular_zip_record(record) for record in records):
+        raise ValueError("non-regular wheel member")
+    return frozenset(names)
+
+
+def _regular_zip_record(record: zipfile.ZipInfo) -> bool:
+    mode = record.external_attr >> 16
+    return not record.is_dir() and (stat.S_IFMT(mode) in (0, stat.S_IFREG))
+
+
+def _tar_member_path(member: tarfile.TarInfo) -> tuple[str, ...]:
+    path = Path(member.name)
+    if path.is_absolute() or ".." in path.parts or "\\" in member.name:
+        raise ValueError("unexpected tar member")
+    if not member.isfile():
+        raise ValueError("non-regular tar member")
+    return path.parts
+
+
+def _tar_file_members(path: Path) -> tuple[tuple[str, ...], ...]:
+    with tarfile.open(path, "r:gz") as archive:
+        members = tuple(_tar_member_path(member) for member in archive.getmembers())
+    if len(members) != len(set(members)):
+        raise ValueError("duplicate tar member")
+    return members
+
+
 def _validate_sdist_members(path: Path) -> None:
     expected = {"LICENSE", "README.md", "pyproject.toml", "PKG-INFO"}
     expected.update(f"src/{item}" for item in _source_members())
-    with tarfile.open(path, "r:gz") as archive:
-        actual = {"/".join(Path(item.name).parts[1:]) for item in archive if item.isfile()}
+    actual = {"/".join(parts[1:]) for parts in _tar_file_members(path)}
     if actual != expected:
         raise ValueError("sdist membership mismatch")
 
 
 def _validate_npm_members(path: Path) -> None:
-    with tarfile.open(path, "r:gz") as archive:
-        actual = frozenset(item.name for item in archive if item.isfile())
+    actual = frozenset("/".join(parts) for parts in _tar_file_members(path))
     if actual != _NPM_MEMBERS:
         raise ValueError("npm membership mismatch")
 
@@ -232,8 +279,8 @@ def verify_release_bundle(root: Path) -> tuple[Identity, Identity]:
     """Recheck downloaded artifact metadata and its reviewed SHA-256 manifest."""
     artifacts = _artifacts(root)
     _validate_envelope(root, artifacts)
-    identities = _validate_metadata(artifacts)
     _validate_memberships(artifacts)
+    identities = _validate_metadata(artifacts)
     actual = tuple((root / "SHA256SUMS").read_text(encoding="utf-8").splitlines())
     if actual != _digest_lines(root, artifacts):
         raise ValueError("release artifact digest mismatch")
@@ -282,8 +329,8 @@ def main() -> int:
         return 1
     root = Path(sys.argv[1]).resolve()
     artifacts = _artifacts(root)
-    python, npm = _validate_metadata(artifacts)
     _validate_memberships(artifacts)
+    python, npm = _validate_metadata(artifacts)
     _clean_installs(artifacts)
     _write_digest_manifest(root, artifacts)
     verify_release_bundle(root)

@@ -6,7 +6,7 @@ comparison="$(mktemp -d "${TMPDIR:-/tmp}/assay-python-build.XXXXXX")"
 trap 'rm -rf -- "${comparison}"' EXIT INT TERM
 rm -rf -- "$destination"
 mkdir -p -- "$destination"
-SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+SOURCE_DATE_EPOCH="$(python3 scripts/release_epoch.py)"
 export SOURCE_DATE_EPOCH
 uv build --no-build-isolation --wheel --sdist --out-dir "$destination"
 uv build --no-build-isolation --wheel --sdist --out-dir "$comparison"

@@ -2,10 +2,12 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
 import { compose, parseRequest, parseScoreResult } from "../dist/index.js";
+import { peakRssMib } from "./resourceUsage.mjs";
 
 const COMPOSITION_BATCH_COUNT = 2000;
-const COMPOSITION_SAMPLES = 5;
+const HEAVY_SAMPLES = 5;
 const MINIMUM_COMPONENT_COUNT = 150000;
+const TIMEOUT_MARGIN_MS = 15000;
 const BUDGETS_MS = new Map([
   ["typescript-composition-batch", 8000],
   ["typescript-minimum-compose-replay", 60000],
@@ -13,6 +15,10 @@ const BUDGETS_MS = new Map([
 const RSS_BUDGET_MIB = new Map([
   ["typescript-composition-batch", 512],
   ["typescript-minimum-compose-replay", 1536],
+]);
+const WORKLOADS = new Map([
+  ["composition", "typescript-composition-batch"],
+  ["minimum", "typescript-minimum-compose-replay"],
 ]);
 
 function component(index, value) {
@@ -35,30 +41,14 @@ function smallRequest() {
   });
 }
 
-function timings(operation, samples) {
-  const values = [];
-  for (let index = 0; index < samples; index += 1) {
-    const started = performance.now();
-    operation();
-    values.push(performance.now() - started);
-  }
-  return values;
-}
-
 function percentile(values, fraction) {
   const ordered = [...values].sort((first, second) => first - second);
   const index = Math.max(0, Math.ceil(fraction * ordered.length) - 1);
   return ordered[index];
 }
 
-function evidence(workload, count, values) {
+function identity() {
   return {
-    workload,
-    count,
-    p50_ms: percentile(values, 0.5),
-    p95_ms: percentile(values, 0.95),
-    p99_ms: percentile(values, 0.99),
-    peak_rss_mib: process.memoryUsage().rss / 1024 / 1024,
     node: process.versions.node,
     pnpm: execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim(),
     platform: `${process.platform}-${process.arch}`,
@@ -68,20 +58,28 @@ function evidence(workload, count, values) {
   };
 }
 
-function compositionBatch() {
+function sample(workload, count, operation) {
+  const started = performance.now();
+  operation();
+  return {
+    workload,
+    count,
+    elapsed_ms: performance.now() - started,
+    peak_rss_mib: peakRssMib(process.resourceUsage()),
+    ...identity(),
+  };
+}
+
+function compositionSample() {
   const request = smallRequest();
   const run = () => {
     for (let index = 0; index < COMPOSITION_BATCH_COUNT; index += 1)
       compose(request);
   };
-  return evidence(
-    "typescript-composition-batch",
-    COMPOSITION_BATCH_COUNT,
-    timings(run, COMPOSITION_SAMPLES),
-  );
+  return sample("typescript-composition-batch", COMPOSITION_BATCH_COUNT, run);
 }
 
-function minimumComposeReplay() {
+function minimumSample() {
   const components = Array.from(
     { length: MINIMUM_COMPONENT_COUNT },
     (_, index) => component(index, index % 101),
@@ -94,48 +92,77 @@ function minimumComposeReplay() {
   });
   const run = () =>
     parseScoreResult(JSON.parse(JSON.stringify(compose(request))));
-  return evidence(
+  return sample(
     "typescript-minimum-compose-replay",
     MINIMUM_COMPONENT_COUNT,
-    timings(run, 1),
+    run,
   );
 }
 
 const RUNNERS = new Map([
-  ["composition", compositionBatch],
-  ["minimum", minimumComposeReplay],
+  ["composition", compositionSample],
+  ["minimum", minimumSample],
 ]);
 
-function requireBudget(report) {
-  if (report.p99_ms > BUDGETS_MS.get(report.workload)) {
-    throw new Error("benchmark latency budget exceeded");
-  }
-  if (report.peak_rss_mib > RSS_BUDGET_MIB.get(report.workload)) {
-    throw new Error("benchmark memory budget exceeded");
-  }
+function report(samples) {
+  const values = samples.map((item) => item.elapsed_ms);
+  const first = samples[0];
+  return {
+    workload: first.workload,
+    count: first.count,
+    samples: samples.length,
+    p50_ms: percentile(values, 0.5),
+    p95_ms: percentile(values, 0.95),
+    p99_ms: percentile(values, 0.99),
+    peak_rss_mib: Math.max(...samples.map((item) => item.peak_rss_mib)),
+    node: first.node,
+    pnpm: first.pnpm,
+    platform: first.platform,
+    sha: first.sha,
+  };
 }
 
-function child(name) {
+function requireBudget(result) {
+  if (result.p99_ms > BUDGETS_MS.get(result.workload))
+    throw new Error("benchmark latency budget exceeded");
+  if (result.peak_rss_mib > RSS_BUDGET_MIB.get(result.workload))
+    throw new Error("benchmark memory budget exceeded");
+}
+
+function childSample(name) {
+  const workload = WORKLOADS.get(name);
   const result = spawnSync(
     process.execPath,
-    [import.meta.filename, "--workload", name],
+    [import.meta.filename, "--sample", name],
     {
       encoding: "utf8",
+      timeout: BUDGETS_MS.get(workload) + TIMEOUT_MARGIN_MS,
     },
   );
+  if (result.error?.code === "ETIMEDOUT")
+    throw new Error("benchmark child timed out");
   if (result.status !== 0)
     throw new Error(result.stderr || "benchmark child failed");
   return JSON.parse(result.stdout);
 }
 
-if (process.argv.length === 4 && process.argv[2] === "--workload") {
-  const report = RUNNERS.get(process.argv[3])();
-  requireBudget(report);
-  console.log(JSON.stringify(report));
+function isolatedReport(name) {
+  const samples = Array.from({ length: HEAVY_SAMPLES }, () =>
+    childSample(name),
+  );
+  return report(samples);
+}
+
+if (process.argv.length === 4 && process.argv[2] === "--sample") {
+  console.log(JSON.stringify(RUNNERS.get(process.argv[3])()));
+} else if (process.argv.length === 4 && process.argv[2] === "--workload") {
+  const result = isolatedReport(process.argv[3]);
+  requireBudget(result);
+  console.log(JSON.stringify(result));
 } else {
   for (const name of RUNNERS.keys()) {
-    const report = child(name);
-    requireBudget(report);
-    console.log(JSON.stringify(report));
+    const result = isolatedReport(name);
+    requireBudget(result);
+    console.log(JSON.stringify(result));
   }
 }
