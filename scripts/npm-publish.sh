@@ -20,8 +20,8 @@ mode_selected=false
 artifact_root=""
 runtime_root=""
 snapshot_root=""
-npm_token="${NPM_TOKEN-}"
-unset NPM_TOKEN
+npm_token="${HARISH_NPM_TOKEN-}"
+unset HARISH_PYPI_TOKEN HARISH_NPM_TOKEN PYPI_API_TOKEN NPM_TOKEN
 unset NPM_CONFIG_DRY_RUN NPM_CONFIG_REGISTRY NPM_CONFIG_PROVENANCE
 unset NPM_CONFIG_IGNORE_SCRIPTS NPM_CONFIG_USERCONFIG
 unset npm_config_dry_run npm_config_registry npm_config_provenance
@@ -208,7 +208,7 @@ check_release_state() {
 }
 
 print_guidance() {
-  echo "An npm granular write token can bootstrap @edgeproc/assay; set NPM_TOKEN only with --publish."
+  echo "An npm granular write token can bootstrap @edgeproc/assay; export HARISH_NPM_TOKEN in the caller only with --publish."
   echo "Trusted-publisher setup still needs account authentication and 2FA; bypass tokens cannot configure trust."
   echo "All real releases must use the OIDC workflow for provenance."
 }
@@ -270,8 +270,8 @@ report_existing_bootstrap() {
 }
 
 validate_bootstrap_token() {
-  [[ -n "$npm_token" ]] || die "NPM_TOKEN is required with --publish"
-  [[ "$npm_token" != *$'\n'* && "$npm_token" != *$'\r'* ]] || die "NPM_TOKEN is malformed"
+  [[ -n "$npm_token" ]] || die "HARISH_NPM_TOKEN is required with --publish"
+  [[ "$npm_token" != *$'\n'* && "$npm_token" != *$'\r'* ]] || die "HARISH_NPM_TOKEN is malformed"
 }
 
 run_bootstrap() {

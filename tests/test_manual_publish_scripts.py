@@ -35,11 +35,20 @@ def _write_executable(path: Path, source: str) -> None:
     path.chmod(0o755)
 
 
+def _credential_environment() -> str:
+    return """credential_names = sorted(name for name in (
+        'HARISH_PYPI_TOKEN','HARISH_NPM_TOKEN','PYPI_API_TOKEN','NPM_TOKEN',
+        'UV_PUBLISH_TOKEN') if name in os.environ)
+"""
+
+
 def _python_fake(events: Path) -> str:
     return f"""#!{sys.executable}
 import json, os, pathlib, sys
+{_credential_environment()}
 if len(sys.argv) > 1 and sys.argv[1].endswith('verify_release_artifacts.py'):
-    event = {{'command':'verify','script':sys.argv[1],'root':sys.argv[2]}}
+    event = {{'command':'verify','script':sys.argv[1],'root':sys.argv[2],
+             'credential_env':credential_names}}
     with open({str(events)!r}, 'a', encoding='utf-8') as output:
         output.write(json.dumps(event) + '\\n')
     replacement = os.environ.get('REPLACE_AFTER_VERIFY')
@@ -53,10 +62,12 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
 def _uv_fake(events: Path) -> str:
     return f"""#!{sys.executable}
 import hashlib, json, os, pathlib, sys
+{_credential_environment()}
 files = [pathlib.Path(item) for item in sys.argv[1:] if pathlib.Path(item).is_file()]
 event = {{'command':'uv','argv':sys.argv[1:],'files':[str(item) for item in files],
          'digests':[hashlib.sha256(item.read_bytes()).hexdigest() for item in files],
-         'token_ok':os.environ.get('UV_PUBLISH_TOKEN') == os.environ.get('EXPECTED_TOKEN')}}
+         'token_ok':os.environ.get('UV_PUBLISH_TOKEN') == os.environ.get('EXPECTED_TOKEN'),
+         'credential_env':credential_names}}
 with open({str(events)!r}, 'a', encoding='utf-8') as output:
     output.write(json.dumps(event) + '\\n')
 raise SystemExit(int(os.environ.get('FAKE_UV_STATUS', '0')))
@@ -66,6 +77,7 @@ raise SystemExit(int(os.environ.get('FAKE_UV_STATUS', '0')))
 def _curl_fake(events: Path) -> str:
     return f"""#!{sys.executable}
 import json, os, pathlib, sys
+{_credential_environment()}
 path = pathlib.Path({str(events)!r})
 lines = path.read_text().splitlines() if path.exists() else []
 index = sum(json.loads(line).get('command') == 'curl' for line in lines)
@@ -75,14 +87,18 @@ args = sys.argv[1:]
 target = pathlib.Path(args[args.index('--output') + 1])
 target.write_text(response.get('body', ''), encoding='utf-8')
 with open(path, 'a', encoding='utf-8') as output:
-    output.write(json.dumps({{'command':'curl','argv':args,'status':response['status']}}) + '\\n')
+    output.write(json.dumps({{'command':'curl','argv':args,'status':response['status'],
+        'credential_env':credential_names}}) + '\\n')
 sys.stdout.write(response['status'])
 raise SystemExit(int(response.get('exit', 0)))
 """
 
 
 def _npm_environment() -> str:
-    return """keys = ('NPM_CONFIG_DRY_RUN','NPM_CONFIG_PROVENANCE','NPM_CONFIG_IGNORE_SCRIPTS',
+    return """credential_names = sorted(name for name in (
+        'HARISH_PYPI_TOKEN','HARISH_NPM_TOKEN','PYPI_API_TOKEN','NPM_TOKEN',
+        'UV_PUBLISH_TOKEN') if name in os.environ)
+keys = ('NPM_CONFIG_DRY_RUN','NPM_CONFIG_PROVENANCE','NPM_CONFIG_IGNORE_SCRIPTS',
         'NPM_CONFIG_REGISTRY','NPM_CONFIG_USERCONFIG')
 forced = {key: os.environ.get(key) for key in keys}
 lower = any(key in os.environ for key in ('npm_config_dry_run','npm_config_provenance',
@@ -102,7 +118,8 @@ if args[0] == 'pack':
     archive.write_bytes({BOOTSTRAP_BYTES!r})
     event = {{'command':'npm-pack','argv':args,'forced':forced,'lower':lower,
              'package':json.loads((root / 'package.json').read_text()),
-             'license':hashlib.sha256((root / 'LICENSE').read_bytes()).hexdigest()}}
+             'license':hashlib.sha256((root / 'LICENSE').read_bytes()).hexdigest(),
+             'credential_env':credential_names}}
 else:
     config = pathlib.Path(os.environ['NPM_CONFIG_USERCONFIG'])
     subject = pathlib.Path(args[1])
@@ -110,7 +127,8 @@ else:
              'config':str(config),'mode':stat.S_IMODE(config.stat().st_mode),
              'config_content':config.read_text(),
              'token_ok':os.environ.get('NPM_TOKEN') == os.environ.get('EXPECTED_TOKEN'),
-             'digest':hashlib.sha512(subject.read_bytes()).hexdigest()}}
+             'digest':hashlib.sha512(subject.read_bytes()).hexdigest(),
+             'credential_env':credential_names}}
 with open({str(events)!r}, 'a', encoding='utf-8') as output:
     output.write(json.dumps(event) + '\\n')
 raise SystemExit(int(os.environ.get('FAKE_NPM_STATUS', '0')))
@@ -156,6 +174,8 @@ def _run(
     fixture: Fixture, script: Path, *arguments: str, cwd: Path = ROOT, **extra: str
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for name in ("HARISH_PYPI_TOKEN", "HARISH_NPM_TOKEN", "PYPI_API_TOKEN", "NPM_TOKEN"):
+        env.pop(name, None)
     env.update({"PATH": f"{fixture.fake_bin}:{env['PATH']}", "EXPECTED_TOKEN": FIXTURE_AUTH})
     env.update(extra)
     return subprocess.run(  # noqa: S603
@@ -249,6 +269,7 @@ def test_should_plan_pypi_from_a_private_verified_snapshot(tmp_path: Path) -> No
     assert all(str(fixture.release) not in path for path in uv["files"])
     assert not Path(str(verify["root"])).exists()
     assert "account-wide API token can bootstrap assay-engine" in result.stdout
+    assert "HARISH_PYPI_TOKEN" in result.stdout
 
 
 def test_should_refuse_pypi_publish_without_environment_token(tmp_path: Path) -> None:
@@ -258,8 +279,112 @@ def test_should_refuse_pypi_publish_without_environment_token(tmp_path: Path) ->
     result = _run(fixture, PYPI_SCRIPT, "--publish")
     # Then mutation is refused after verification and preflight
     assert result.returncode != 0
-    assert "PYPI_API_TOKEN is required" in result.stderr
+    assert "HARISH_PYPI_TOKEN is required" in result.stderr
     assert _commands(fixture, "uv") == []
+
+
+@pytest.mark.parametrize(
+    ("script", "arguments", "legacy_name", "required_name", "client"),
+    [
+        (PYPI_SCRIPT, ("--publish",), "PYPI_API_TOKEN", "HARISH_PYPI_TOKEN", "uv"),
+        (
+            NPM_SCRIPT,
+            ("--bootstrap", "--publish"),
+            "NPM_TOKEN",
+            "HARISH_NPM_TOKEN",
+            "npm-publish",
+        ),
+    ],
+)
+def test_should_refuse_legacy_token_name_without_registry_mutation(
+    tmp_path: Path,
+    script: Path,
+    arguments: tuple[str, ...],
+    legacy_name: str,
+    required_name: str,
+    client: str,
+) -> None:
+    # Given only a legacy generic token name is exported
+    fixture = _fixture(tmp_path)
+    # When explicit publication is requested
+    result = _run(fixture, script, *arguments, **{legacy_name: FIXTURE_AUTH})
+    # Then the request fails before a registry client can mutate state
+    assert result.returncode != 0
+    assert required_name in result.stderr
+    assert _commands(fixture, client) == []
+    assert FIXTURE_AUTH not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "arguments", "client"),
+    [
+        (PYPI_SCRIPT, ("--publish",), "uv"),
+        (NPM_SCRIPT, ("--bootstrap", "--publish"), "npm-publish"),
+    ],
+)
+def test_should_not_source_zshrc_for_credentials(
+    tmp_path: Path, script: Path, arguments: tuple[str, ...], client: str
+) -> None:
+    # Given a zshrc would export the new tokens and create an observable marker
+    fixture, marker = _fixture(tmp_path), tmp_path / "zshrc-sourced"
+    zshrc = tmp_path / ".zshrc"
+    zshrc.write_text(
+        f"touch {marker}\nexport HARISH_PYPI_TOKEN={FIXTURE_AUTH}\n"
+        f"export HARISH_NPM_TOKEN={FIXTURE_AUTH}\n"
+    )
+    # When the publisher runs without the caller having sourced that file
+    result = _run(fixture, script, *arguments, HOME=str(tmp_path))
+    # Then the file stays untouched and no registry mutation is attempted
+    assert result.returncode != 0
+    assert not marker.exists()
+    assert _commands(fixture, client) == []
+    assert FIXTURE_AUTH not in result.stdout + result.stderr
+
+
+def test_should_expose_only_uv_translation_to_pypi_client(tmp_path: Path) -> None:
+    # Given every public and generic token name is exported in the caller
+    fixture = _fixture(tmp_path)
+    responses = _responses(("404", ""), ("200", _pypi_body(fixture.release)))
+    # When PyPI bootstrap publication is explicitly requested
+    result = _run(
+        fixture,
+        PYPI_SCRIPT,
+        "--publish",
+        HARISH_PYPI_TOKEN=FIXTURE_AUTH,
+        HARISH_NPM_TOKEN=FIXTURE_AUTH,
+        PYPI_API_TOKEN=FIXTURE_AUTH,
+        NPM_TOKEN=FIXTURE_AUTH,
+        FAKE_CURL_RESPONSES=responses,
+    )
+    # Then only uv receives the required one-time translation
+    assert result.returncode == 0
+    assert _commands(fixture, "verify")[0]["credential_env"] == []
+    assert all(event["credential_env"] == [] for event in _commands(fixture, "curl"))
+    assert _commands(fixture, "uv")[0]["credential_env"] == ["UV_PUBLISH_TOKEN"]
+
+
+def test_should_expose_only_npm_translation_to_npm_publish_client(tmp_path: Path) -> None:
+    # Given every public and generic token name is exported in the caller
+    fixture = _fixture(tmp_path)
+    responses = _responses(("404", ""), ("200", _bootstrap_body()))
+    # When npm bootstrap publication is explicitly requested
+    result = _run(
+        fixture,
+        NPM_SCRIPT,
+        "--bootstrap",
+        "--publish",
+        HARISH_PYPI_TOKEN=FIXTURE_AUTH,
+        HARISH_NPM_TOKEN=FIXTURE_AUTH,
+        PYPI_API_TOKEN=FIXTURE_AUTH,
+        NPM_TOKEN=FIXTURE_AUTH,
+        FAKE_CURL_RESPONSES=responses,
+    )
+    # Then only the final npm publish child receives its required translation
+    assert result.returncode == 0
+    assert _commands(fixture, "verify")[0]["credential_env"] == []
+    assert all(event["credential_env"] == [] for event in _commands(fixture, "curl"))
+    assert _commands(fixture, "npm-pack")[0]["credential_env"] == []
+    assert _commands(fixture, "npm-publish")[0]["credential_env"] == ["NPM_TOKEN"]
 
 
 def test_should_publish_immutable_pypi_snapshot_then_verify_served_hashes(tmp_path: Path) -> None:
@@ -273,7 +398,7 @@ def test_should_publish_immutable_pypi_snapshot_then_verify_served_hashes(tmp_pa
         fixture,
         PYPI_SCRIPT,
         "--publish",
-        PYPI_API_TOKEN=FIXTURE_AUTH,
+        HARISH_PYPI_TOKEN=FIXTURE_AUTH,
         REPLACE_AFTER_VERIFY=str(wheel),
         FAKE_CURL_RESPONSES=responses,
     )
@@ -281,6 +406,7 @@ def test_should_publish_immutable_pypi_snapshot_then_verify_served_hashes(tmp_pa
     uv = _commands(fixture, "uv")[0]
     assert result.returncode == 0
     assert uv["token_ok"] is True
+    assert FIXTURE_AUTH not in json.dumps(uv["argv"]) + result.stdout + result.stderr
     assert original in uv["digests"]
     assert hashlib.sha256(wheel.read_bytes()).hexdigest() != original
     assert all(str(fixture.release) not in path for path in uv["files"])
@@ -300,7 +426,7 @@ def test_should_refuse_pypi_completion_when_served_hashes_conflict(tmp_path: Pat
         fixture,
         PYPI_SCRIPT,
         "--publish",
-        PYPI_API_TOKEN=FIXTURE_AUTH,
+        HARISH_PYPI_TOKEN=FIXTURE_AUTH,
         FAKE_CURL_RESPONSES=responses,
     )
     # Then the script fails without claiming completion
@@ -319,7 +445,7 @@ def test_should_refuse_duplicate_pypi_served_filename(tmp_path: Path) -> None:
         fixture,
         PYPI_SCRIPT,
         "--publish",
-        PYPI_API_TOKEN=FIXTURE_AUTH,
+        HARISH_PYPI_TOKEN=FIXTURE_AUTH,
         FAKE_CURL_RESPONSES=responses,
     )
     # Then duplicate filename evidence cannot be collapsed into an exact match
@@ -335,7 +461,9 @@ def test_should_disable_inherited_xtrace_before_reading_secrets(
     fixture = _fixture(tmp_path)
     arguments = ("--publish",) if script == PYPI_SCRIPT else ("--bootstrap", "--publish")
     token = (
-        {"PYPI_API_TOKEN": FIXTURE_AUTH} if script == PYPI_SCRIPT else {"NPM_TOKEN": FIXTURE_AUTH}
+        {"HARISH_PYPI_TOKEN": FIXTURE_AUTH}
+        if script == PYPI_SCRIPT
+        else {"HARISH_NPM_TOKEN": FIXTURE_AUTH}
     )
     # When the request exits after the read-only registry preflight
     result = _run(
@@ -397,7 +525,7 @@ def test_should_use_trusted_repo_paths_from_hostile_working_directory(tmp_path: 
         "--bootstrap",
         "--publish",
         cwd=hostile,
-        NPM_TOKEN=FIXTURE_AUTH,
+        HARISH_NPM_TOKEN=FIXTURE_AUTH,
         FAKE_CURL_RESPONSES=responses,
     )
     # Then verifier and packaged license come only from the script's repository
@@ -411,7 +539,7 @@ def test_should_forbid_manual_real_npm_release_publication(tmp_path: Path) -> No
     # Given a reviewed npm release and a valid token
     fixture = _fixture(tmp_path)
     # When manual release mutation is explicitly requested
-    result = _run(fixture, NPM_SCRIPT, "--release", "--publish", NPM_TOKEN=FIXTURE_AUTH)
+    result = _run(fixture, NPM_SCRIPT, "--release", "--publish", HARISH_NPM_TOKEN=FIXTURE_AUTH)
     # Then the script directs the release to provenance-bearing OIDC without invoking npm
     assert result.returncode != 0
     assert "OIDC" in result.stderr
@@ -428,7 +556,7 @@ def test_should_bootstrap_with_sanitized_config_and_verify_registry_state(tmp_pa
     fixture = _fixture(tmp_path)
     responses = _responses(("404", ""), ("404", ""), ("200", _bootstrap_body()))
     environment = _hostile_npm_environment() | {
-        "NPM_TOKEN": FIXTURE_AUTH,
+        "HARISH_NPM_TOKEN": FIXTURE_AUTH,
         "FAKE_CURL_RESPONSES": responses,
     }
     # When the exact bootstrap is published
@@ -450,6 +578,7 @@ def test_should_bootstrap_with_sanitized_config_and_verify_registry_state(tmp_pa
     assert published["config_content"].count("${NPM_TOKEN}") == 1
     assert FIXTURE_AUTH not in published["config_content"]
     assert published["token_ok"] is True
+    assert FIXTURE_AUTH not in json.dumps(published["argv"]) + result.stdout + result.stderr
     assert published["mode"] == 0o600
     assert published["digest"] == hashlib.sha512(BOOTSTRAP_BYTES).hexdigest()
     assert "--dry-run=false" in published["argv"]
@@ -459,6 +588,7 @@ def test_should_bootstrap_with_sanitized_config_and_verify_registry_state(tmp_pa
     assert len(_commands(fixture, "curl")) == 3
     assert len(_commands(fixture, "sleep")) == 1
     assert "Verified npm serves the bootstrap identity, bytes, and tag" in result.stdout
+    assert "HARISH_NPM_TOKEN" in result.stdout
     assert not Path(str(published["config"])).exists()
 
 
@@ -472,7 +602,7 @@ def test_should_bootstrap_only_when_package_endpoint_is_authoritative_404(tmp_pa
         NPM_SCRIPT,
         "--bootstrap",
         "--publish",
-        NPM_TOKEN=FIXTURE_AUTH,
+        HARISH_NPM_TOKEN=FIXTURE_AUTH,
         FAKE_CURL_RESPONSES=_responses(("200", existing)),
     )
     # Then package-level existence blocks the one-time bootstrap
@@ -531,7 +661,7 @@ def test_should_refuse_bootstrap_completion_on_wrong_integrity_or_tag(tmp_path: 
         NPM_SCRIPT,
         "--bootstrap",
         "--publish",
-        NPM_TOKEN=FIXTURE_AUTH,
+        HARISH_NPM_TOKEN=FIXTURE_AUTH,
         FAKE_CURL_RESPONSES=responses,
     )
     # Then the post-publish mismatch is terminal and success is not claimed

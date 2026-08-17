@@ -15,8 +15,9 @@ publish=false
 artifact_root=""
 runtime_root=""
 snapshot_root=""
-pypi_token="${PYPI_API_TOKEN-}"
-unset PYPI_API_TOKEN UV_PUBLISH_TOKEN UV_PUBLISH_USERNAME UV_PUBLISH_PASSWORD
+pypi_token="${HARISH_PYPI_TOKEN-}"
+unset HARISH_PYPI_TOKEN HARISH_NPM_TOKEN PYPI_API_TOKEN NPM_TOKEN
+unset UV_PUBLISH_TOKEN UV_PUBLISH_USERNAME UV_PUBLISH_PASSWORD
 unset UV_PUBLISH_URL UV_PUBLISH_CHECK_URL UV_PUBLISH_INDEX UV_KEYRING_PROVIDER
 
 usage() {
@@ -136,7 +137,7 @@ uv_publish() {
 
 print_plan() {
   echo "PLAN only; no registry mutation. Checked assay-engine $python_version on PyPI."
-  echo "A PyPI account-wide API token can bootstrap assay-engine; set PYPI_API_TOKEN only with --publish."
+  echo "A PyPI account-wide API token can bootstrap assay-engine; export HARISH_PYPI_TOKEN in the caller only with --publish."
   echo "Real releases should use the GitHub Actions OIDC workflow for PEP 740 provenance."
 }
 
@@ -162,9 +163,9 @@ poll_pypi() {
 
 run_publish() {
   [[ "$registry_state" == missing ]] || { run_plan; return; }
-  [[ -n "$pypi_token" ]] || die "PYPI_API_TOKEN is required with --publish"
+  [[ -n "$pypi_token" ]] || die "HARISH_PYPI_TOKEN is required with --publish"
   [[ "$pypi_token" != *$'\n'* && "$pypi_token" != *$'\r'* ]] ||
-    die "PYPI_API_TOKEN is malformed"
+    die "HARISH_PYPI_TOKEN is malformed"
   UV_PUBLISH_TOKEN="$pypi_token" uv_publish false
   poll_pypi
   echo "Verified PyPI serves the reviewed filenames and hashes for assay-engine $python_version."
