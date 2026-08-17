@@ -7,9 +7,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const PACKAGE_ROOT = new URL("..", import.meta.url);
-const ARCHIVE_NAME = "edgeproc-assay-0.5.0-dev.0.tgz";
+const ARCHIVE_NAME = "edgeproc-assay-0.5.0-dev.1.tgz";
 const EXPECTED_ARCHIVE_SHA256 =
-  "04a6ac4a6a2004b25c3b680f512f65510b3bdd9954e5b7157363ba46a51cb7cc";
+  "d8a91083d0940771ab59f3a2f7c22cc32ce45873ff82ba30c7ada3388e2a20a8";
 const OPTIONAL_INTEGRATION =
   "Assay computes scores; Avow seals evidence. They are separate products and neither requires the other.";
 const EXPECTED_MEMBERS = [
@@ -87,7 +87,7 @@ describe("the real npm artifact", () => {
       const readme = run("tar", ["-xOzf", archive, "package/README.md"]);
       expect(manifest).toMatchObject({
         name: "@edgeproc/assay",
-        version: "0.5.0-dev.0",
+        version: "0.5.0-dev.1",
         type: "module",
         dependencies: {},
         exports: {

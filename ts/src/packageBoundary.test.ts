@@ -25,7 +25,7 @@ describe("the public Assay package boundary", () => {
     const manifest = await readManifest();
 
     expect(manifest.name).toBe("@edgeproc/assay");
-    expect(manifest.version).toBe("0.5.0-dev.0");
+    expect(manifest.version).toBe("0.5.0-dev.1");
     expect(manifest.dependencies ?? {}).toEqual({});
   });
 

@@ -3,7 +3,7 @@
 > **TL;DR:** `@edgeproc/assay` validates explicit scoring requests, combines them with
 > one of three methods, and returns every ordered contribution.
 
-> **Status:** `@edgeproc/assay` 0.5.0-dev.0 is a local split candidate. It is not published.
+> **Status:** `@edgeproc/assay` 0.5.0-dev.1 is a local split candidate. It is not published.
 
 The package is dependency-free, ESM-only, and requires Node 22.13 or newer. The future
 authorized registry command is `npm install @edgeproc/assay`; build from the checkout
@@ -23,11 +23,11 @@ corepack pnpm gate
 mkdir -p "${TMPDIR:-/tmp}/assay-pack"
 corepack pnpm pack --pack-destination "${TMPDIR:-/tmp}/assay-pack"
 node scripts/normalize-package-archive.mjs \
-  "${TMPDIR:-/tmp}/assay-pack/edgeproc-assay-0.5.0-dev.0.tgz"
+  "${TMPDIR:-/tmp}/assay-pack/edgeproc-assay-0.5.0-dev.1.tgz"
 ```
 
 The version lines must print `v22.13.0` and `11.5.0`. The final command produces
-`edgeproc-assay-0.5.0-dev.0.tgz` under `${TMPDIR:-/tmp}/assay-pack`. Install that file
+`edgeproc-assay-0.5.0-dev.1.tgz` under `${TMPDIR:-/tmp}/assay-pack`. Install that file
 in a separate Node 22 application, then import only from the package root.
 
 ## Compose a typed score

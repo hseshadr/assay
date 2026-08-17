@@ -170,7 +170,7 @@ def test_should_accept_only_an_exact_release_identity() -> None:
     assert "verify_release_identity.py" in command
     assert '"$RELEASE_TAG" "$GITHUB_SHA"' in command
     attempt = subprocess.run(
-        [sys.executable, "scripts/verify_release_identity.py", "v0.5.0-dev.0"],
+        [sys.executable, "scripts/verify_release_identity.py", "v0.5.0-dev.1"],
         cwd=ROOT,
         check=False,
         capture_output=True,

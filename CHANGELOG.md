@@ -13,8 +13,12 @@
 - Security automation now scans the complete Git history and current tree with Gitleaks
   8.30.1, audits both locked dependency graphs, and checks workflows with actionlint,
   ShellCheck, and zizmor 1.29.0 in pedantic mode.
+- `v0.5.0-dev.0` stopped before artifact construction because a source-built actionlint
+  binary did not expose the audited release version. No registry bytes were published.
+  The `0.5.0.dev1` / `0.5.0-dev.1` candidate installs the official actionlint 1.7.12
+  archive behind its independent SHA-256 trust root.
 - The split branch now identifies as the scoring-only `assay-engine` distribution,
-  version `0.5.0.dev0`, and builds only the `assay` Python package.
+  version `0.5.0.dev1`, and builds only the `assay` Python package.
 - The exact mixed-product `0.4.x` source line is preserved locally at
   `release/avow-0.4.x` commit `3121df1af33a41b457faa2fd1ce84dc823950c39` as migration
   provenance. This task did not push, tag, merge, or publish that maintenance reference.

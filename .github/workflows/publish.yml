@@ -48,8 +48,20 @@ jobs:
         run: rm -f -- results.sarif
       - name: Install fixed actionlint
         run: |
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          set -euo pipefail
+          archive="actionlint_1.7.12_linux_amd64.tar.gz"
+          archive_path="$RUNNER_TEMP/$archive"
+          install_root="$RUNNER_TEMP/actionlint"
+          curl --fail --location --silent --show-error \
+            --output "$archive_path" \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$archive"
+          printf '%s  %s\n' \
+            "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8" \
+            "$archive_path" | sha256sum --check --status
+          mkdir "$install_root"
+          tar -xzf "$archive_path" -C "$install_root"
+          test "$("$install_root/actionlint" -version | head -1)" = "1.7.12"
+          echo "$install_root" >> "$GITHUB_PATH"
       - name: Verify exact tag and artifact versions
         env:
           RELEASE_TAG: ${{ github.ref_name }}

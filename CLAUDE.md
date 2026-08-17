@@ -23,7 +23,7 @@ corepack pnpm gate
 mkdir -p "${TMPDIR:-/tmp}/assay-pack"
 corepack pnpm pack --pack-destination "${TMPDIR:-/tmp}/assay-pack"
 node scripts/normalize-package-archive.mjs \
-  "${TMPDIR:-/tmp}/assay-pack/edgeproc-assay-0.5.0-dev.0.tgz"
+  "${TMPDIR:-/tmp}/assay-pack/edgeproc-assay-0.5.0-dev.1.tgz"
 ```
 
 These commands select Node 22.13.0 and pnpm 11.5.0. The version lines must print
@@ -69,5 +69,5 @@ uv run poe benchmark
   security.
 - Run both complete language gates after shared-contract changes.
 - Keep TypeScript scoring modules above 90% branch, function, and line coverage per file.
-- `@edgeproc/assay@0.5.0-dev.0` is an unpublished local candidate. Do not publish, tag, or change
+- `@edgeproc/assay@0.5.0-dev.1` is an unpublished local candidate. Do not publish, tag, or change
   release settings without explicit approval.

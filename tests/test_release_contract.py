@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,12 @@ def _identity_fixture(tmp_path: Path, *, python_version: str, npm_version: str) 
     shutil.copytree("src/assay", root / "src/assay")
     source = root / "src/assay/_version.py"
     source.write_text(
-        source.read_text(encoding="utf-8").replace("0.5.0.dev0", python_version),
+        re.sub(
+            r'^__version__ = "[^"]+"$',
+            f'__version__ = "{python_version}"',
+            source.read_text(encoding="utf-8"),
+            flags=re.MULTILINE,
+        ),
         encoding="utf-8",
     )
     (root / "ts").mkdir()
@@ -493,9 +499,9 @@ def _rewrite_manifest(root: Path) -> None:
 @pytest.mark.parametrize(
     "relative",
     [
-        "python/assay_engine-0.5.0.dev0-py3-none-any.whl",
-        "python/assay_engine-0.5.0.dev0.tar.gz",
-        "npm/edgeproc-assay-0.5.0-dev.0.tgz",
+        "python/assay_engine-0.5.0.dev1-py3-none-any.whl",
+        "python/assay_engine-0.5.0.dev1.tar.gz",
+        "npm/edgeproc-assay-0.5.0-dev.1.tgz",
     ],
 )
 def test_should_reject_renamed_release_artifacts_even_with_a_new_manifest(
@@ -574,8 +580,8 @@ def _rewrite_wheel_dist_info(path: Path) -> None:
 @pytest.mark.parametrize(
     ("relative", "link_type"),
     [
-        ("python/assay_engine-0.5.0.dev0.tar.gz", tarfile.SYMTYPE),
-        ("npm/edgeproc-assay-0.5.0-dev.0.tgz", tarfile.LNKTYPE),
+        ("python/assay_engine-0.5.0.dev1.tar.gz", tarfile.SYMTYPE),
+        ("npm/edgeproc-assay-0.5.0-dev.1.tgz", tarfile.LNKTYPE),
     ],
 )
 def test_should_reject_every_nonregular_tar_member(
@@ -596,8 +602,8 @@ def test_should_reject_every_nonregular_tar_member(
 @pytest.mark.parametrize(
     ("relative", "mode"),
     [
-        ("python/assay_engine-0.5.0.dev0.tar.gz", "sdist-root"),
-        ("npm/edgeproc-assay-0.5.0-dev.0.tgz", "npm-alias"),
+        ("python/assay_engine-0.5.0.dev1.tar.gz", "sdist-root"),
+        ("npm/edgeproc-assay-0.5.0-dev.1.tgz", "npm-alias"),
     ],
 )
 def test_should_reject_noncanonical_or_wrong_root_tar_members(
