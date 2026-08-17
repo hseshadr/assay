@@ -29,7 +29,7 @@ _TLDR = (
     "explainable score while preserving every input, transformation, and contribution."
 )
 _STATUS = (
-    "> **Status:** `assay-engine` 0.5.0.dev0 and `@edgeproc/assay` 0.5.0-dev.0 are "
+    "> **Status:** `assay-engine` 0.5.0.dev1 and `@edgeproc/assay` 0.5.0-dev.1 are "
     "local split candidates. Neither package is published."
 )
 _OPTIONAL = (
