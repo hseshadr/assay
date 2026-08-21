@@ -656,7 +656,10 @@ def test_should_honor_bounded_timeout_when_registry_never_becomes_authoritative(
     assert "Verified npm" not in result.stdout
 
 
-@pytest.mark.parametrize("timeout", ["299", "1801", "not-a-number"])
+@pytest.mark.parametrize(
+    "timeout",
+    ["299", "1801", "not-a-number", "0600", "18446744073709551916"],
+)
 def test_should_refuse_out_of_bounds_timeout_before_npm_mutation(
     tmp_path: Path, timeout: str
 ) -> None:

@@ -66,8 +66,9 @@ parse_arguments() {
 }
 
 validate_propagation_timeout() {
-  [[ "$propagation_timeout_seconds" =~ ^[0-9]+$ ]] ||
+  [[ "$propagation_timeout_seconds" =~ ^[1-9][0-9][0-9][0-9]?$ ]] ||
     die "npm propagation timeout must be an integer from 300 to 1800 seconds"
+  propagation_timeout_seconds=$((10#$propagation_timeout_seconds))
   ((propagation_timeout_seconds >= MIN_PROPAGATION_TIMEOUT_SECONDS &&
     propagation_timeout_seconds <= MAX_PROPAGATION_TIMEOUT_SECONDS)) ||
     die "npm propagation timeout must be an integer from 300 to 1800 seconds"
