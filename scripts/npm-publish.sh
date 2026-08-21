@@ -7,8 +7,10 @@ readonly NPM_REGISTRY="https://registry.npmjs.org/"
 readonly NPM_PACKAGE="@edgeproc/assay"
 readonly NPM_PACKAGE_URL="https://registry.npmjs.org/%40edgeproc%2Fassay"
 readonly BOOTSTRAP_VERSION="0.0.0-bootstrap.0"
-readonly POLL_ATTEMPTS=6
-readonly POLL_SECONDS=2
+readonly POLL_SECONDS=15
+readonly DEFAULT_PROPAGATION_TIMEOUT_SECONDS=1200
+readonly MIN_PROPAGATION_TIMEOUT_SECONDS=300
+readonly MAX_PROPAGATION_TIMEOUT_SECONDS=1800
 
 script_dir="$(cd -- "${BASH_SOURCE[0]%/*}" && pwd -P)"
 repo_root="$(cd -- "$script_dir/.." && pwd -P)"
@@ -21,7 +23,9 @@ artifact_root=""
 runtime_root=""
 snapshot_root=""
 npm_token="${HARISH_NPM_TOKEN-}"
+propagation_timeout_seconds="${ASSAY_NPM_PROPAGATION_TIMEOUT_SECONDS-$DEFAULT_PROPAGATION_TIMEOUT_SECONDS}"
 unset HARISH_PYPI_TOKEN HARISH_NPM_TOKEN PYPI_API_TOKEN NPM_TOKEN
+unset ASSAY_NPM_PROPAGATION_TIMEOUT_SECONDS
 unset NPM_CONFIG_DRY_RUN NPM_CONFIG_REGISTRY NPM_CONFIG_PROVENANCE
 unset NPM_CONFIG_IGNORE_SCRIPTS NPM_CONFIG_USERCONFIG
 unset npm_config_dry_run npm_config_registry npm_config_provenance
@@ -59,6 +63,15 @@ parse_arguments() {
     esac
   done
   artifact_root="${artifact_root:-$repo_root/dist/release}"
+}
+
+validate_propagation_timeout() {
+  [[ "$propagation_timeout_seconds" =~ ^[0-9]+$ ]] ||
+    die "npm propagation timeout must be an integer from 300 to 1800 seconds"
+  ((propagation_timeout_seconds >= MIN_PROPAGATION_TIMEOUT_SECONDS &&
+    propagation_timeout_seconds <= MAX_PROPAGATION_TIMEOUT_SECONDS)) ||
+    die "npm propagation timeout must be an integer from 300 to 1800 seconds"
+  poll_attempts=$(((propagation_timeout_seconds + POLL_SECONDS - 1) / POLL_SECONDS + 1))
 }
 
 reject_manual_release() {
@@ -165,9 +178,10 @@ versions = payload.get("versions", {})
 record = versions.get(version, {})
 identity = (payload.get("name"), record.get("name"), record.get("version"))
 tags = payload.get("dist-tags")
+allowed_tags = ({"bootstrap": version}, {"bootstrap": version, "latest": version})
 if identity != ("@edgeproc/assay", "@edgeproc/assay", version):
     raise SystemExit("bootstrap registry state conflicts with the required identity")
-if set(versions) != {version} or tags != {"bootstrap": version}:
+if set(versions) != {version} or tags not in allowed_tags:
     raise SystemExit("bootstrap registry state conflicts with the required package state")
 PY
 }
@@ -251,13 +265,13 @@ publish_bootstrap() {
 
 poll_bootstrap() {
   local attempt status
-  for ((attempt = 1; attempt <= POLL_ATTEMPTS; attempt++)); do
+  for ((attempt = 1; attempt <= poll_attempts; attempt++)); do
     status="$(fetch_metadata "$NPM_PACKAGE_URL")" || die "npm post-publish check failed"
     if [[ "$status" == 200 ]]; then
       verify_exact_bootstrap
       return
     fi
-    [[ "$status" == 404 && $attempt -lt $POLL_ATTEMPTS ]] ||
+    [[ "$status" == 404 && $attempt -lt $poll_attempts ]] ||
       die "npm bootstrap did not become authoritative"
     sleep "$POLL_SECONDS"
   done
@@ -283,6 +297,7 @@ run_bootstrap() {
     return
   fi
   validate_bootstrap_token
+  validate_propagation_timeout
   prepare_bootstrap_archive
   write_auth_config
   publish_bootstrap
@@ -310,6 +325,7 @@ metadata_file=""
 auth_config=""
 bootstrap_root=""
 bootstrap_archive=""
+poll_attempts=""
 parse_arguments "$@"
 reject_manual_release
 initialize_snapshot

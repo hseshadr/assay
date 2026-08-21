@@ -188,6 +188,16 @@ def _run(
     )
 
 
+def _publish_npm_bootstrap(
+    fixture: Fixture, responses: str, **extra: str
+) -> subprocess.CompletedProcess[str]:
+    environment = {
+        "HARISH_NPM_TOKEN": FIXTURE_AUTH,
+        "FAKE_CURL_RESPONSES": responses,
+    } | extra
+    return _run(fixture, NPM_SCRIPT, "--bootstrap", "--publish", **environment)
+
+
 def _events(fixture: Fixture) -> list[dict[str, object]]:
     if not fixture.events.exists():
         return []
@@ -242,6 +252,19 @@ def _bootstrap_body(integrity: str | None = None) -> str:
     return _npm_package_body("0.0.0-bootstrap.0", expected, "bootstrap")
 
 
+def _bootstrap_body_with_latest(integrity: str | None = None) -> str:
+    version = "0.0.0-bootstrap.0"
+    expected = integrity or _npm_integrity(BOOTSTRAP_BYTES)
+    record = {"name": "@edgeproc/assay", "version": version, "dist": {"integrity": expected}}
+    return json.dumps(
+        {
+            "name": "@edgeproc/assay",
+            "dist-tags": {"bootstrap": version, "latest": version},
+            "versions": {version: record},
+        }
+    )
+
+
 def _conflicting_bootstrap_body(case: str) -> str:
     payload = json.loads(_bootstrap_body())
     if case == "additional-version":
@@ -250,6 +273,10 @@ def _conflicting_bootstrap_body(case: str) -> str:
         payload["name"] = "@hostile/assay"
     elif case == "integrity":
         payload["versions"]["0.0.0-bootstrap.0"]["dist"]["integrity"] = "sha512-conflict"
+    elif case == "extra-tag":
+        payload["dist-tags"]["next"] = "0.0.0-bootstrap.0"
+    elif case == "wrong-latest":
+        payload["dist-tags"]["latest"] = "9.9.9"
     else:
         payload["dist-tags"] = {"latest": "0.0.0-bootstrap.0"}
     return json.dumps(payload)
@@ -592,6 +619,75 @@ def test_should_bootstrap_with_sanitized_config_and_verify_registry_state(tmp_pa
     assert not Path(str(published["config"])).exists()
 
 
+def test_should_wait_through_documented_scan_when_bootstrap_metadata_is_delayed(
+    tmp_path: Path,
+) -> None:
+    # Given npm's documented malware scan keeps a legitimate publish hidden for 15 minutes
+    fixture = _fixture(tmp_path)
+    responses = _responses(
+        ("404", ""),
+        *[("404", "") for _ in range(60)],
+        ("200", _bootstrap_body()),
+    )
+    # When bootstrap publication waits for authoritative registry metadata
+    result = _publish_npm_bootstrap(fixture, responses)
+    # Then the default window covers the scan without weakening exact-byte verification
+    sleeps = _commands(fixture, "sleep")
+    assert result.returncode == 0
+    assert [event["argv"] for event in sleeps] == [["15"]] * 60
+    assert "Verified npm serves the bootstrap identity, bytes, and tag" in result.stdout
+
+
+def test_should_honor_bounded_timeout_when_registry_never_becomes_authoritative(
+    tmp_path: Path,
+) -> None:
+    # Given the smallest supported five-minute propagation window and persistent 404 metadata
+    fixture = _fixture(tmp_path)
+    # When bootstrap publication reaches the configured bound
+    result = _publish_npm_bootstrap(
+        fixture,
+        _responses(("404", "")),
+        ASSAY_NPM_PROPAGATION_TIMEOUT_SECONDS="300",
+    )
+    # Then the script fails closed after exactly five minutes of polling budget
+    assert result.returncode != 0
+    assert len(_commands(fixture, "curl")) == 22
+    assert [event["argv"] for event in _commands(fixture, "sleep")] == [["15"]] * 20
+    assert "Verified npm" not in result.stdout
+
+
+@pytest.mark.parametrize("timeout", ["299", "1801", "not-a-number"])
+def test_should_refuse_out_of_bounds_timeout_before_npm_mutation(
+    tmp_path: Path, timeout: str
+) -> None:
+    # Given a propagation timeout outside the supported five-to-thirty-minute range
+    fixture = _fixture(tmp_path)
+    # When bootstrap mutation is requested with that timeout
+    result = _publish_npm_bootstrap(
+        fixture,
+        _responses(("404", "")),
+        ASSAY_NPM_PROPAGATION_TIMEOUT_SECONDS=timeout,
+    )
+    # Then configuration fails closed before npm receives the archive or token
+    assert result.returncode != 0
+    assert "propagation timeout" in result.stderr
+    assert _commands(fixture, "npm-publish") == []
+
+
+def test_should_accept_latest_alias_when_it_identifies_exact_bootstrap_bytes(
+    tmp_path: Path,
+) -> None:
+    # Given npm assigns both first-publish tags to the exact bootstrap version and bytes
+    fixture = _fixture(tmp_path)
+    responses = _responses(("404", ""), ("200", _bootstrap_body_with_latest()))
+    # When the bootstrap verifier observes the authoritative scoped-package metadata
+    result = _publish_npm_bootstrap(fixture, responses)
+    # Then the legitimate npm tag shape is accepted without accepting different bytes
+    assert result.returncode == 0
+    assert len(_commands(fixture, "npm-publish")) == 1
+    assert "Verified npm serves the bootstrap identity, bytes, and tag" in result.stdout
+
+
 def test_should_bootstrap_only_when_package_endpoint_is_authoritative_404(tmp_path: Path) -> None:
     # Given the npm package already exists, regardless of bootstrap version presence
     fixture = _fixture(tmp_path)
@@ -632,7 +728,9 @@ def test_should_accept_exact_completed_bootstrap_retry_without_a_token(tmp_path:
     assert _commands(fixture, "npm-publish") == []
 
 
-@pytest.mark.parametrize("case", ["additional-version", "identity", "integrity", "tag"])
+@pytest.mark.parametrize(
+    "case", ["additional-version", "identity", "integrity", "tag", "extra-tag", "wrong-latest"]
+)
 def test_should_refuse_conflicting_existing_bootstrap_state(tmp_path: Path, case: str) -> None:
     # Given an existing package differs from the exact bootstrap-only state
     fixture = _fixture(tmp_path)
