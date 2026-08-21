@@ -5,7 +5,7 @@
 
 ## Supported versions
 
-Assay is currently split into unpublished Python `0.5.0.dev1` and npm `0.5.0-dev.1`
+Assay is currently split into unpublished Python `0.5.0.dev2` and npm `0.5.0-dev.2`
 candidates for the future 0.5.0 line. Until a release is explicitly
 authorized, security fixes are made on `main`; no registry package is represented as supported.
 After publication, this section will name the supported release line explicitly.

@@ -8,7 +8,7 @@ score and the arithmetic behind every row.
 
 ## Installation status
 
-> **Status:** `assay-engine` 0.5.0.dev1 and `@edgeproc/assay` 0.5.0-dev.1 are local split candidates. Neither package is published.
+> **Status:** `assay-engine` 0.5.0.dev2 and `@edgeproc/assay` 0.5.0-dev.2 are local split candidates. Neither package is published.
 
 The future authorized registry commands are `pip install assay-engine` and
 `npm install @edgeproc/assay`. They are shown for identity only; do not run them until

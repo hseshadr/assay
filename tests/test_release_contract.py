@@ -499,9 +499,9 @@ def _rewrite_manifest(root: Path) -> None:
 @pytest.mark.parametrize(
     "relative",
     [
-        "python/assay_engine-0.5.0.dev1-py3-none-any.whl",
-        "python/assay_engine-0.5.0.dev1.tar.gz",
-        "npm/edgeproc-assay-0.5.0-dev.1.tgz",
+        "python/assay_engine-0.5.0.dev2-py3-none-any.whl",
+        "python/assay_engine-0.5.0.dev2.tar.gz",
+        "npm/edgeproc-assay-0.5.0-dev.2.tgz",
     ],
 )
 def test_should_reject_renamed_release_artifacts_even_with_a_new_manifest(
@@ -580,8 +580,8 @@ def _rewrite_wheel_dist_info(path: Path) -> None:
 @pytest.mark.parametrize(
     ("relative", "link_type"),
     [
-        ("python/assay_engine-0.5.0.dev1.tar.gz", tarfile.SYMTYPE),
-        ("npm/edgeproc-assay-0.5.0-dev.1.tgz", tarfile.LNKTYPE),
+        ("python/assay_engine-0.5.0.dev2.tar.gz", tarfile.SYMTYPE),
+        ("npm/edgeproc-assay-0.5.0-dev.2.tgz", tarfile.LNKTYPE),
     ],
 )
 def test_should_reject_every_nonregular_tar_member(
@@ -602,8 +602,8 @@ def test_should_reject_every_nonregular_tar_member(
 @pytest.mark.parametrize(
     ("relative", "mode"),
     [
-        ("python/assay_engine-0.5.0.dev1.tar.gz", "sdist-root"),
-        ("npm/edgeproc-assay-0.5.0-dev.1.tgz", "npm-alias"),
+        ("python/assay_engine-0.5.0.dev2.tar.gz", "sdist-root"),
+        ("npm/edgeproc-assay-0.5.0-dev.2.tgz", "npm-alias"),
     ],
 )
 def test_should_reject_noncanonical_or_wrong_root_tar_members(

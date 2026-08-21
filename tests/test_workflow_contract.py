@@ -49,7 +49,7 @@ _NPM_PUBLISHER_SHA512 = (
     "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf"
     "9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
 )
-_NPM_ARCHIVE_SHA256 = "d8a91083d0940771ab59f3a2f7c22cc32ce45873ff82ba30c7ada3388e2a20a8"
+_NPM_ARCHIVE_SHA256 = "b1cd13c4919bf00e8b52d8467bc783c14d9b78cf0768ca0c04556b03c8242a33"
 
 
 def _mapping(value: object) -> dict[str, object]:
@@ -383,7 +383,7 @@ def test_should_verify_real_release_artifacts_through_clean_installs(tmp_path: P
     # Then all three consumer surfaces pass with aligned metadata
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "verified release artifacts: assay-engine 0.5.0.dev1 and @edgeproc/assay 0.5.0-dev.1\n"
+        "verified release artifacts: assay-engine 0.5.0.dev2 and @edgeproc/assay 0.5.0-dev.2\n"
     )
     npm = next((artifacts / "npm").glob("*.tgz"))
     assert hashlib.sha256(npm.read_bytes()).hexdigest() == _NPM_ARCHIVE_SHA256
@@ -889,8 +889,8 @@ def test_should_name_only_the_unpublished_candidate_versions_in_security_docs() 
     # Given the security model describes registry identities under review
     source = Path("SECURITY.md").read_text(encoding="utf-8")
     # Then it cannot imply that stable 0.5.0 is already the candidate
-    assert "0.5.0.dev1" in source
-    assert "0.5.0-dev.1" in source
+    assert "0.5.0.dev2" in source
+    assert "0.5.0-dev.2" in source
     assert "future 0.5.0" in source
 
 
@@ -923,7 +923,7 @@ def test_should_fail_closed_until_python_and_npm_versions_align(tmp_path: Path) 
     # Given the current intentionally divergent unpublished package versions
     script = _release_fixture(tmp_path / "divergent", npm_version="0.4.1")
     # When a tag matches only the Python candidate
-    result = _run_identity(script, "v0.5.0-dev.1")
+    result = _run_identity(script, "v0.5.0-dev.2")
     # Then release eligibility fails without disclosing artifact metadata
     assert (result.returncode, result.stdout) == (1, "")
     assert result.stderr == "release tag and artifact versions do not match\n"
@@ -931,14 +931,14 @@ def test_should_fail_closed_until_python_and_npm_versions_align(tmp_path: Path) 
 
 def test_should_accept_only_one_tag_matching_both_artifact_versions(tmp_path: Path) -> None:
     # Given aligned Python and npm artifact metadata
-    script = _release_fixture(tmp_path / "aligned", npm_version="0.5.0-dev.1")
+    script = _release_fixture(tmp_path / "aligned", npm_version="0.5.0-dev.2")
     # When the exact shared version tag is checked
-    exact = _run_identity(script, "v0.5.0-dev.1")
+    exact = _run_identity(script, "v0.5.0-dev.2")
     wrong = _run_identity(script, "v0.5.0")
     # Then only the exact tag is release-eligible
     assert (exact.returncode, exact.stdout, exact.stderr) == (
         0,
-        "verified release identity: v0.5.0-dev.1\n",
+        "verified release identity: v0.5.0-dev.2\n",
         "",
     )
     assert wrong.returncode == 1

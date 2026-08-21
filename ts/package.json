@@ -1,6 +1,6 @@
 {
   "name": "@edgeproc/assay",
-  "version": "0.5.0-dev.1",
+  "version": "0.5.0-dev.2",
   "publishConfig": {
     "access": "public"
   },
