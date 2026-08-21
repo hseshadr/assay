@@ -17,8 +17,11 @@
   binary did not expose the audited release version. No registry bytes were published.
   The `0.5.0.dev1` / `0.5.0-dev.1` candidate installs the official actionlint 1.7.12
   archive behind its independent SHA-256 trust root.
+- `v0.5.0-dev.1` built successfully, but both registry lanes rejected their publishing
+  configuration before writing package bytes. The `0.5.0.dev2` / `0.5.0-dev.2`
+  candidate advances the identity without changing the scoring API.
 - The split branch now identifies as the scoring-only `assay-engine` distribution,
-  version `0.5.0.dev1`, and builds only the `assay` Python package.
+  version `0.5.0.dev2`, and builds only the `assay` Python package.
 - The exact mixed-product `0.4.x` source line is preserved locally at
   `release/avow-0.4.x` commit `3121df1af33a41b457faa2fd1ce84dc823950c39` as migration
   provenance. This task did not push, tag, merge, or publish that maintenance reference.

@@ -71,7 +71,7 @@ corepack pnpm gate
 mkdir -p "${TMPDIR:-/tmp}/assay-pack"
 corepack pnpm pack --pack-destination "${TMPDIR:-/tmp}/assay-pack"
 node scripts/normalize-package-archive.mjs \
-  "${TMPDIR:-/tmp}/assay-pack/edgeproc-assay-0.5.0-dev.1.tgz"
+  "${TMPDIR:-/tmp}/assay-pack/edgeproc-assay-0.5.0-dev.2.tgz"
 ```
 
 The two version lines must print `v22.13.0` and `11.5.0`.
@@ -122,7 +122,7 @@ Read [Methods](docs/METHODS.md) for exact arithmetic and fields,
 
 ## Future registry identity
 
-> **Status:** `assay-engine` 0.5.0.dev1 and `@edgeproc/assay` 0.5.0-dev.1 are local split candidates. Neither package is published.
+> **Status:** `assay-engine` 0.5.0.dev2 and `@edgeproc/assay` 0.5.0-dev.2 are local split candidates. Neither package is published.
 
 After a separately authorized release, consumers will use `pip install assay-engine`
 for Python and `npm install @edgeproc/assay` for TypeScript. Until then, use only the
