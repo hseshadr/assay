@@ -87,6 +87,126 @@ def _commands(job: dict[str, object]) -> str:
     return "\n".join(str(step["run"]) for step in _steps(job) if "run" in step)
 
 
+def _release_files(root: Path) -> tuple[Path, ...]:
+    files = (
+        root / "python" / "assay_engine-0.5.0.dev2-py3-none-any.whl",
+        root / "python" / "assay_engine-0.5.0.dev2.tar.gz",
+        root / "npm" / "edgeproc-assay-0.5.0-dev.2.tgz",
+    )
+    for index, path in enumerate(files, start=1):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"artifact-{index}\n".encode())
+    manifest = "".join(
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}\n"
+        for path in files
+    )
+    (root / "SHA256SUMS").write_text(manifest, encoding="utf-8")
+    return (root / "SHA256SUMS", *files)
+
+
+def _release_asset(path: Path, asset_id: int, state: str = "uploaded") -> dict[str, object]:
+    data = path.read_bytes()
+    return {
+        "id": asset_id,
+        "name": path.name,
+        "state": state,
+        "size": len(data) if state == "uploaded" else 0,
+        "digest": f"sha256:{hashlib.sha256(data).hexdigest()}" if state == "uploaded" else None,
+    }
+
+
+def _release_state(
+    assets: list[dict[str, object]], *, draft: bool = True, body: str | None = None
+) -> list[dict[str, object]]:
+    return [
+        {
+            "id": 1,
+            "tag_name": "v0.5.0-dev.2",
+            "name": "v0.5.0-dev.2",
+            "body": body or "Exact Assay artifacts verified against PyPI, npm, and SHA256SUMS.",
+            "prerelease": True,
+            "draft": draft,
+            "immutable": not draft,
+            "assets": assets,
+        }
+    ]
+
+
+def _write_release_fakes(bin_dir: Path) -> None:
+    bin_dir.mkdir()
+    shutil.copy(Path("tests/fake_github_release_cli.py"), bin_dir / "gh")
+    (bin_dir / "gh").chmod(0o755)
+    (bin_dir / "timeout").write_text('#!/bin/sh\nshift 2\nexec "$@"\n', encoding="utf-8")
+    (bin_dir / "timeout").chmod(0o755)
+    (bin_dir / "sleep").write_text(
+        '#!/bin/sh\ntest "${FAKE_SLEEP_FAILURE:-}" != 1\n', encoding="utf-8"
+    )
+    (bin_dir / "sleep").chmod(0o755)
+    curl = """#!/bin/sh
+set -eu
+while test "$1" != "--output"; do shift; done
+output="$2"
+shift 2
+while test "$#" -gt 1; do shift; done
+source="$FAKE_GH_UPLOADS/${1##*/}"
+test -n "$source"
+cp "$source" "$output"
+"""
+    (bin_dir / "curl").write_text(curl, encoding="utf-8")
+    (bin_dir / "curl").chmod(0o755)
+
+
+def _run_release_mirror(
+    tmp_path: Path,
+    state: list[dict[str, object]],
+    *,
+    immutable_after: int | None = None,
+    tag_sha: str | None = None,
+    corrupt_public_bytes: bool = False,
+    verify_failure: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    assets = _release_files(tmp_path / "release")
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    _write_release_fakes(bin_dir)
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    for asset in assets:
+        shutil.copy(asset, uploads / asset.name)
+    if corrupt_public_bytes:
+        (uploads / assets[0].name).write_bytes(b"wrong public bytes\n")
+    job = _job(_workflow("publish.yml"), "publish-github")
+    step = next(
+        step
+        for step in _steps(job)
+        if step.get("name") == "Create or verify the immutable public mirror"
+    )
+    command = str(step["run"])
+    env = os.environ | {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "RUNNER_TEMP": str(tmp_path / "runner"),
+        "GITHUB_REPOSITORY": "hseshadr/assay",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_SERVER_URL": "https://github.test",
+        "RELEASE_TAG": "v0.5.0-dev.2",
+        "FAKE_GH_STATE": str(state_path),
+        "FAKE_GH_LOG": str(tmp_path / "gh.log"),
+        "FAKE_GH_COUNTER": str(tmp_path / "gh-counter"),
+        "FAKE_GH_UPLOADS": str(uploads),
+        "FAKE_TAG_SHA": tag_sha or "a" * 40,
+    }
+    if immutable_after is not None:
+        env["FAKE_IMMUTABLE_AFTER"] = str(immutable_after)
+    if verify_failure:
+        env["FAKE_VERIFY_FAILURE"] = "1"
+    if corrupt_public_bytes or verify_failure:
+        env["FAKE_SLEEP_FAILURE"] = "1"
+    (tmp_path / "runner").mkdir()
+    result = subprocess.run(["bash", "-c", command], cwd=tmp_path, env=env, text=True, check=False)
+    return result
+
+
 def _action_uses(workflow: dict[str, object]) -> tuple[str, ...]:
     jobs = (_mapping(value) for value in _jobs(workflow).values())
     return tuple(str(step["uses"]) for job in jobs for step in _steps(job) if "uses" in step)
@@ -108,6 +228,7 @@ def _release_fixture(tmp_path: Path, *, npm_version: str) -> Path:
     _git(tmp_path, "config", "user.name", "Assay Tests")
     _git(tmp_path, "add", ".")
     _git(tmp_path, "commit", "-qm", "fixture")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
     return tmp_path / "scripts/verify_release_identity.py"
 
 
@@ -243,7 +364,7 @@ def test_should_bind_every_action_sha_to_its_exact_documented_version() -> None:
     )
 
 
-def test_should_isolate_oidc_write_in_the_minimal_publish_job() -> None:
+def test_should_isolate_every_write_in_a_minimal_publication_job() -> None:
     # Given all workflow and job permissions
     workflows = {name: _workflow(name) for name in _WORKFLOW_NAMES}
     writers: list[tuple[str, str, str]] = []
@@ -256,6 +377,7 @@ def test_should_isolate_oidc_write_in_the_minimal_publish_job() -> None:
     assert writers == [
         ("publish.yml", "publish-python", "id-token"),
         ("publish.yml", "publish-npm", "id-token"),
+        ("publish.yml", "publish-github", "contents"),
     ]
 
 
@@ -593,17 +715,18 @@ def test_should_scope_the_historical_public_key_exception_to_one_fingerprint() -
     assert lines[0] == "# documented Ed25519 public key test vector; not secret"
 
 
-def test_should_trigger_publication_only_for_version_tags_without_tokens() -> None:
+def test_should_trigger_publication_only_for_version_tags_with_one_scoped_bridge_token() -> None:
     # Given the publish workflow event and source
     workflow = _workflow("publish.yml")
     triggers = _mapping(workflow["on"])
     source = (_WORKFLOW_DIR / "publish.yml").read_text(encoding="utf-8")
-    # Then only version tags enter eligibility and no token secret is accepted
+    # Then only version tags enter eligibility and only one protected npm bridge is accepted
     push = _mapping(triggers["push"])
     assert push == {"tags": ["v*.*.*"]}
     assert set(triggers) == {"push"}
     assert "verify_release_identity.py" in _commands(_job(workflow, "build"))
-    assert re.search(r"secrets\.[A-Za-z0-9_]*TOKEN", source) is None
+    assert re.findall(r"secrets\.([A-Za-z0-9_]*TOKEN)", source) == ["NPM_TOKEN"]
+    assert _job(workflow, "publish-npm")["environment"] == "npm-release"
     assert _mapping(workflow["concurrency"]) == {
         "group": "publish-assay",
         "cancel-in-progress": "false",
@@ -766,6 +889,224 @@ def test_should_make_the_privileged_channel_recheck_authoritative_and_fail_close
     assert "--max-filesize 1048576" in command
 
 
+def test_should_scope_the_temporary_npm_token_to_one_publish_step() -> None:
+    # Given the package-scoped bridge credential is available only through a protected environment
+    job = _job(_workflow("publish.yml"), "publish-npm")
+    steps = _steps(job)
+    secret_steps = [step for step in steps if "secrets." in json.dumps(step)]
+    # When the privileged lane is inspected structurally
+    # Then only the final npm client receives the token and it cannot run package scripts
+    assert job["environment"] == "npm-release"
+    assert len(secret_steps) == 1
+    publish = secret_steps[0]
+    assert publish["name"] == "Publish reviewed npm artifact with provenance"
+    assert _mapping(publish["env"])["NODE_AUTH_TOKEN"] == "${{ secrets." + "NPM_TOKEN }}"
+    command = str(publish["run"])
+    assert "--provenance" in command
+    assert "--ignore-scripts" in command
+    assert "--access public" in command
+    assert '--tag "$NPM_PUBLISH_TAG"' in command
+    assert all("secrets." not in json.dumps(step) for step in steps if step is not publish)
+    setup = next(
+        step for step in steps if str(step.get("uses", "")).startswith("actions/setup-node@")
+    )
+    assert _mapping(setup["with"])["registry-url"] == "https://registry.npmjs.org"
+
+
+def test_should_recheck_npm_channel_in_the_credentialed_publish_step() -> None:
+    # Given registry state can change after the unprivileged preflight
+    job = _job(_workflow("publish.yml"), "publish-npm")
+    secret_step = next(step for step in _steps(job) if "secrets." in json.dumps(step))
+    command = str(secret_step["run"])
+    # Then the authoritative read is immediately coupled to the irreversible write
+    assert "https://registry.npmjs.org/%40edgeproc%2Fassay" in command
+    assert "EXPECTED_CHANNEL_VERSION" in json.dumps(secret_step)
+    assert "EXPECTED_PUBLISH_TAG_VERSION" in json.dumps(secret_step)
+    assert command.index("curl ") < command.index("npm-cli.js publish")
+    for step in _steps(job):
+        if step is not secret_step:
+            assert "registry.npmjs.org/%40edgeproc%2Fassay" not in str(step.get("run", ""))
+
+
+def test_should_require_one_approved_environment_for_both_registry_writes() -> None:
+    # Given either registry write is irreversible
+    workflow = _workflow("publish.yml")
+    environments = {
+        _job(workflow, name)["environment"] for name in ("publish-python", "publish-npm")
+    }
+    # Then one protected approval boundary gates both writes
+    assert environments == {"npm-release"}
+
+
+def test_should_publish_an_exact_immutable_github_release_after_registry_verification() -> None:
+    # Given the public mirror runs only after both package registries serve reviewed bytes
+    job = _job(_workflow("publish.yml"), "publish-github")
+    source = json.dumps(job)
+    command = _commands(job)
+    # When its authority, state machine, and byte checks are reviewed
+    # Then it cannot execute repository code, clobber assets, or publish a mutable release
+    assert job["needs"] == ["verify-published"]
+    assert job["if"] == "${{ needs.verify-published.result == 'success' }}"
+    assert _permissions(job["permissions"]) == {
+        "actions": "read",
+        "attestations": "read",
+        "contents": "write",
+    }
+    assert job["timeout-minutes"] == "20"
+    assert "actions/checkout" not in source
+    assert "secrets." not in source
+    assert "immutable-releases" not in command
+    assert "releases?per_page=100&page=$page" in command
+    assert "length < 100" not in command
+    assert "git/ref/tags" in command
+    assert "git/tags" in command
+    assert "target_commitish" not in command
+    assert "gh_bounded release create" in command
+    assert "--draft" in command
+    assert "--verify-tag" in command
+    assert "gh_bounded release upload" in command
+    assert "--clobber" not in command
+    assert "releases/assets/$id" in command
+    assert 'select(.state != "uploaded")' in command
+    assert "comm -23" in command
+    assert "gh_bounded release edit" in command
+    assert "--draft=false" in command
+    assert "gh_bounded release verify" in command
+    assert "gh_bounded release verify-asset" in command
+    assert "sha256sum --check" in command
+    assert ".immutable == true" in command
+    assert ".prerelease == $prerelease" in command
+    assert ".name == $title" in command
+    assert ".body == $body" in command
+    assert "curl --fail --location" in command
+    assert "deadline=$((SECONDS + 600))" in command
+    assert 'while test "$SECONDS" -lt "$deadline"' in command
+    assert "gh_bounded" in command
+    polling = command[command.index("deadline=$((SECONDS + 600))") :]
+    assert "verify_tag" in polling
+    assert "sleep 10" in command
+
+
+def test_should_create_and_verify_a_missing_github_release(tmp_path: Path) -> None:
+    # Given no release exists for the reviewed tag
+    result = _run_release_mirror(tmp_path, [])
+    # Then a complete immutable release is created and independently verified
+    assert result.returncode == 0
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state[0]["draft"] is False
+    assert state[0]["immutable"] is True
+    assert len(state[0]["assets"]) == 4
+
+
+def test_should_resume_a_draft_after_removing_only_failed_expected_assets(
+    tmp_path: Path,
+) -> None:
+    # Given GitHub left one expected upload in starter state after a transient 502
+    starter = {
+        "id": 77,
+        "name": "SHA256SUMS",
+        "state": "starter",
+        "size": 0,
+        "digest": None,
+    }
+    result = _run_release_mirror(tmp_path, _release_state([starter]))
+    # Then only that residue is deleted, the reviewed byte is uploaded, and publication completes
+    assert result.returncode == 0
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert '"--method", "DELETE"' in log
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state[0]["immutable"] is True
+
+
+def test_should_accept_only_an_exact_existing_immutable_release(tmp_path: Path) -> None:
+    # Given a previous attempt already published all reviewed bytes immutably
+    assets = [
+        _release_asset(path, index)
+        for index, path in enumerate(_release_files(tmp_path / "release"))
+    ]
+    result = _run_release_mirror(tmp_path, _release_state(assets, draft=False))
+    # Then the retry verifies bytes, tag, metadata, and attestations without mutation
+    assert result.returncode == 0
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert '"release", "upload"' not in log
+    assert '"release", "edit"' not in log
+
+
+def test_should_resume_read_only_while_release_immutability_settles(tmp_path: Path) -> None:
+    # Given a prior run published exact bytes but GitHub has not exposed immutability yet
+    paths = _release_files(tmp_path / "release")
+    assets = [_release_asset(path, index) for index, path in enumerate(paths)]
+    state = _release_state(assets, draft=False)
+    state[0]["immutable"] = False
+    result = _run_release_mirror(tmp_path, state, immutable_after=2)
+    # Then the retry performs no mutation and waits for the authoritative immutable state
+    assert result.returncode == 0
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert '"release", "upload"' not in log
+    assert '"release", "edit"' not in log
+
+
+def test_should_find_the_reviewed_release_after_the_first_api_page(tmp_path: Path) -> None:
+    # Given one hundred older releases precede the reviewed tag
+    paths = _release_files(tmp_path / "release")
+    assets = [_release_asset(path, index) for index, path in enumerate(paths)]
+    older = [{"tag_name": f"v0.0.{index}"} for index in range(100)]
+    result = _run_release_mirror(tmp_path, [*older, *_release_state(assets, draft=False)])
+    # Then pagination finds and verifies the exact immutable release
+    assert result.returncode == 0
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "page=2" in log
+
+
+@pytest.mark.parametrize("failure", ["public-bytes", "attestation"])
+def test_should_reject_unverifiable_published_github_assets(tmp_path: Path, failure: str) -> None:
+    # Given metadata is exact but public bytes or release attestations cannot be verified
+    paths = _release_files(tmp_path / "release")
+    assets = [_release_asset(path, index) for index, path in enumerate(paths)]
+    result = _run_release_mirror(
+        tmp_path,
+        _release_state(assets, draft=False),
+        corrupt_public_bytes=failure == "public-bytes",
+        verify_failure=failure == "attestation",
+    )
+    # Then the mirror never reports a successful release
+    assert result.returncode != 0
+
+
+@pytest.mark.parametrize("conflict", ["digest", "metadata", "tag"])
+def test_should_reject_conflicting_github_release_state(tmp_path: Path, conflict: str) -> None:
+    # Given an existing draft is not the exact reviewed release state
+    assets = [_release_asset(_release_files(tmp_path / "release")[0], 9)]
+    body = "misleading release notes" if conflict == "metadata" else None
+    if conflict == "digest":
+        assets[0]["digest"] = "sha256:" + "0" * 64
+    tag_sha = "b" * 40 if conflict == "tag" else None
+    result = _run_release_mirror(tmp_path, _release_state(assets, body=body), tag_sha=tag_sha)
+    # Then no immutable release is created from conflicting evidence
+    assert result.returncode != 0
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state[0]["draft"] is True
+
+
+def test_should_fetch_protected_main_before_every_hosted_identity_check() -> None:
+    # Given release identity is checked in both the unprivileged build and final verifier
+    workflow = _workflow("publish.yml")
+    for name in ("build", "verify-published"):
+        job = _job(workflow, name)
+        checkout = next(
+            step
+            for step in _steps(job)
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        )
+        command = _commands(job)
+        # Then a complete, explicit protected-main ref exists before ancestry validation
+        assert _mapping(checkout["with"])["fetch-depth"] == "0"
+        assert "refs/heads/main:refs/remotes/origin/main" in command
+        assert command.index("refs/heads/main:refs/remotes/origin/main") < command.index(
+            "verify_release_identity.py"
+        )
+
+
 def test_should_bound_final_polling_and_avoid_shell_dist_tag_fallbacks() -> None:
     # Given the final registry verifier
     command = _commands(_job(_workflow("publish.yml"), "verify-published"))
@@ -880,9 +1221,9 @@ def test_should_document_the_single_internal_npm_publisher_invariant() -> None:
         "group": "publish-assay",
         "cancel-in-progress": "false",
     }
-    assert "only Assay publisher invariant" in operations
+    assert "workflow concurrency serializes releases" in operations
     assert "external publisher" in operations
-    assert "fails closed" in operations
+    assert "fail closed" in operations
 
 
 def test_should_name_only_the_unpublished_candidate_versions_in_security_docs() -> None:
@@ -894,13 +1235,13 @@ def test_should_name_only_the_unpublished_candidate_versions_in_security_docs() 
     assert "future 0.5.0" in source
 
 
-def test_should_skip_the_entire_oidc_job_for_identical_registry_releases() -> None:
-    # Given both minimal OIDC jobs and their unprivileged final verifier
+def test_should_skip_the_entire_privileged_job_for_identical_registry_releases() -> None:
+    # Given both minimal publishing jobs and their unprivileged final verifier
     workflow = _workflow("publish.yml")
     python = _job(workflow, "publish-python")
     npm = _job(workflow, "publish-npm")
     verifier = _job(workflow, "verify-published")
-    # Then no OIDC-capable runner starts for an already-complete registry lane
+    # Then no credential-capable runner starts for an already-complete registry lane
     assert python["if"] == "${{ needs.preflight-python.outputs.publish == 'true' }}"
     assert npm["if"] == "${{ needs.preflight-npm.outputs.publish == 'true' }}"
     assert all("if" not in step for step in _steps(python))

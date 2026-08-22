@@ -66,6 +66,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          git fetch --no-tags --force origin \
+            refs/heads/main:refs/remotes/origin/main
           uv sync --frozen --all-groups
           uv run python scripts/verify_release_identity.py "$RELEASE_TAG" "$GITHUB_SHA"
       - name: Run the complete release candidate gate
@@ -167,6 +169,7 @@ jobs:
     needs: [build, preflight-python, preflight-npm]
     if: ${{ needs.preflight-python.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
+    environment: npm-release
     permissions:
       actions: read # Download the reviewed Python artifacts.
       id-token: write # Request a short-lived PyPI publishing identity.
@@ -183,13 +186,14 @@ jobs:
           print-hash: true
 
   publish-npm:
-    name: Publish missing npm release through OIDC
+    name: Publish missing npm release with provenance
     needs: [build, preflight-python, preflight-npm]
     if: ${{ needs.preflight-npm.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
+    environment: npm-release
     permissions:
       actions: read # Download the reviewed npm artifact.
-      id-token: write # Request a short-lived npm publishing identity.
+      id-token: write # Bind npm provenance to this exact GitHub workflow run.
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -203,12 +207,8 @@ jobs:
         with:
           node-version: "24.15.0"
           package-manager-cache: false
-      - name: Verify and invoke only the staged npm 12.0.2 publisher
-        env:
-          EXPECTED_CHANNEL_VERSION: ${{ needs.preflight-npm.outputs.channel-version }}
-          EXPECTED_PUBLISH_TAG_VERSION: ${{ needs.preflight-npm.outputs.publish-tag-version }}
-          NPM_CHANNEL: ${{ needs.preflight-npm.outputs.dist-tag }}
-          NPM_PUBLISH_TAG: ${{ needs.preflight-npm.outputs.publish-tag }}
+          registry-url: https://registry.npmjs.org
+      - name: Verify the staged npm publisher
         run: |
           set -euo pipefail
           NPM_PUBLISHER_SHA512="b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
@@ -216,6 +216,19 @@ jobs:
           mkdir /tmp/npm-publisher
           tar -xzf publish-tools/npm-12.0.2.tgz -C /tmp/npm-publisher
           test "$(node /tmp/npm-publisher/package/bin/npm-cli.js --version)" = "12.0.2"
+      - name: Publish reviewed npm artifact with provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          EXPECTED_CHANNEL_VERSION: ${{ needs.preflight-npm.outputs.channel-version }}
+          EXPECTED_PUBLISH_TAG_VERSION: ${{ needs.preflight-npm.outputs.publish-tag-version }}
+          NPM_CHANNEL: ${{ needs.preflight-npm.outputs.dist-tag }}
+          NPM_PUBLISH_TAG: ${{ needs.preflight-npm.outputs.publish-tag }}
+        run: |
+          set -euo pipefail
+          { set +x; } 2>/dev/null
+          test -n "${NODE_AUTH_TOKEN:-}"
+          token="$NODE_AUTH_TOKEN"
+          unset NODE_AUTH_TOKEN
           status="$(curl --silent --show-error --output /tmp/npm-package.json \
             --write-out '%{http_code}' --connect-timeout 5 --max-time 20 --max-filesize 1048576 \
             https://registry.npmjs.org/%40edgeproc%2Fassay)"
@@ -232,8 +245,10 @@ jobs:
           fi
           test "$current_channel" = "$EXPECTED_CHANNEL_VERSION"
           test "$current_publish_tag" = "$EXPECTED_PUBLISH_TAG_VERSION"
-          node /tmp/npm-publisher/package/bin/npm-cli.js publish release/npm/*.tgz \
-            --access public --provenance --tag "$NPM_PUBLISH_TAG"
+          NODE_AUTH_TOKEN="$token" node /tmp/npm-publisher/package/bin/npm-cli.js publish \
+            release/npm/*.tgz --access public --provenance \
+            --ignore-scripts --tag "$NPM_PUBLISH_TAG"
+          unset token
 
   verify-published:
     name: Verify registry bytes
@@ -255,6 +270,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: assay-release-${{ github.sha }}
@@ -282,6 +298,224 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          git fetch --no-tags --force origin \
+            refs/heads/main:refs/remotes/origin/main
           python3 scripts/verify_release_identity.py "$RELEASE_TAG" "$GITHUB_SHA"
           python3 scripts/verify_published_release.py \
             release "$NPM_DIST_TAG" "$NPM_PUBLISH_TAG" "$NPM_PUBLISH"
+
+  publish-github:
+    name: Publish immutable GitHub release mirror
+    needs: [verify-published]
+    if: ${{ needs.verify-published.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read # Download the exact reviewed release envelope.
+      attestations: read # Verify the immutable release and every mirrored asset.
+      contents: write # Create and verify the immutable public release mirror.
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: assay-release-${{ github.sha }}
+          path: release
+      - name: Verify the reviewed release envelope without repository code
+        run: |
+          set -euo pipefail
+          test -z "$(find release -type l -print -quit)"
+          test "$(find release -type f | wc -l | tr -d ' ')" = 4
+          wheel=(release/python/*.whl)
+          sdist=(release/python/*.tar.gz)
+          npm=(release/npm/*.tgz)
+          test "${#wheel[@]}" = 1
+          test "${#sdist[@]}" = 1
+          test "${#npm[@]}" = 1
+          (cd release && sha256sum --check --strict SHA256SUMS)
+      - name: Create or verify the immutable public mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          { set +x; } 2>/dev/null
+          wheel=(release/python/*.whl)
+          sdist=(release/python/*.tar.gz)
+          npm=(release/npm/*.tgz)
+          assets=(release/SHA256SUMS "${wheel[0]}" "${sdist[0]}" "${npm[0]}")
+          expected="$RUNNER_TEMP/expected-release-assets.tsv"
+          actual="$RUNNER_TEMP/actual-release-assets.tsv"
+          releases="$RUNNER_TEMP/github-releases.json"
+          matches="$RUNNER_TEMP/github-release-matches.json"
+          state="$RUNNER_TEMP/github-release.json"
+          expected_names="$RUNNER_TEMP/expected-release-names.txt"
+          expected_prerelease=false
+          expected_title="$RELEASE_TAG"
+          expected_body="Exact Assay artifacts verified against PyPI, npm, and SHA256SUMS."
+          case "$RELEASE_TAG" in *-dev.*) expected_prerelease=true ;; esac
+          : > "$expected"
+          for asset in "${assets[@]}"; do
+            printf '%s\tuploaded\t%s\tsha256:%s\n' \
+              "$(basename "$asset")" "$(wc -c < "$asset" | tr -d ' ')" \
+              "$(sha256sum "$asset" | cut -d ' ' -f 1)" >> "$expected"
+          done
+          LC_ALL=C sort -o "$expected" "$expected"
+          cut -f 1 "$expected" > "$expected_names"
+
+          gh_bounded() {
+            timeout --foreground 30s gh "$@"
+          }
+
+          load_release() {
+            printf '[]\n' > "$releases"
+            for page in $(seq 1 20); do
+              page_state="$RUNNER_TEMP/github-releases-$page.json"
+              gh_bounded api "repos/$GITHUB_REPOSITORY/releases?per_page=100&page=$page" \
+                > "$page_state" || return 2
+              jq -e 'type == "array"' "$page_state" >/dev/null || return 2
+              jq -s '.[0] + .[1]' "$releases" "$page_state" > "$releases.next" || return 2
+              mv "$releases.next" "$releases"
+              page_count="$(jq 'length' "$page_state")"
+              test "$page_count" = 100 || break
+              test "$page" != 20 || return 2
+            done
+            jq --arg tag "$RELEASE_TAG" '[.[] | select(.tag_name == $tag)]' \
+              "$releases" > "$matches" || return 2
+            count="$(jq 'length' "$matches")"
+            test "$count" -le 1 || return 2
+            test "$count" = 1 || return 1
+            jq '.[0]' "$matches" > "$state"
+          }
+
+          verify_tag() {
+            object="$RUNNER_TEMP/github-tag-object.json"
+            gh_bounded api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+              > "$object" || return 1
+            type="$(jq -er '.object.type' "$object")"
+            sha="$(jq -er '.object.sha' "$object")"
+            for _ in 1 2 3 4; do
+              if test "$type" = commit; then
+                test "$sha" = "$GITHUB_SHA"
+                return
+              fi
+              test "$type" = tag || return 1
+              gh_bounded api "repos/$GITHUB_REPOSITORY/git/tags/$sha" \
+                > "$object" || return 1
+              type="$(jq -er '.object.type' "$object")"
+              sha="$(jq -er '.object.sha' "$object")"
+            done
+            return 1
+          }
+
+          write_actual() {
+            jq -r '.assets[] | [.name, .state, (.size | tostring), .digest] | @tsv' \
+              "$state" | LC_ALL=C sort > "$actual"
+            test "$(cut -f 1 "$actual" | wc -l)" = "$(cut -f 1 "$actual" | sort -u | wc -l)"
+          }
+
+          verify_release_identity() {
+            jq -e --arg tag "$RELEASE_TAG" --arg title "$expected_title" \
+              --arg body "$expected_body" --argjson prerelease "$expected_prerelease" \
+              '.tag_name == $tag and .name == $title and .body == $body and
+               .prerelease == $prerelease' "$state" >/dev/null
+          }
+
+          verify_draft_subset() {
+            verify_release_identity
+            jq -e '.draft == true and .immutable == false' "$state" >/dev/null
+            jq -r '.assets[].name' "$state" | LC_ALL=C sort > "$RUNNER_TEMP/draft-names.txt"
+            test "$(wc -l < "$RUNNER_TEMP/draft-names.txt")" = \
+              "$(sort -u "$RUNNER_TEMP/draft-names.txt" | wc -l)"
+            test -z "$(comm -23 "$RUNNER_TEMP/draft-names.txt" "$expected_names")"
+            write_actual
+            jq -r '.assets[] | select(.state == "uploaded") |
+              [.name, .state, (.size | tostring), .digest] | @tsv' \
+              "$state" | LC_ALL=C sort > "$RUNNER_TEMP/uploaded-draft-assets.tsv"
+            test -z "$(comm -23 "$RUNNER_TEMP/uploaded-draft-assets.tsv" "$expected")"
+          }
+
+          remove_failed_draft_assets() {
+            verify_draft_subset
+            jq -r '.assets[] | select(.state != "uploaded") | [.id, .name] | @tsv' \
+              "$state" > "$RUNNER_TEMP/failed-draft-assets.tsv"
+            while IFS=$'\t' read -r id name; do
+              test -n "$id" || continue
+              grep -Fqx "$name" "$expected_names"
+              gh_bounded api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$id"
+            done < "$RUNNER_TEMP/failed-draft-assets.tsv"
+            load_release
+            verify_draft_subset
+          }
+
+          if load_release; then
+            true
+          else
+            load_status=$?
+            test "$load_status" = 1
+            verify_tag
+            prerelease=()
+            test "$expected_prerelease" = false || prerelease=(--prerelease)
+            gh_bounded release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --target "$GITHUB_SHA" "${prerelease[@]}" \
+              --title "$expected_title" --notes "$expected_body"
+            load_release
+          fi
+
+          if jq -e '.draft == true' "$state" >/dev/null; then
+            verify_tag
+            remove_failed_draft_assets
+            for asset in "${assets[@]}"; do
+              record="$(printf '%s\tuploaded\t%s\tsha256:%s' \
+                "$(basename "$asset")" "$(wc -c < "$asset" | tr -d ' ')" \
+                "$(sha256sum "$asset" | cut -d ' ' -f 1)")"
+              if ! grep -Fqx "$record" "$actual"; then
+                gh_bounded release upload "$RELEASE_TAG" "$asset" \
+                  --repo "$GITHUB_REPOSITORY"
+              fi
+            done
+            load_release
+            verify_draft_subset
+            cmp "$expected" "$actual"
+            verify_tag
+            gh_bounded release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft=false
+          elif jq -e '.draft == false and .immutable == false' "$state" >/dev/null; then
+            verify_release_identity
+            verify_tag
+            write_actual
+            cmp "$expected" "$actual"
+          elif ! jq -e '.draft == false and .immutable == true' "$state" >/dev/null; then
+            echo "existing GitHub release is neither a resumable draft nor immutable" >&2
+            exit 1
+          fi
+
+          download="$RUNNER_TEMP/public-release-assets"
+          deadline=$((SECONDS + 600))
+          while test "$SECONDS" -lt "$deadline"; do
+            if load_release && verify_release_identity && verify_tag && \
+              jq -e '.draft == false and .immutable == true' "$state" >/dev/null; then
+              write_actual
+              if cmp "$expected" "$actual" && \
+                gh_bounded release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"; then
+                rm -rf -- "$download"
+                mkdir "$download"
+                verified=true
+                for asset in "${assets[@]}"; do
+                  name="$(basename "$asset")"
+                  curl --fail --location --silent --show-error \
+                    --connect-timeout 5 --max-time 60 --max-filesize 67108864 \
+                    --output "$download/$name" \
+                    "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$name" \
+                    || verified=false
+                  test "$verified" = false || cmp "$asset" "$download/$name" || verified=false
+                  test "$verified" = false || gh_bounded release verify-asset \
+                    "$RELEASE_TAG" "$download/$name" --repo "$GITHUB_REPOSITORY" \
+                    || verified=false
+                done
+                test "$verified" = false || exit 0
+              fi
+            fi
+            sleep 10
+          done
+          echo "immutable GitHub release verification timed out" >&2
+          exit 1

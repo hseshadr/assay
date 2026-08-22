@@ -36,6 +36,7 @@ def _identity_fixture(tmp_path: Path, *, python_version: str, npm_version: str) 
     package["version"] = npm_version
     (root / "ts/package.json").write_text(json.dumps(package), encoding="utf-8")
     _initialize_repository(root)
+    _git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
     return root / "scripts/verify_release_identity.py"
 
 
@@ -133,6 +134,49 @@ def test_should_reject_a_hosted_sha_different_from_tag_and_head(tmp_path: Path) 
     # Then it cannot publish artifacts from an unbound commit
     assert (result.returncode, result.stdout) == (1, "")
     assert result.stderr == "release tag, commit, and artifact versions do not match\n"
+
+
+def test_should_reject_a_release_commit_outside_protected_main(tmp_path: Path) -> None:
+    # Given an exact release identity committed only on an unprotected branch
+    script = _identity_fixture(tmp_path, python_version="0.5.0.dev2", npm_version="0.5.0-dev.2")
+    root = script.parents[1]
+    (root / "branch-only.txt").write_text("not merged\n", encoding="utf-8")
+    _git(root, "add", "branch-only.txt")
+    _git(root, "commit", "-qm", "branch-only release")
+    # When that unmerged commit receives an otherwise exact release tag
+    result = _run_identity(script, "v0.5.0-dev.2")
+    # Then the release boundary fails before any publisher can receive credentials
+    assert (result.returncode, result.stdout) == (1, "")
+    assert result.stderr == "release commit is not reachable from protected main\n"
+
+
+def test_should_reject_a_release_when_protected_main_is_unavailable(tmp_path: Path) -> None:
+    # Given an exact release identity without an independently fetched protected-main ref
+    script = _identity_fixture(tmp_path, python_version="0.5.0.dev2", npm_version="0.5.0-dev.2")
+    root = script.parents[1]
+    _git(root, "update-ref", "-d", "refs/remotes/origin/main")
+    # When the exact tag is otherwise eligible
+    result = _run_identity(script, "v0.5.0-dev.2")
+    # Then missing ancestry evidence cannot degrade into permission to publish
+    assert (result.returncode, result.stdout) == (1, "")
+    assert result.stderr == "release commit is not reachable from protected main\n"
+
+
+def test_should_accept_a_release_commit_behind_a_later_protected_main(tmp_path: Path) -> None:
+    # Given a release commit followed by another already-merged main commit
+    script = _identity_fixture(tmp_path, python_version="0.5.0.dev2", npm_version="0.5.0-dev.2")
+    root = script.parents[1]
+    release_sha = _git(root, "rev-parse", "HEAD")
+    _git(root, "checkout", "-qb", "future-main")
+    (root / "later-main.txt").write_text("later\n", encoding="utf-8")
+    _git(root, "add", "later-main.txt")
+    _git(root, "commit", "-qm", "later main")
+    _git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(root, "checkout", "--detach", release_sha)
+    # When the earlier merged commit is checked as the exact release identity
+    result = _run_identity(script, "v0.5.0-dev.2")
+    # Then ancestry, rather than fragile equality with the current main tip, is accepted
+    assert (result.returncode, result.stderr) == (0, "")
 
 
 @pytest.mark.parametrize(
@@ -920,7 +964,7 @@ def test_should_describe_only_current_assay_mutation_surfaces() -> None:
     assert "A one-item file has nothing to drop" not in source
 
 
-def test_should_keep_oidc_jobs_free_of_source_execution_and_long_lived_secrets() -> None:
+def test_should_keep_registry_jobs_free_of_source_execution_and_broad_secret_scope() -> None:
     # Given the two jobs that can mint a registry identity
     workflow = Path(".github/workflows/publish.yml").read_text(encoding="utf-8")
     document = pytest.importorskip("yaml").safe_load(workflow)
@@ -944,8 +988,22 @@ def test_should_keep_oidc_jobs_free_of_source_execution_and_long_lived_secrets()
                 "git ",
             )
         )
-        assert "secrets." not in source
         assert job["permissions"] == {"actions": "read", "id-token": "write"}
+        assert job["environment"] == "npm-release"
+        if name == "publish-python":
+            assert "secrets." not in source
+        else:
+            secret_steps = [step for step in steps if "secrets." in json.dumps(step)]
+            assert len(secret_steps) == 1
+            assert secret_steps[0]["env"] == {
+                "NODE_AUTH_TOKEN": "${{ secrets.NPM_TOKEN }}",
+                "EXPECTED_CHANNEL_VERSION": "${{ needs.preflight-npm.outputs.channel-version }}",
+                "EXPECTED_PUBLISH_TAG_VERSION": (
+                    "${{ needs.preflight-npm.outputs.publish-tag-version }}"
+                ),
+                "NPM_CHANNEL": "${{ needs.preflight-npm.outputs.dist-tag }}",
+                "NPM_PUBLISH_TAG": "${{ needs.preflight-npm.outputs.publish-tag }}",
+            }
     assert [step.get("uses", "").split("@")[0] for step in jobs["publish-python"]["steps"]] == [
         "actions/download-artifact",
         "pypa/gh-action-pypi-publish",

@@ -7,9 +7,11 @@
 - The scoring-only release candidate now has independent Python 3.13 and Node 22.13.0
   gates, cross-runtime parity, 120 mutation guards, installed-artifact examples, frozen
   benchmarks, reproducible minimal artifacts, and fail-closed registry verification.
-- Release publication is tag-only and trusted-publisher-only. Existing byte-identical,
-  provenance-bound versions are safe to retry; stable and development channels never
-  move backward during out-of-order publication.
+- Release publication remains tag-only and provenance-bound. One protected `npm-release`
+  environment approves both registry writes. PyPI then uses trusted OIDC; npm temporarily uses one
+  package-scoped credential confined to the final publish process. Existing byte-identical releases are safe to retry;
+  channels are monotonic while the documented exclusive-publisher release window is enforced. After
+  registry verification, exact artifacts are mirrored in an immutable GitHub Release.
 - Security automation now scans the complete Git history and current tree with Gitleaks
   8.30.1, audits both locked dependency graphs, and checks workflows with actionlint,
   ShellCheck, and zizmor 1.29.0 in pedantic mode.
