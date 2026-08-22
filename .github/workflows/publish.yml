@@ -125,7 +125,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: assay-release-${{ github.sha }}
           path: release
@@ -159,7 +159,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: assay-release-${{ github.sha }}
           path: release
@@ -182,7 +182,7 @@ jobs:
       actions: read # Download the reviewed Python artifacts.
       id-token: write # Request a short-lived PyPI publishing identity.
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: assay-release-${{ github.sha }}
           path: release
@@ -203,11 +203,11 @@ jobs:
       actions: read # Download the reviewed npm artifact.
       id-token: write # Bind npm provenance to this exact GitHub workflow run.
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: assay-release-${{ github.sha }}
           path: release
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: assay-npm-publisher-${{ github.sha }}
           path: publish-tools
@@ -273,7 +273,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: assay-release-${{ github.sha }}
           path: release
@@ -324,7 +324,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: 35c1fe926c39dfd533b9b7f297abd63eac77c6e6
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: assay-release-35c1fe926c39dfd533b9b7f297abd63eac77c6e6
           path: release
@@ -394,12 +394,12 @@ jobs:
       contents: write # Create and verify the immutable public release mirror.
     steps:
       - if: ${{ github.event_name == 'push' }}
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: assay-release-${{ github.sha }}
           path: release
       - if: ${{ github.event_name == 'workflow_dispatch' }}
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: assay-dev2-recovery-${{ github.sha }}
           path: release
