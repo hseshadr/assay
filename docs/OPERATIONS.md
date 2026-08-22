@@ -103,10 +103,17 @@ bash examples/run_composite.sh
 The exact package status and future registry identities are in the root [README](../README.md).
 Do not publish either package without a fresh, explicit authorization.
 
-Package-wide, non-cancelling workflow concurrency is the only Assay publisher invariant.
-It serializes releases started by this repository, but cannot lock out an external publisher.
-The post-publish verifier therefore fails closed if registry state changes outside that
-invariant, as does the immediate pre-publish recheck.
+Package-wide, non-cancelling workflow concurrency serializes releases started by this repository,
+but cannot lock out an external publisher. Release eligibility therefore also requires the tagged
+commit to be reachable from protected `main`. The protected `npm-release` environment requires
+approval before either registry write; PyPI then uses OIDC. The temporary npm bridge credential is
+available only to the final npm publish step, whose non-tracing shell unsets the exported value
+before invoking the npm client. No build, test, preflight, or verifier receives it. Immediate
+pre-publish and post-publish checks fail closed on external registry drift. Once both registries serve the reviewed
+bytes, the workflow publishes the same wheel, sdist, npm tarball, and checksum manifest as an
+immutable GitHub Release mirror and verifies the signed release attestation and anonymous bytes.
+The release window requires exclusive package-publisher and GitHub-release-writer access; neither
+npm nor GitHub offers a compare-and-swap primitive for the final irreversible write.
 
 ## Frozen release benchmarks
 

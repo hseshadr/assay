@@ -64,6 +64,17 @@ def _release_commit_matches(tag: str, github_sha: str) -> bool:
     return _revision("HEAD") == github_sha == _revision(f"refs/tags/{tag}^{{commit}}")
 
 
+def _protected_main_contains(github_sha: str) -> bool:
+    result = subprocess.run(  # noqa: S603
+        ["git", "merge-base", "--is-ancestor", github_sha, "refs/remotes/origin/main"],  # noqa: S607
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 def _arguments() -> tuple[str, str] | None:
     if len(sys.argv) != _ARGUMENT_COUNT:
         print("usage: verify_release_identity.py vX.Y.Z GITHUB_SHA", file=sys.stderr)
@@ -78,20 +89,34 @@ def _commit_matches(tag: str, github_sha: str) -> bool:
         return False
 
 
+def _main_contains(github_sha: str) -> bool:
+    try:
+        return _protected_main_contains(github_sha)
+    except OSError:
+        return False
+
+
+def _validation_error(tag: str, github_sha: str) -> str | None:
+    python_version, typescript_version = _python_version(), _typescript_version()
+    if not _identities_match(python_version, typescript_version, tag):
+        return "release tag and artifact versions do not match"
+    if not _commit_matches(tag, github_sha):
+        return "release tag, commit, and artifact versions do not match"
+    if not _main_contains(github_sha):
+        return "release commit is not reachable from protected main"
+    return None
+
+
 def main() -> int:
     arguments = _arguments()
     if arguments is None:
         return 1
     tag, github_sha = arguments
-    python_version, typescript_version = _python_version(), _typescript_version()
-    expected = f"v{typescript_version}"
-    if not _identities_match(python_version, typescript_version, tag):
-        print("release tag and artifact versions do not match", file=sys.stderr)
+    error = _validation_error(tag, github_sha)
+    if error is not None:
+        print(error, file=sys.stderr)
         return 1
-    if not _commit_matches(tag, github_sha):
-        print("release tag, commit, and artifact versions do not match", file=sys.stderr)
-        return 1
-    print(f"verified release identity: {expected}")
+    print(f"verified release identity: v{_typescript_version()}")
     return 0
 
 

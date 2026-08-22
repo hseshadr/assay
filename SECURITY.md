@@ -23,9 +23,15 @@ Assay validates and combines caller-provided measurements. It does not prove tha
 sign output, establish provenance, or provide a tamper-evident ledger. Applications remain
 responsible for authorization, source-data quality, retention, and any evidence-sealing policy.
 
-Release workflows use short-lived PyPI and npm OIDC identities and accept no stored registry write
-token. Tests, locked dependency checks, full-history secret scanning, benchmarks, artifact builds,
-and clean installs run in unprivileged jobs. Each registry is checked independently: missing bytes
-publish only that lane, exact bytes with matching provenance skip it, and every mismatch fails
-closed. The npm channel may remain on an exact or newer same-channel release; it is never moved
-backward by a historical retry.
+The protected `npm-release` GitHub environment requires approval before either registry write.
+PyPI then uses short-lived OIDC. Until npm trusted publishing is available, npm uses a package-scoped
+token kept only in that environment and exposed only to the final publish step. That shell disables
+tracing, immediately unsets its exported token, and passes it only to
+`npm publish --provenance --ignore-scripts`. Builds, tests, dependency checks, secret scanning,
+benchmarks, preflights, and registry verification never receive the credential.
+Every release commit must be reachable from protected `main`. Missing registry bytes publish only
+that lane, exact provenance-bound bytes skip it, and every mismatch fails closed. After both
+registries serve the reviewed bytes, the same artifacts are attached to a repository-configured
+immutable GitHub Release and verified through its signed release attestation.
+The approved release window must have no concurrent external npm publisher or GitHub release-asset
+writer because those services do not expose a compare-and-swap primitive for the final write.
