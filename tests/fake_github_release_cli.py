@@ -82,6 +82,9 @@ def _delete_asset(asset_id: int) -> None:
 
 
 def _create() -> None:
+    if "--target" in sys.argv and _option("--target") != os.environ["GITHUB_SHA"]:
+        print("integration cannot create a release against a non-head target", file=sys.stderr)
+        raise SystemExit(1)
     release = {
         "id": 1,
         "tag_name": sys.argv[3],

@@ -162,6 +162,7 @@ def _run_release_mirror(
     *,
     immutable_after: int | None = None,
     tag_sha: str | None = None,
+    workflow_sha: str | None = None,
     corrupt_public_bytes: bool = False,
     verify_failure: bool = False,
 ) -> subprocess.CompletedProcess[str]:
@@ -187,7 +188,7 @@ def _run_release_mirror(
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "RUNNER_TEMP": str(tmp_path / "runner"),
         "GITHUB_REPOSITORY": "hseshadr/assay",
-        "GITHUB_SHA": "a" * 40,
+        "GITHUB_SHA": workflow_sha or "a" * 40,
         "GITHUB_SERVER_URL": "https://github.test",
         "RELEASE_SHA": "a" * 40,
         "RELEASE_TAG": "v0.5.0-dev.2",
@@ -1134,11 +1135,11 @@ def test_should_allow_the_mirror_writer_only_after_normal_or_recovery_verificati
     assert "35c1fe926c39dfd533b9b7f297abd63eac77c6e6" in source
     assert "v0.5.0-dev.2" in source
     assert 'test "$sha" = "$RELEASE_SHA"' in _commands(mirror)
-    assert '--target "$RELEASE_SHA"' in _commands(mirror)
+    assert '--target "$RELEASE_SHA"' not in _commands(mirror)
 
 
 def test_should_create_and_verify_a_missing_github_release(tmp_path: Path) -> None:
-    # Given no release exists for the reviewed tag
+    # Given a normal tag push targets the hosted commit and no release exists yet
     result = _run_release_mirror(tmp_path, [])
     # Then a complete immutable release is created and independently verified
     assert result.returncode == 0
@@ -1146,6 +1147,21 @@ def test_should_create_and_verify_a_missing_github_release(tmp_path: Path) -> No
     assert state[0]["draft"] is False
     assert state[0]["immutable"] is True
     assert len(state[0]["assets"]) == 4
+
+
+def test_should_create_recovery_release_from_the_preverified_tag_without_target(
+    tmp_path: Path,
+) -> None:
+    # Given recovery runs from main after independently peeling the older release tag
+    result = _run_release_mirror(tmp_path, [], workflow_sha="b" * 40)
+    # Then release creation uses that existing tag and verifies it before and after publication
+    assert result.returncode == 0
+    calls = [json.loads(line) for line in (tmp_path / "gh.log").read_text().splitlines()]
+    creation = next(index for index, call in enumerate(calls) if call[:2] == ["release", "create"])
+    tag_checks = [index for index, call in enumerate(calls) if "/git/ref/tags/" in call[-1]]
+    assert "--target" not in calls[creation]
+    assert any(index < creation for index in tag_checks)
+    assert any(index > creation for index in tag_checks)
 
 
 def test_should_resume_a_draft_after_removing_only_failed_expected_assets(

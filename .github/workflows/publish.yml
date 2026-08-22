@@ -551,7 +551,7 @@ jobs:
             prerelease=()
             test "$expected_prerelease" = false || prerelease=(--prerelease)
             gh_bounded release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --draft --verify-tag --target "$RELEASE_SHA" "${prerelease[@]}" \
+              --draft --verify-tag "${prerelease[@]}" \
               --title "$expected_title" --notes "$expected_body"
             load_release
           fi
