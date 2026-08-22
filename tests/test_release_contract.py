@@ -990,20 +990,7 @@ def test_should_keep_registry_jobs_free_of_source_execution_and_broad_secret_sco
         )
         assert job["permissions"] == {"actions": "read", "id-token": "write"}
         assert job["environment"] == "npm-release"
-        if name == "publish-python":
-            assert "secrets." not in source
-        else:
-            secret_steps = [step for step in steps if "secrets." in json.dumps(step)]
-            assert len(secret_steps) == 1
-            assert secret_steps[0]["env"] == {
-                "NODE_AUTH_TOKEN": "${{ secrets.NPM_TOKEN }}",
-                "EXPECTED_CHANNEL_VERSION": "${{ needs.preflight-npm.outputs.channel-version }}",
-                "EXPECTED_PUBLISH_TAG_VERSION": (
-                    "${{ needs.preflight-npm.outputs.publish-tag-version }}"
-                ),
-                "NPM_CHANNEL": "${{ needs.preflight-npm.outputs.dist-tag }}",
-                "NPM_PUBLISH_TAG": "${{ needs.preflight-npm.outputs.publish-tag }}",
-            }
+        assert "secrets." not in source
     assert [step.get("uses", "").split("@")[0] for step in jobs["publish-python"]["steps"]] == [
         "actions/download-artifact",
         "pypa/gh-action-pypi-publish",
@@ -1011,3 +998,4 @@ def test_should_keep_registry_jobs_free_of_source_execution_and_broad_secret_sco
     npm_source = json.dumps(jobs["publish-npm"]["steps"])
     assert npm_source.count("actions/download-artifact@") == 2
     assert npm_source.count("actions/setup-node@") == 1
+    assert "NODE_AUTH_TOKEN" not in npm_source
