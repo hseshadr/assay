@@ -3,6 +3,13 @@ name: Publish trusted artifacts
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      recover_dev2_github_mirror:
+        description: Recover the immutable v0.5.0-dev.2 GitHub mirror only
+        required: true
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -13,6 +20,7 @@ concurrency:
 jobs:
   build:
     name: Unprivileged release eligibility and build
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -218,17 +226,12 @@ jobs:
           test "$(node /tmp/npm-publisher/package/bin/npm-cli.js --version)" = "12.0.2"
       - name: Publish reviewed npm artifact with provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           EXPECTED_CHANNEL_VERSION: ${{ needs.preflight-npm.outputs.channel-version }}
           EXPECTED_PUBLISH_TAG_VERSION: ${{ needs.preflight-npm.outputs.publish-tag-version }}
           NPM_CHANNEL: ${{ needs.preflight-npm.outputs.dist-tag }}
           NPM_PUBLISH_TAG: ${{ needs.preflight-npm.outputs.publish-tag }}
         run: |
           set -euo pipefail
-          { set +x; } 2>/dev/null
-          test -n "${NODE_AUTH_TOKEN:-}"
-          token="$NODE_AUTH_TOKEN"
-          unset NODE_AUTH_TOKEN
           status="$(curl --silent --show-error --output /tmp/npm-package.json \
             --write-out '%{http_code}' --connect-timeout 5 --max-time 20 --max-filesize 1048576 \
             https://registry.npmjs.org/%40edgeproc%2Fassay)"
@@ -245,10 +248,9 @@ jobs:
           fi
           test "$current_channel" = "$EXPECTED_CHANNEL_VERSION"
           test "$current_publish_tag" = "$EXPECTED_PUBLISH_TAG_VERSION"
-          NODE_AUTH_TOKEN="$token" node /tmp/npm-publisher/package/bin/npm-cli.js publish \
+          node /tmp/npm-publisher/package/bin/npm-cli.js publish \
             release/npm/*.tgz --access public --provenance \
             --ignore-scripts --tag "$NPM_PUBLISH_TAG"
-          unset token
 
   verify-published:
     name: Verify registry bytes
@@ -301,13 +303,89 @@ jobs:
           git fetch --no-tags --force origin \
             refs/heads/main:refs/remotes/origin/main
           python3 scripts/verify_release_identity.py "$RELEASE_TAG" "$GITHUB_SHA"
-          python3 scripts/verify_published_release.py \
+          python3 -m scripts.verify_published_release \
             release "$NPM_DIST_TAG" "$NPM_PUBLISH_TAG" "$NPM_PUBLISH"
+
+  recover-dev2:
+    name: Verify exact dev2 partial release for GitHub mirror recovery
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/main' &&
+        inputs.recover_dev2_github_mirror == true
+      }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read # Download only the retained reviewed release envelope.
+      contents: read # Verify the immutable tag and protected-main ancestry.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: 35c1fe926c39dfd533b9b7f297abd63eac77c6e6
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: assay-release-35c1fe926c39dfd533b9b7f297abd63eac77c6e6
+          path: release
+          run-id: "32571430932"
+          github-token: ${{ github.token }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.32"
+          enable-cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.13.0"
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: "11.5.0"
+          run_install: false
+      - name: Verify retained envelope, release identity, and served registries
+        env:
+          RECOVERY_SHA: 35c1fe926c39dfd533b9b7f297abd63eac77c6e6
+          RECOVERY_TAG: v0.5.0-dev.2
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          git fetch --no-tags --force origin \
+            refs/heads/main:refs/remotes/origin/main
+          git fetch --force origin \
+            "refs/tags/$RECOVERY_TAG:refs/tags/$RECOVERY_TAG"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          test -z "$(find release -type l -print -quit)"
+          test "$(find release -type f | wc -l | tr -d ' ')" = 4
+          printf '%s  %s\n' \
+            "2ca7dbd2eb0a7a66022a6356886cc1055195b6ef1f91fd490e1f6dbb72fabf74" \
+            release/SHA256SUMS | sha256sum --check --status
+          (cd release && sha256sum --check --strict SHA256SUMS)
+          python3 -m scripts.verify_release_identity "$RECOVERY_TAG" "$RECOVERY_SHA"
+          GITHUB_SHA="$RECOVERY_SHA" RELEASE_TAG="$RECOVERY_TAG" \
+            python3 -m scripts.verify_published_release release next next true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: assay-dev2-recovery-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 1
 
   publish-github:
     name: Publish immutable GitHub release mirror
-    needs: [verify-published]
-    if: ${{ needs.verify-published.result == 'success' }}
+    needs: [verify-published, recover-dev2]
+    if: >-
+      ${{
+        always() &&
+        !cancelled() &&
+        (
+          (github.event_name == 'push' && needs.verify-published.result == 'success') ||
+          (github.event_name == 'workflow_dispatch' &&
+           needs.recover-dev2.result == 'success')
+        )
+      }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -315,10 +393,22 @@ jobs:
       attestations: read # Verify the immutable release and every mirrored asset.
       contents: write # Create and verify the immutable public release mirror.
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - if: ${{ github.event_name == 'push' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: assay-release-${{ github.sha }}
           path: release
+      - if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: assay-dev2-recovery-${{ github.sha }}
+          path: release
+      - name: Bind the retained dev2 recovery envelope
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          printf '%s  %s\n' \
+            "2ca7dbd2eb0a7a66022a6356886cc1055195b6ef1f91fd490e1f6dbb72fabf74" \
+            release/SHA256SUMS | sha256sum --check --status
       - name: Verify the reviewed release envelope without repository code
         run: |
           set -euo pipefail
@@ -334,7 +424,12 @@ jobs:
       - name: Create or verify the immutable public mirror
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: >-
+            ${{ github.event_name == 'workflow_dispatch' &&
+                '35c1fe926c39dfd533b9b7f297abd63eac77c6e6' || github.sha }}
+          RELEASE_TAG: >-
+            ${{ github.event_name == 'workflow_dispatch' &&
+                'v0.5.0-dev.2' || github.ref_name }}
         run: |
           set -euo pipefail
           { set +x; } 2>/dev/null
@@ -394,7 +489,7 @@ jobs:
             sha="$(jq -er '.object.sha' "$object")"
             for _ in 1 2 3 4; do
               if test "$type" = commit; then
-                test "$sha" = "$GITHUB_SHA"
+                test "$sha" = "$RELEASE_SHA"
                 return
               fi
               test "$type" = tag || return 1
@@ -456,7 +551,7 @@ jobs:
             prerelease=()
             test "$expected_prerelease" = false || prerelease=(--prerelease)
             gh_bounded release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --draft --verify-tag --target "$GITHUB_SHA" "${prerelease[@]}" \
+              --draft --verify-tag --target "$RELEASE_SHA" "${prerelease[@]}" \
               --title "$expected_title" --notes "$expected_body"
             load_release
           fi

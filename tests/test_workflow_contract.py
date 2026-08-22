@@ -189,6 +189,7 @@ def _run_release_mirror(
         "GITHUB_REPOSITORY": "hseshadr/assay",
         "GITHUB_SHA": "a" * 40,
         "GITHUB_SERVER_URL": "https://github.test",
+        "RELEASE_SHA": "a" * 40,
         "RELEASE_TAG": "v0.5.0-dev.2",
         "FAKE_GH_STATE": str(state_path),
         "FAKE_GH_LOG": str(tmp_path / "gh.log"),
@@ -715,17 +716,18 @@ def test_should_scope_the_historical_public_key_exception_to_one_fingerprint() -
     assert lines[0] == "# documented Ed25519 public key test vector; not secret"
 
 
-def test_should_trigger_publication_only_for_version_tags_with_one_scoped_bridge_token() -> None:
+def test_should_keep_tag_publication_and_recovery_token_free_and_separate() -> None:
     # Given the publish workflow event and source
     workflow = _workflow("publish.yml")
     triggers = _mapping(workflow["on"])
     source = (_WORKFLOW_DIR / "publish.yml").read_text(encoding="utf-8")
-    # Then only version tags enter eligibility and only one protected npm bridge is accepted
+    # Then tags alone enter registry eligibility and recovery carries no registry token
     push = _mapping(triggers["push"])
     assert push == {"tags": ["v*.*.*"]}
-    assert set(triggers) == {"push"}
+    assert set(triggers) == {"push", "workflow_dispatch"}
     assert "verify_release_identity.py" in _commands(_job(workflow, "build"))
-    assert re.findall(r"secrets\.([A-Za-z0-9_]*TOKEN)", source) == ["NPM_TOKEN"]
+    assert re.findall(r"secrets\.([A-Za-z0-9_]*TOKEN)", source) == []
+    assert "NODE_AUTH_TOKEN" not in source
     assert _job(workflow, "publish-npm")["environment"] == "npm-release"
     assert _mapping(workflow["concurrency"]) == {
         "group": "publish-assay",
@@ -762,7 +764,7 @@ def test_should_recheck_digest_metadata_and_registries_after_publish() -> None:
     assert preflights <= set(_job(workflow, "publish-python")["needs"])
     assert preflights <= set(_job(workflow, "publish-npm")["needs"])
     assert {"publish-python", "publish-npm"} <= set(_job(workflow, "verify-published")["needs"])
-    assert "scripts/verify_published_release.py" in registry
+    assert "python3 -m scripts.verify_published_release" in registry
     assert "release" in registry
     verifier = Path("scripts/verify_published_release.py").read_text(encoding="utf-8")
     assert "materialize_served_bundle" in verifier
@@ -889,42 +891,109 @@ def test_should_make_the_privileged_channel_recheck_authoritative_and_fail_close
     assert "--max-filesize 1048576" in command
 
 
-def test_should_scope_the_temporary_npm_token_to_one_publish_step() -> None:
-    # Given the package-scoped bridge credential is available only through a protected environment
+def _write_shell_shim(path: Path, source: str) -> None:
+    path.write_text(f"#!/bin/sh\nset -eu\n{source}", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _token_free_npm_tools(root: Path, publish_log: Path) -> Path:
+    tools = root / "tools"
+    tools.mkdir()
+    _write_shell_shim(tools / "curl", "printf '200'\n")
+    _write_shell_shim(tools / "jq", "printf '__ABSENT__\\n'\n")
+    environment_checks = 'test "${NODE_AUTH_TOKEN+x}" != x\ntest "${NPM_TOKEN+x}" != x\n'
+    log = shlex.quote(str(publish_log))
+    _write_shell_shim(tools / "node", environment_checks + f'printf "%s\\n" "$@" > {log}\n')
+    return tools
+
+
+def _token_free_npm_environment(tools: Path) -> dict[str, str]:
+    return {
+        "EXPECTED_CHANNEL_VERSION": "__ABSENT__",
+        "EXPECTED_PUBLISH_TAG_VERSION": "__ABSENT__",
+        "NPM_CHANNEL": "next",
+        "NPM_PUBLISH_TAG": "next",
+        "PATH": f"{tools}:/usr/bin:/bin",
+    }
+
+
+def test_should_reach_npm_trusted_publish_without_a_secret_or_token(tmp_path: Path) -> None:
+    # Given the protected OIDC publish step and an absent npm package/channel
+    publish_log = tmp_path / "npm-publish.log"
+    tools = _token_free_npm_tools(tmp_path, publish_log)
+    archive = tmp_path / "release/npm/edgeproc-assay-0.5.0-dev.2.tgz"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"reviewed npm artifact")
+    publish = _steps(_job(_workflow("publish.yml"), "publish-npm"))[-1]
+    # When the real shell command runs with no npm secret or token in its environment
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", str(publish["run"])],
+        cwd=tmp_path,
+        env=_token_free_npm_environment(tools),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    # Then it reaches the pinned npm client with the reviewed artifact and safe flags
+    assert result.returncode == 0, result.stderr
+    arguments = publish_log.read_text(encoding="utf-8").splitlines()
+    assert arguments[0].endswith("/npm-publisher/package/bin/npm-cli.js")
+    assert arguments[1:] == [
+        "publish",
+        "release/npm/edgeproc-assay-0.5.0-dev.2.tgz",
+        "--access",
+        "public",
+        "--provenance",
+        "--ignore-scripts",
+        "--tag",
+        "next",
+    ]
+
+
+def test_should_use_only_oidc_in_the_protected_npm_publish_step() -> None:
+    # Given npm trusts this protected workflow's short-lived GitHub identity
     job = _job(_workflow("publish.yml"), "publish-npm")
     steps = _steps(job)
     secret_steps = [step for step in steps if "secrets." in json.dumps(step)]
     # When the privileged lane is inspected structurally
-    # Then only the final npm client receives the token and it cannot run package scripts
+    # Then no long-lived token exists and the final npm client cannot run package scripts
     assert job["environment"] == "npm-release"
-    assert len(secret_steps) == 1
-    publish = secret_steps[0]
+    assert secret_steps == []
+    publish = next(
+        step
+        for step in steps
+        if step.get("name") == "Publish reviewed npm artifact with provenance"
+    )
     assert publish["name"] == "Publish reviewed npm artifact with provenance"
-    assert _mapping(publish["env"])["NODE_AUTH_TOKEN"] == "${{ secrets." + "NPM_TOKEN }}"
+    assert "TOKEN" not in json.dumps(publish["env"])
     command = str(publish["run"])
     assert "--provenance" in command
     assert "--ignore-scripts" in command
     assert "--access public" in command
     assert '--tag "$NPM_PUBLISH_TAG"' in command
-    assert all("secrets." not in json.dumps(step) for step in steps if step is not publish)
+    assert "NODE_AUTH_TOKEN" not in command
     setup = next(
         step for step in steps if str(step.get("uses", "")).startswith("actions/setup-node@")
     )
     assert _mapping(setup["with"])["registry-url"] == "https://registry.npmjs.org"
 
 
-def test_should_recheck_npm_channel_in_the_credentialed_publish_step() -> None:
+def test_should_recheck_npm_channel_in_the_oidc_publish_step() -> None:
     # Given registry state can change after the unprivileged preflight
     job = _job(_workflow("publish.yml"), "publish-npm")
-    secret_step = next(step for step in _steps(job) if "secrets." in json.dumps(step))
-    command = str(secret_step["run"])
+    publish = next(
+        step
+        for step in _steps(job)
+        if step.get("name") == "Publish reviewed npm artifact with provenance"
+    )
+    command = str(publish["run"])
     # Then the authoritative read is immediately coupled to the irreversible write
     assert "https://registry.npmjs.org/%40edgeproc%2Fassay" in command
-    assert "EXPECTED_CHANNEL_VERSION" in json.dumps(secret_step)
-    assert "EXPECTED_PUBLISH_TAG_VERSION" in json.dumps(secret_step)
+    assert "EXPECTED_CHANNEL_VERSION" in json.dumps(publish)
+    assert "EXPECTED_PUBLISH_TAG_VERSION" in json.dumps(publish)
     assert command.index("curl ") < command.index("npm-cli.js publish")
     for step in _steps(job):
-        if step is not secret_step:
+        if step is not publish:
             assert "registry.npmjs.org/%40edgeproc%2Fassay" not in str(step.get("run", ""))
 
 
@@ -945,8 +1014,8 @@ def test_should_publish_an_exact_immutable_github_release_after_registry_verific
     command = _commands(job)
     # When its authority, state machine, and byte checks are reviewed
     # Then it cannot execute repository code, clobber assets, or publish a mutable release
-    assert job["needs"] == ["verify-published"]
-    assert job["if"] == "${{ needs.verify-published.result == 'success' }}"
+    assert set(cast(list[str], job["needs"])) == {"verify-published", "recover-dev2"}
+    assert "needs.verify-published.result == 'success'" in str(job["if"])
     assert _permissions(job["permissions"]) == {
         "actions": "read",
         "attestations": "read",
@@ -985,6 +1054,87 @@ def test_should_publish_an_exact_immutable_github_release_after_registry_verific
     polling = command[command.index("deadline=$((SECONDS + 600))") :]
     assert "verify_tag" in polling
     assert "sleep 10" in command
+
+
+def test_should_recover_only_the_hard_bound_dev2_github_mirror() -> None:
+    # Given one manually dispatched recovery for the already-published dev2 registries
+    workflow = _workflow("publish.yml")
+    dispatch = _mapping(_mapping(workflow["on"])["workflow_dispatch"])
+    inputs = _mapping(dispatch["inputs"])
+    recovery_input = _mapping(inputs["recover_dev2_github_mirror"])
+    recovery = _job(workflow, "recover-dev2")
+    steps = _steps(recovery)
+    checkout = next(step for step in steps if "actions/checkout@" in str(step.get("uses", "")))
+    download = next(
+        step for step in steps if "actions/download-artifact@" in str(step.get("uses", ""))
+    )
+    verifier = next(step for step in steps if step.get("name", "").startswith("Verify retained"))
+    command = str(verifier["run"])
+    # Then no operator input can redirect its source, artifact, identity, or release channel
+    assert set(inputs) == {"recover_dev2_github_mirror"}
+    assert recovery_input == {
+        "description": "Recover the immutable v0.5.0-dev.2 GitHub mirror only",
+        "required": "true",
+        "type": "boolean",
+        "default": "false",
+    }
+    assert _permissions(recovery["permissions"]) == {"actions": "read", "contents": "read"}
+    assert "environment" not in recovery
+    assert "github.event_name == 'workflow_dispatch'" in str(recovery["if"])
+    assert "github.ref == 'refs/heads/main'" in str(recovery["if"])
+    assert "inputs.recover_dev2_github_mirror == true" in str(recovery["if"])
+    assert _mapping(checkout["with"]) == {
+        "persist-credentials": "false",
+        "fetch-depth": "0",
+        "ref": "35c1fe926c39dfd533b9b7f297abd63eac77c6e6",
+    }
+    assert _mapping(download["with"]) == {
+        "name": "assay-release-35c1fe926c39dfd533b9b7f297abd63eac77c6e6",
+        "path": "release",
+        "run-id": "32571430932",
+        "github-token": "${{ github.token }}",
+    }
+    assert _mapping(verifier["env"]) == {
+        "RECOVERY_SHA": "35c1fe926c39dfd533b9b7f297abd63eac77c6e6",
+        "RECOVERY_TAG": "v0.5.0-dev.2",
+    }
+    digest_lines = command.splitlines()
+    assert digest_lines[10:12] == [
+        '  "2ca7dbd2eb0a7a66022a6356886cc1055195b6ef1f91fd490e1f6dbb72fabf74" \\',
+        "  release/SHA256SUMS | sha256sum --check --status",
+    ]
+    assert "python3 -m scripts.verify_release_identity" in command
+    assert "python3 -m scripts.verify_published_release release next next true" in command
+    assert "sha256sum --check --strict SHA256SUMS" in command
+    assert any("actions/upload-artifact@" in str(step.get("uses", "")) for step in steps)
+
+
+def test_should_allow_the_mirror_writer_only_after_normal_or_recovery_verification() -> None:
+    # Given normal tagged publication and hard-bound partial-release recovery share one writer
+    workflow = _workflow("publish.yml")
+    build = _job(workflow, "build")
+    mirror = _job(workflow, "publish-github")
+    source = json.dumps(mirror).lower()
+    condition = str(mirror["if"])
+    # Then manual dispatch cannot run registry lanes or bypass exact recovery verification
+    assert build["if"] == "${{ github.event_name == 'push' }}"
+    for name in ("preflight-python", "preflight-npm", "publish-python", "publish-npm"):
+        assert "build" in cast(list[str], _job(workflow, name)["needs"])
+    assert set(cast(list[str], mirror["needs"])) == {"verify-published", "recover-dev2"}
+    assert "github.event_name == 'push'" in condition
+    assert "needs.verify-published.result == 'success'" in condition
+    assert "github.event_name == 'workflow_dispatch'" in condition
+    assert "needs.recover-dev2.result == 'success'" in condition
+    assert "actions/checkout" not in source
+    assert "scripts/" not in source
+    assert "npm install" not in source
+    assert "uv sync" not in source
+    assert source.count("actions/download-artifact@") == 2
+    assert "assay-dev2-recovery-${{ github.sha }}" in source
+    assert "35c1fe926c39dfd533b9b7f297abd63eac77c6e6" in source
+    assert "v0.5.0-dev.2" in source
+    assert 'test "$sha" = "$RELEASE_SHA"' in _commands(mirror)
+    assert '--target "$RELEASE_SHA"' in _commands(mirror)
 
 
 def test_should_create_and_verify_a_missing_github_release(tmp_path: Path) -> None:
@@ -1112,12 +1262,35 @@ def test_should_bound_final_polling_and_avoid_shell_dist_tag_fallbacks() -> None
     command = _commands(_job(_workflow("publish.yml"), "verify-published"))
     source = Path("scripts/verify_published_release.py").read_text(encoding="utf-8")
     # Then one monotonic 600-second budget includes HTTP and only explicit absence is retried
-    assert "scripts/verify_published_release.py" in command
+    assert "python3 -m scripts.verify_published_release" in command
     assert "npm view" not in command
     assert "seq 1 60" not in command
     assert "sleep 10" not in command
     assert "time.monotonic" in source
     assert "PropagationPending" in source
+
+
+def test_should_load_the_published_verifier_from_a_clean_checkout(tmp_path: Path) -> None:
+    # Given the exact final-verification invocation in a checkout without an installed project
+    checkout = tmp_path / "checkout"
+    _clean_checkout(checkout)
+    command = _commands(_job(_workflow("publish.yml"), "verify-published"))
+    line = next(item for item in command.splitlines() if "verify_published_release" in item)
+    invocation = shlex.split(line.removesuffix("\\").rstrip())
+    # When that command starts with only the hosted Python runtime available
+    result = subprocess.run(
+        invocation,
+        cwd=checkout,
+        env={"PATH": "/usr/bin:/bin"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    # Then imports resolve before the verifier rejects the intentionally omitted arguments
+    assert (result.returncode, result.stdout) == (1, "")
+    assert result.stderr == (
+        "usage: verify_published_release.py ROOT CHANNEL PUBLISH_TAG PUBLISHED\n"
+    )
 
 
 def test_should_rebuild_uploadable_artifacts_after_the_clean_local_gate() -> None:
@@ -1197,7 +1370,7 @@ def test_should_keep_npm_prereleases_off_the_latest_channel() -> None:
         "package/bin/npm-cli.js publish"
     )
     registry = _commands(_job(workflow, "verify-published"))
-    assert "scripts/verify_published_release.py" in registry
+    assert "python3 -m scripts.verify_published_release" in registry
     assert "npm view" not in registry
 
 
@@ -1226,13 +1399,17 @@ def test_should_document_the_single_internal_npm_publisher_invariant() -> None:
     assert "fail closed" in operations
 
 
-def test_should_name_only_the_unpublished_candidate_versions_in_security_docs() -> None:
-    # Given the security model describes registry identities under review
+def test_should_name_only_the_published_prerelease_versions_in_security_docs() -> None:
+    # Given the security model describes the published development identities
     source = Path("SECURITY.md").read_text(encoding="utf-8")
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
     # Then it cannot imply that stable 0.5.0 is already the candidate
     assert "0.5.0.dev2" in source
     assert "0.5.0-dev.2" in source
-    assert "future 0.5.0" in source
+    assert "future stable 0.5.0" in source
+    assert "development releases are published" in source
+    assert "GitHub mirror is pending" in source
+    assert "exact package status" not in operations
 
 
 def test_should_skip_the_entire_privileged_job_for_identical_registry_releases() -> None:
@@ -1261,7 +1438,7 @@ def test_should_skip_the_entire_privileged_job_for_identical_registry_releases()
 
 
 def test_should_fail_closed_until_python_and_npm_versions_align(tmp_path: Path) -> None:
-    # Given the current intentionally divergent unpublished package versions
+    # Given intentionally divergent package versions
     script = _release_fixture(tmp_path / "divergent", npm_version="0.4.1")
     # When a tag matches only the Python candidate
     result = _run_identity(script, "v0.5.0-dev.2")

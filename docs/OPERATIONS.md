@@ -100,18 +100,24 @@ npx --yes --package=node@22.13.0 --package=corepack@0.34.0 \
 bash examples/run_composite.sh
 ```
 
-The exact package status and future registry identities are in the root [README](../README.md).
+The current package and recovery status is recorded here and in [SECURITY.md](../SECURITY.md);
+the root [README](../README.md) is the immutable snapshot embedded in the dev2 artifacts.
 Do not publish either package without a fresh, explicit authorization.
 
 Package-wide, non-cancelling workflow concurrency serializes releases started by this repository,
 but cannot lock out an external publisher. Release eligibility therefore also requires the tagged
 commit to be reachable from protected `main`. The protected `npm-release` environment requires
-approval before either registry write; PyPI then uses OIDC. The temporary npm bridge credential is
-available only to the final npm publish step, whose non-tracing shell unsets the exported value
-before invoking the npm client. No build, test, preflight, or verifier receives it. Immediate
+approval before either registry write; PyPI and npm then use short-lived OIDC identities. No
+long-lived registry credential exists in the workflow, and no build, test, preflight, or verifier
+can mint a publishing identity. Immediate
 pre-publish and post-publish checks fail closed on external registry drift. Once both registries serve the reviewed
 bytes, the workflow publishes the same wheel, sdist, npm tarball, and checksum manifest as an
 immutable GitHub Release mirror and verifies the signed release attestation and anonymous bytes.
+The one-time manual dev2 recovery is hard-bound to tag `v0.5.0-dev.2`, commit `35c1fe9`, retained
+run `32571430932`, and the exact reviewed manifest. It can verify the already-served registries and
+create the missing immutable GitHub mirror, but it has no registry write authority.
+The dev2 artifacts' bundled README files are immutable pre-publication snapshots; this document
+and `SECURITY.md` carry the current registry and recovery status until a new version is built.
 The release window requires exclusive package-publisher and GitHub-release-writer access; neither
 npm nor GitHub offers a compare-and-swap primitive for the final irreversible write.
 
