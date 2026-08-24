@@ -96,7 +96,10 @@ def test_should_use_a_thin_pinned_github_trigger() -> None:
     assert pins
     assert all(re.fullmatch(r"[0-9a-f]{40}", pin) for pin in pins)
     assert 'version: "0.21.8"' in source
-    assert 'check: "**"' in source
+    assert source.count("dagger/dagger-for-github@") == 2
+    assert "assay:benchmarks" in source
+    assert source.rfind("assay:benchmarks") > source.find("assay:python")
+    assert 'check: "**"' not in source
 
 
 def test_should_leave_trusted_publishing_outside_dagger() -> None:
