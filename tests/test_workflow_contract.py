@@ -21,7 +21,7 @@ import yaml
 from assay.settings import AssaySettings
 
 _WORKFLOW_DIR = Path(".github/workflows")
-_WORKFLOW_NAMES = ("ci.yml", "security-audit.yml", "publish.yml")
+_WORKFLOW_NAMES = ("ci.yml", "dagger.yml", "security-audit.yml", "publish.yml")
 _ACTION_PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 _ACTION_PINS = {
     "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -32,6 +32,7 @@ _ACTION_PINS = {
     "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
     "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
     "gitleaks/gitleaks-action": "e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e",
+    "dagger/dagger-for-github": "27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77",
     "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
 }
 _ACTION_VERSIONS = {
@@ -43,6 +44,7 @@ _ACTION_VERSIONS = {
     "actions/upload-artifact": "v4.6.2",
     "actions/download-artifact": "v4.3.0",
     "gitleaks/gitleaks-action": "v3.0.0",
+    "dagger/dagger-for-github": "v8.4.1",
     "pypa/gh-action-pypi-publish": "v1.14.2",
 }
 _NPM_PUBLISHER_SHA512 = (
@@ -389,6 +391,7 @@ def test_should_keep_default_and_build_permissions_least_privileged() -> None:
     publish_build = _job(workflows[-1], "build")
     # Then defaults are read-only or empty and build cannot mint credentials
     assert tuple(_permissions(item.get("permissions")) for item in workflows) == (
+        {"contents": "read"},
         {"contents": "read"},
         {"contents": "read"},
         {},
