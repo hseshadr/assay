@@ -1,0 +1,8 @@
+[project]
+name = "assay-dagger"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["dagger-io"]
+
+[tool.uv.sources]
+dagger-io = { path = "sdk", editable = true }

@@ -16,7 +16,6 @@ Two ways a guard like this rots into a no-op, both closed here:
 
 from __future__ import annotations
 
-import json
 import re
 import runpy
 import subprocess
@@ -121,21 +120,16 @@ def _is_publication_job(name: object, job: object) -> bool:
     )
 
 
-def test_scheduled_security_audit_covers_python_and_typescript() -> None:
+def test_scheduled_security_audit_scans_full_history() -> None:
     workflow = _yaml(ROOT / ".github/workflows/security-audit.yml")
     triggers = workflow.get("on", workflow.get(True))
     jobs = workflow["jobs"]
-    source = (ROOT / ".github/workflows/security-audit.yml").read_text(encoding="utf-8")
-
     assert isinstance(triggers, dict)
     assert set(triggers) == {"push", "pull_request", "schedule"}
     assert isinstance(jobs, dict)
-    assert set(jobs) == {"secrets", "dependencies", "workflows"}
-    assert "uv export --frozen --all-groups --all-extras" in source
-    assert "pnpm --dir ts audit --audit-level high" in source
-    package = json.loads((ROOT / "ts/package.json").read_text(encoding="utf-8"))
-    version = package["packageManager"].removeprefix("pnpm@")
-    assert f'version: "{version}"' in source
+    assert set(jobs) == {"secrets"}
+    checkout = jobs["secrets"]["steps"][0]
+    assert checkout["with"]["fetch-depth"] == 0
 
 
 def test_dependency_update_intake_covers_both_package_ecosystems() -> None:
@@ -191,29 +185,6 @@ def test_should_gate_every_publication_lane_behind_both_preflights() -> None:
         # Then neither lane starts before both registries have failed closed or passed
         assert {"build", "preflight-python", "preflight-npm"} <= set(_needs(job))
         assert job["permissions"] == {"actions": "read", "id-token": "write"}
-
-
-def test_should_run_the_complete_release_ci_contract() -> None:
-    # Given / When
-    workflow = _yaml(ROOT / ".github/workflows/ci.yml")
-    jobs = workflow["jobs"]
-    source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-
-    # Then
-    assert isinstance(jobs, dict)
-    assert set(jobs) == {
-        "python",
-        "typescript",
-        "parity",
-        "mutation",
-        "example",
-        "benchmarks",
-        "artifacts",
-    }
-    assert "benchmarks.release" in source
-    assert "poe mutants" in source
-    assert 'node-version: "22.13.0"' in source
-    assert 'version: "11.5.0"' in source
 
 
 def test_should_activate_only_existing_assay_mutations() -> None:

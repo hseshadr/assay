@@ -40,6 +40,7 @@ cli = [
 
 [dependency-groups]
 dev = [
+    "dagger-io==0.21.8",
     "hatchling==1.27.0",
     "pytest>=9.1.1",
     "pytest-cov>=6.0",
@@ -92,6 +93,7 @@ ignore = ["S101", "PLR0913"]
 "tests/test_cli_privacy.py" = ["S603", "S607"]
 "tests/test_measurement.py" = ["S603", "S607"]
 "tests/test_release_contract.py" = ["S603", "S607"]
+"tests/test_dagger_contract.py" = ["S603"]
 "tests/test_workflow_contract.py" = ["S603", "S607"]
 # Domain errors use semantic names such as InvalidRankingRequest. They are the stable,
 # coded interface consumed across Assay's calculators, CLI, and tests.
@@ -150,10 +152,10 @@ fail_under = 90.0
 [tool.poe.tasks]
 # scripts/ is held to the same bar as src/ and tests/: the mutation harness is the thing
 # that proves the guards can fail, so it is not exempt from the gate that guards them.
-lint = "ruff check src/ tests/ scripts/ benchmarks/"
-fmt-check = "ruff format --check src/ tests/ scripts/ benchmarks/"
-fmt = "ruff format src/ tests/ scripts/ benchmarks/"
-complexity = "xenon --max-absolute A --max-modules A --max-average A src/assay scripts benchmarks"
+lint = "ruff check .dagger/src src/ tests/ scripts/ benchmarks/"
+fmt-check = "ruff format --check .dagger/src src/ tests/ scripts/ benchmarks/"
+fmt = "ruff format .dagger/src src/ tests/ scripts/ benchmarks/"
+complexity = "xenon --max-absolute A --max-modules A --max-average A .dagger/src src/assay scripts benchmarks"
 test = "pytest --cov=assay --cov-branch --cov-report=term-missing --cov-fail-under=90"
 gate = ["lint", "fmt-check", "typecheck", "complexity", "test"]
 
@@ -170,4 +172,4 @@ artifacts = "bash scripts/build_release_artifacts.sh dist/release"
 release-candidate = "bash scripts/verify_release_candidate.sh"
 
 [tool.poe.tasks.typecheck]
-cmd = "mypy --strict src/assay scripts benchmarks"
+cmd = "mypy --strict .dagger/src src/assay scripts benchmarks"

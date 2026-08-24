@@ -21,7 +21,7 @@ import yaml
 from assay.settings import AssaySettings
 
 _WORKFLOW_DIR = Path(".github/workflows")
-_WORKFLOW_NAMES = ("ci.yml", "security-audit.yml", "publish.yml")
+_WORKFLOW_NAMES = ("dagger.yml", "security-audit.yml", "publish.yml")
 _ACTION_PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 _ACTION_PINS = {
     "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -32,6 +32,7 @@ _ACTION_PINS = {
     "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
     "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
     "gitleaks/gitleaks-action": "e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e",
+    "dagger/dagger-for-github": "27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77",
     "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
 }
 _ACTION_VERSIONS = {
@@ -43,6 +44,7 @@ _ACTION_VERSIONS = {
     "actions/upload-artifact": "v4.6.2",
     "actions/download-artifact": "v4.3.0",
     "gitleaks/gitleaks-action": "v3.0.0",
+    "dagger/dagger-for-github": "v8.4.1",
     "pypa/gh-action-pypi-publish": "v1.14.2",
 }
 _NPM_PUBLISHER_SHA512 = (
@@ -396,49 +398,6 @@ def test_should_keep_default_and_build_permissions_least_privileged() -> None:
     assert _permissions(publish_build.get("permissions")) == {"contents": "read"}
 
 
-def test_should_generate_exact_commit_language_parity_and_example_evidence() -> None:
-    # Given the standalone CI workflow
-    workflow = _workflow("ci.yml")
-    jobs = _jobs(workflow)
-    commands = "\n".join(_commands(_mapping(job)) for job in jobs.values())
-    # Then it covers both runtimes, the shared vectors, mutations, and the real example
-    assert set(jobs) == {
-        "python",
-        "typescript",
-        "parity",
-        "mutation",
-        "example",
-        "benchmarks",
-        "artifacts",
-    }
-    assert tuple(_mapping(job)["name"] for job in jobs.values()) == (
-        "Python 3.13",
-        "TypeScript (Node 22.13.0)",
-        "Python/TypeScript parity",
-        "Mutation guards",
-        "Installed-artifact example",
-        "Frozen benchmarks",
-        "Release artifacts",
-    )
-    assert 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' in commands
-    assert "tests/test_consumer_conformance.py" in commands
-    assert "src/compositionVectors.test.ts" in commands
-    assert "tests/test_example.py" in commands
-    assert "tests/test_measurement.py" in commands
-    assert "22.13.0" in str(_job(workflow, "typescript"))
-    assert all(_mapping(job)["runs-on"] == "ubuntu-24.04" for job in jobs.values())
-
-
-def test_should_provision_node_and_pnpm_for_the_cross_runtime_python_gate() -> None:
-    # Given the Python job runs documentation and artifact contract tests
-    steps = _steps(_job(_workflow("ci.yml"), "python"))
-    actions = {str(step.get("uses", "")).partition("@")[0]: step for step in steps}
-    # Then the hosted job provides the exact cross-runtime tools those tests execute
-    assert {"actions/setup-node", "pnpm/action-setup"} <= actions.keys()
-    assert _mapping(actions["actions/setup-node"]["with"])["node-version"] == "22.13.0"
-    assert _mapping(actions["pnpm/action-setup"]["with"])["version"] == "11.5.0"
-
-
 def _clean_checkout(destination: Path) -> str:
     ignored = shutil.ignore_patterns(
         ".git", ".venv", "node_modules", "dist", "coverage", ".pytest_cache", "__pycache__"
@@ -452,39 +411,10 @@ def _clean_checkout(destination: Path) -> str:
     return _git(destination, "rev-parse", "HEAD")
 
 
-def test_should_rehearse_the_installed_measurement_job_from_a_dependency_clean_checkout(
-    tmp_path: Path,
-) -> None:
-    # Given the exact installed-artifact command and a checkout with no managed environments
-    checkout = tmp_path / "checkout"
-    sha = _clean_checkout(checkout)
-    steps = _steps(_job(_workflow("ci.yml"), "example"))
-    command = next(
-        str(step["run"]) for step in steps if "installed Python/npm example" in str(step)
-    )
-    assert "uv sync --frozen --all-groups --all-extras" in command
-    assert not (checkout / ".venv").exists()
-    assert not (checkout / "ts/node_modules").exists()
-    # When the hosted command runs with its exact SHA and Node toolchain
-    result = subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", command],
-        cwd=checkout,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=_node_environment() | {"GITHUB_SHA": sha},
-    )
-    # Then optional measurement dependencies were actually provisioned and the job is green
-    assert result.returncode == 0, result.stderr
-    assert "754" not in result.stdout  # the isolated job runs only its owned evidence
-
-
-def test_should_build_and_clean_install_every_release_artifact() -> None:
-    # Given the CI artifact job and unprivileged release build
-    ci_artifacts = _commands(_job(_workflow("ci.yml"), "artifacts"))
+def test_should_run_the_complete_release_candidate_before_publication() -> None:
+    # Given the unprivileged trusted-publication build
     release_build = _commands(_job(_workflow("publish.yml"), "build"))
-    # Then CI calls the real builder and tagged releases run the complete local gate
-    assert "bash scripts/build_release_artifacts.sh release" in ci_artifacts
+    # Then tagged releases still run the complete local gate
     assert "ASSAY_ARTIFACT_ROOT=release uv run poe release-candidate" in release_build
 
 
@@ -680,28 +610,20 @@ def test_should_build_a_small_runtime_only_python_sdist(tmp_path: Path) -> None:
     assert ("src", "assay", "compose.py") in paths
 
 
-def test_should_scan_full_history_and_audit_locked_dependencies() -> None:
+def test_should_scan_full_history_outside_dagger() -> None:
     # Given the scheduled security workflow
     workflow = _workflow("security-audit.yml")
     commands = "\n".join(_commands(_mapping(job)) for job in _jobs(workflow).values())
     checkout = _steps(_job(workflow, "secrets"))[0]
-    assert set(_jobs(workflow)) == {"secrets", "dependencies", "workflows"}
+    assert set(_jobs(workflow)) == {"secrets"}
     assert tuple(_mapping(job)["name"] for job in _jobs(workflow).values()) == (
         "Full-history secret scan",
-        "Locked dependency audits",
-        "Workflow security",
     )
     assert {"push", "pull_request", "schedule"} == set(_mapping(workflow["on"]))
-    # Then history, Python lock, npm lock, actionlint, and zizmor are all enforced
+    # Then history and the current tree remain independently scanned
     assert _mapping(checkout["with"])["fetch-depth"] == "0"
     assert "gitleaks git --log-opts=--all" in commands
-    assert "uv export --frozen --all-groups" in commands
-    assert "pnpm --dir ts install --frozen-lockfile --ignore-scripts" in commands
-    assert "pnpm --dir ts audit --audit-level high" in commands
-    assert "actionlint@v1.7.12" in commands
-    assert "zizmor==1.29.0" in commands
-    assert "shellcheck" in commands
-    assert "pip-audit==2.10.1" in commands
+    assert "gitleaks dir --redact" in commands
     assert 'GITLEAKS_VERSION: "8.30.1"' in Path(".github/workflows/security-audit.yml").read_text(
         encoding="utf-8"
     )
@@ -840,12 +762,10 @@ def test_should_pin_and_record_every_local_release_tool() -> None:
     assert "shellcheck --version" in source
 
 
-def test_should_bound_the_hosted_benchmark_job_and_typescript_children() -> None:
-    # Given heavy performance evidence executes in hosted CI and isolated Node children
-    job = _job(_workflow("ci.yml"), "benchmarks")
+def test_should_bound_typescript_benchmark_children() -> None:
+    # Given heavy performance evidence executes in isolated Node children
     source = Path("ts/benchmarks/release.mjs").read_text(encoding="utf-8")
     # Then hung work is killed above the frozen per-workload budgets
-    assert job["timeout-minutes"] == "15"
     assert "timeout:" in source
     assert "benchmark child timed out" in source
 
