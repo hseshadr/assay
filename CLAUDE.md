@@ -63,10 +63,8 @@ uv run poe benchmark
 ## Workflow
 
 - Use red -> green -> refactor. A behavior change starts with a failing test.
-- CI has seven required jobs: Python 3.13, TypeScript on Node 22.13.0, parity, mutation
-  guards, installed-artifact example, frozen benchmarks, and release artifacts. Security
-  has three required jobs: full-history secrets, locked dependency audits, and workflow
-  security.
+- Dagger owns the repeatable quality, parity, mutation, example, benchmark, artifact, and
+  dependency/workflow-security checks. Full-history Gitleaks remains a separate required job.
 - Run both complete language gates after shared-contract changes.
 - Keep TypeScript scoring modules above 90% branch, function, and line coverage per file.
 - `@edgeproc/assay@0.5.0-dev.2` is an unpublished local candidate. Do not publish, tag, or change

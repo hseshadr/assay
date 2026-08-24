@@ -113,6 +113,18 @@ def test_should_leave_trusted_publishing_outside_dagger() -> None:
     assert "id-token: write" in publish
 
 
+def test_should_keep_dependency_and_workflow_security_inside_dagger() -> None:
+    # Given / When
+    source = (ROOT / ".dagger/src/assay_dagger/main.py").read_text(encoding="utf-8")
+
+    # Then Dagger owns every repeatable security gate while Gitleaks remains external
+    assert '["uv", "run", "poe", "audit"]' in source
+    assert '["uv", "run", "poe", "workflow-lint"]' in source
+    assert '["uv", "run", "poe", "workflow-security"]' in source
+    assert "gitleaks git" not in source.lower()
+    assert "gitleaks dir" not in source.lower()
+
+
 def test_should_key_execution_from_a_narrow_workspace_snapshot() -> None:
     # Given / When
     source = (ROOT / ".dagger/src/assay_dagger/main.py").read_text(encoding="utf-8")
