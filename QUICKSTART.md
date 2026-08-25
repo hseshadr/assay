@@ -1,10 +1,10 @@
 # Assay quickstart
 
-> **TL;DR:** From a clean checkout, one command builds both local package candidates,
+> **TL;DR:** From a clean checkout, one command builds both package artifacts,
 > computes the committed Northstar score, and proves Python/TypeScript semantic parity.
 
 Requires Python 3.13, `uv`, Node 22.13 or newer, and Corepack. Neither package is
-published; all commands below build from the current checkout.
+required from a registry; all commands below build from the current checkout.
 
 ## First result
 
@@ -71,7 +71,7 @@ corepack pnpm gate
 mkdir -p "${TMPDIR:-/tmp}/assay-pack"
 corepack pnpm pack --pack-destination "${TMPDIR:-/tmp}/assay-pack"
 node scripts/normalize-package-archive.mjs \
-  "${TMPDIR:-/tmp}/assay-pack/edgeproc-assay-0.5.0-dev.2.tgz"
+  "${TMPDIR:-/tmp}/assay-pack/edgeproc-assay-0.5.0-dev.3.tgz"
 ```
 
 The two version lines must print `v22.13.0` and `11.5.0`.
@@ -120,10 +120,11 @@ Read [Methods](docs/METHODS.md) for exact arithmetic and fields,
 [Architecture](docs/ARCHITECTURE.md) for package boundaries, and
 [Operations](docs/OPERATIONS.md) before handling sensitive inputs.
 
-## Future registry identity
+## Registry identity
 
-> **Status:** `assay-engine` 0.5.0.dev2 and `@edgeproc/assay` 0.5.0-dev.2 are local split candidates. Neither package is published.
+> **Status:** `assay-engine` 0.5.0.dev3 and `@edgeproc/assay` 0.5.0-dev.3 are the authorized prerelease pair. Check both registries before installing.
 
-After a separately authorized release, consumers will use `pip install assay-engine`
-for Python and `npm install @edgeproc/assay` for TypeScript. Until then, use only the
-checkout paths above.
+After both registries list the exact versions, consumers can use
+`pip install assay-engine==0.5.0.dev3` for Python and
+`npm install @edgeproc/assay@0.5.0-dev.3` for TypeScript. The checkout paths above do
+not depend on registry state.

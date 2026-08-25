@@ -8,8 +8,8 @@
   gates, cross-runtime parity, 120 mutation guards, installed-artifact examples, frozen
   benchmarks, reproducible minimal artifacts, and fail-closed registry verification.
 - Release publication remains tag-only and provenance-bound. One protected `npm-release`
-  environment approves both registry writes. PyPI then uses trusted OIDC; npm temporarily uses one
-  package-scoped credential confined to the final publish process. Existing byte-identical releases are safe to retry;
+  environment approves both registry writes. PyPI and npm then use short-lived trusted-publisher
+  OIDC identities. Existing byte-identical releases are safe to retry;
   channels are monotonic while the documented exclusive-publisher release window is enforced. After
   registry verification, exact artifacts are mirrored in an immutable GitHub Release.
 - Security automation now scans the complete Git history and current tree with Gitleaks
@@ -22,8 +22,12 @@
 - `v0.5.0-dev.1` built successfully, but both registry lanes rejected their publishing
   configuration before writing package bytes. The `0.5.0.dev2` / `0.5.0-dev.2`
   candidate advances the identity without changing the scoring API.
+- `v0.5.0-dev.2` is complete on PyPI, npm, and an immutable GitHub Release. The
+  `0.5.0.dev3` / `0.5.0-dev.3` pair advances the immutable identity after the trusted
+  release recovery was hardened and duplicate CI orchestration was replaced by native
+  Dagger checks. Python and TypeScript runtime scoring sources are unchanged from dev2.
 - The split branch now identifies as the scoring-only `assay-engine` distribution,
-  version `0.5.0.dev2`, and builds only the `assay` Python package.
+  version `0.5.0.dev3`, and builds only the `assay` Python package.
 - The exact mixed-product `0.4.x` source line is preserved locally at
   `release/avow-0.4.x` commit `3121df1af33a41b457faa2fd1ce84dc823950c39` as migration
   provenance. This task did not push, tag, merge, or publish that maintenance reference.

@@ -51,7 +51,7 @@ _NPM_PUBLISHER_SHA512 = (
     "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf"
     "9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
 )
-_NPM_ARCHIVE_SHA256 = "b1cd13c4919bf00e8b52d8467bc783c14d9b78cf0768ca0c04556b03c8242a33"
+_NPM_ARCHIVE_SHA256 = "98b1ba5fb72f0b9566371606a396618c4a0c19eea9f65408a96c3f19b77b14d6"
 
 
 def _mapping(value: object) -> dict[str, object]:
@@ -437,7 +437,7 @@ def test_should_verify_real_release_artifacts_through_clean_installs(tmp_path: P
     # Then all three consumer surfaces pass with aligned metadata
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "verified release artifacts: assay-engine 0.5.0.dev2 and @edgeproc/assay 0.5.0-dev.2\n"
+        "verified release artifacts: assay-engine 0.5.0.dev3 and @edgeproc/assay 0.5.0-dev.3\n"
     )
     npm = next((artifacts / "npm").glob("*.tgz"))
     assert hashlib.sha256(npm.read_bytes()).hexdigest() == _NPM_ARCHIVE_SHA256
@@ -1335,16 +1335,17 @@ def test_should_document_the_single_internal_npm_publisher_invariant() -> None:
     assert "fail closed" in operations
 
 
-def test_should_name_only_the_published_prerelease_versions_in_security_docs() -> None:
-    # Given the security model describes the published development identities
+def test_should_name_the_authorized_prerelease_and_completed_previous_release() -> None:
+    # Given the security model spans the next authorized pair and immutable prior release
     source = Path("SECURITY.md").read_text(encoding="utf-8")
     operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
-    # Then it cannot imply that stable 0.5.0 is already the candidate
-    assert "0.5.0.dev2" in source
-    assert "0.5.0-dev.2" in source
+    # Then it cannot imply that stable 0.5.0 is already released or dev2 recovery is pending
+    assert "0.5.0.dev3" in source
+    assert "0.5.0-dev.3" in source
     assert "future stable 0.5.0" in source
-    assert "development releases are published" in source
-    assert "GitHub mirror is pending" in source
+    assert "authorized prerelease pair" in source
+    assert "dev2 registries and immutable GitHub mirror are complete" in source
+    assert "GitHub mirror is pending" not in source
     assert "exact package status" not in operations
 
 
@@ -1385,14 +1386,14 @@ def test_should_fail_closed_until_python_and_npm_versions_align(tmp_path: Path) 
 
 def test_should_accept_only_one_tag_matching_both_artifact_versions(tmp_path: Path) -> None:
     # Given aligned Python and npm artifact metadata
-    script = _release_fixture(tmp_path / "aligned", npm_version="0.5.0-dev.2")
+    script = _release_fixture(tmp_path / "aligned", npm_version="0.5.0-dev.3")
     # When the exact shared version tag is checked
-    exact = _run_identity(script, "v0.5.0-dev.2")
+    exact = _run_identity(script, "v0.5.0-dev.3")
     wrong = _run_identity(script, "v0.5.0")
     # Then only the exact tag is release-eligible
     assert (exact.returncode, exact.stdout, exact.stderr) == (
         0,
-        "verified release identity: v0.5.0-dev.2\n",
+        "verified release identity: v0.5.0-dev.3\n",
         "",
     )
     assert wrong.returncode == 1
