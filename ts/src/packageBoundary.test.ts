@@ -21,11 +21,11 @@ async function readManifest(): Promise<PackageManifest> {
 }
 
 describe("the public Assay package boundary", () => {
-  it("uses the unpublished Assay candidate identity with no runtime dependencies", async () => {
+  it("uses the authorized Assay prerelease identity with no runtime dependencies", async () => {
     const manifest = await readManifest();
 
     expect(manifest.name).toBe("@edgeproc/assay");
-    expect(manifest.version).toBe("0.5.0-dev.2");
+    expect(manifest.version).toBe("0.5.0-dev.3");
     expect(manifest.dependencies ?? {}).toEqual({});
   });
 

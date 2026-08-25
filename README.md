@@ -8,12 +8,13 @@ score and the arithmetic behind every row.
 
 ## Installation status
 
-> **Status:** `assay-engine` 0.5.0.dev2 and `@edgeproc/assay` 0.5.0-dev.2 are local split candidates. Neither package is published.
+> **Status:** `assay-engine` 0.5.0.dev3 and `@edgeproc/assay` 0.5.0-dev.3 are the authorized prerelease pair. Check both registries before installing.
 
-The future authorized registry commands are `pip install assay-engine` and
-`npm install @edgeproc/assay`. They are shown for identity only; do not run them until
-a release is explicitly authorized. The runnable candidate path builds from this
-checkout.
+The base registry commands are `pip install assay-engine` and
+`npm install @edgeproc/assay`. For this prerelease, pin them as
+`pip install assay-engine==0.5.0.dev3` and `npm install @edgeproc/assay@0.5.0-dev.3`,
+and use them only after both exact versions appear in their registries. The checkout
+path below remains runnable before, during, and after publication.
 
 ## Run the Northstar example
 
@@ -196,7 +197,7 @@ print(result.score, result.selected_component_id)
 ```
 
 The command line accepts typed JSON for `assay compose`, `assay measure`, and
-`assay explain`. Build and installation commands for the unpublished checkout are in
+`assay explain`. Build and installation commands for the source checkout are in
 the [quickstart](https://github.com/hseshadr/assay/blob/main/QUICKSTART.md).
 
 ## Optional calculators

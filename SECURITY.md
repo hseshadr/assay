@@ -5,11 +5,10 @@
 
 ## Supported versions
 
-Assay's Python `0.5.0.dev2` and npm `0.5.0-dev.2` development releases are published
-with registry provenance. They are the supported prerelease identities for the future stable 0.5.0
-line; security fixes continue on `main` and may require a newer development release.
-Their embedded README files retain the immutable pre-publication snapshot; this section and
-`docs/OPERATIONS.md` are the canonical current release-status record until the next version.
+Assay's Python `0.5.0.dev3` and npm `0.5.0-dev.3` versions are the authorized prerelease pair for
+the future stable 0.5.0 line. They supersede dev2 after both registries and the immutable GitHub
+mirror serve the exact provenance-bound artifacts. Until then, dev2 remains the supported pair.
+Security fixes continue on `main` and may require a newer development release.
 
 ## Report a vulnerability
 
@@ -33,7 +32,7 @@ Every release commit must be reachable from protected `main`. Missing registry b
 that lane, exact provenance-bound bytes skip it, and every mismatch fails closed. After both
 registries serve the reviewed bytes, the same artifacts are attached to a repository-configured
 immutable GitHub Release and verified through its signed release attestation.
-The dev2 registries are complete; their immutable GitHub mirror is pending a hard-bound recovery
-that can use only tag `v0.5.0-dev.2`, its exact commit, and the retained reviewed artifact.
+The dev2 registries and immutable GitHub mirror are complete. Their recovery path remains
+hard-bound to tag `v0.5.0-dev.2`, its exact commit, and the retained reviewed artifact.
 The approved release window must have no concurrent external npm publisher or GitHub release-asset
 writer because those services do not expose a compare-and-swap primitive for the final write.

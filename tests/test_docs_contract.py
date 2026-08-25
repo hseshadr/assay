@@ -29,8 +29,8 @@ _TLDR = (
     "explainable score while preserving every input, transformation, and contribution."
 )
 _STATUS = (
-    "> **Status:** `assay-engine` 0.5.0.dev2 and `@edgeproc/assay` 0.5.0-dev.2 are "
-    "local split candidates. Neither package is published."
+    "> **Status:** `assay-engine` 0.5.0.dev3 and `@edgeproc/assay` 0.5.0-dev.3 are "
+    "the authorized prerelease pair. Check both registries before installing."
 )
 _OPTIONAL = (
     "Assay computes scores; Avow seals evidence. They are separate products in separate "
@@ -136,7 +136,7 @@ def test_should_open_with_exact_product_identity_and_status() -> None:
     # Given the root product page
     readme = _read(_README)
     # When its opening and installation status are read
-    # Then one product identity and the unpublished split truth are immediate
+    # Then one product identity and the exact prerelease status are immediate
     assert readme.startswith(f"# Assay\n\n{_TLDR}\n")
     assert readme.count("# Assay") == 1
     assert _STATUS in readme
