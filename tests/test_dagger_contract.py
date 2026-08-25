@@ -131,15 +131,28 @@ def test_should_keep_dependency_and_workflow_security_inside_dagger() -> None:
     assert "gitleaks dir" not in source.lower()
 
 
-def test_should_key_execution_from_a_narrow_workspace_snapshot() -> None:
+def test_should_key_execution_from_an_explicit_narrow_source_snapshot() -> None:
     # Given / When
     source = (ROOT / ".dagger/src/assay_dagger/main.py").read_text(encoding="utf-8")
 
-    # Then
-    assert 'directory("/", include=SOURCE_INCLUDE)' in source
+    # Then source content is a constructor input, so Dagger cannot replay stale files.
+    assert "source: Annotated[" in source
+    assert 'DefaultPath("/")' in source
+    assert "Ignore(SOURCE_EXCLUDES)" in source
+    assert "= field()" in source
+    assert "self.source.filter(include=SOURCE_INCLUDE)" in source
+    assert "current_workspace" not in source
     assert '"QUICKSTART.md"' in source
     assert '".git/**"' not in source
     assert '"dist/**"' not in source
+
+
+def test_should_make_dependency_installation_noninteractive() -> None:
+    # Given / When
+    source = (ROOT / ".dagger/src/assay_dagger/main.py").read_text(encoding="utf-8")
+
+    # Then an existing host node_modules snapshot cannot make pnpm prompt and abort.
+    assert '.with_env_variable("CI", "true")' in source
 
 
 @pytest.mark.skipif(not RUN_DAGGER, reason="set ASSAY_DAGGER_INTEGRATION=1")
