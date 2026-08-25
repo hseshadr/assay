@@ -1,13 +1,10 @@
 """Native Dagger checks for Assay's existing repository commands."""
 
-from __future__ import annotations
-
-from typing import Final
+from typing import Annotated, Final
 
 import dagger
-from dagger import check, dag, function, object_type
+from dagger import DefaultPath, Ignore, check, dag, field, function, object_type
 
-PLATFORM: Final = dagger.Platform("linux/amd64")
 PYTHON_IMAGE: Final = (
     "python:3.13.14-slim@sha256:9662417aace5ae7b8e2609cce472b72a8958e134ba372808abe9cc1a0c0125e6"
 )
@@ -18,9 +15,7 @@ ACTIONLINT_URL: Final = (
     "actionlint_1.7.12_linux_amd64.tar.gz"
 )
 ACTIONLINT_SHA256: Final = "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
-UV_VERSION: Final = "0.11.32"
 PNPM_VERSION: Final = "11.5.0"
-SERVICE_PORT: Final = 8080
 SOURCE_INCLUDE: Final = [
     ".dagger/src/**",
     ".env.example",
@@ -45,11 +40,27 @@ SOURCE_INCLUDE: Final = [
     "ts/**",
     "uv.lock",
 ]
+SOURCE_EXCLUDES: Final = [
+    ".git",
+    ".venv",
+    "**/.venv",
+    "**/__pycache__",
+    "**/node_modules",
+    "**/dist",
+    ".env",
+    "**/.env",
+    "*.key",
+    "**/*.key",
+    "*.pem",
+    "**/*.pem",
+]
 
 
 @object_type
 class Assay:
     """Run Assay's canonical checks and build verified package artifacts."""
+
+    source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(SOURCE_EXCLUDES)] = field()
 
     @function
     @check
@@ -145,8 +156,8 @@ class Assay:
             .from_(PYTHON_IMAGE)
             .with_directory("/srv", self.artifacts())
             .with_workdir("/srv")
-            .with_exposed_port(SERVICE_PORT)
-            .as_service(args=["python", "-m", "http.server", str(SERVICE_PORT)])
+            .with_exposed_port(8080)
+            .as_service(args=["python", "-m", "http.server", "8080"])
         )
 
     @function
@@ -178,9 +189,10 @@ class Assay:
         )
 
     def _repository(self) -> dagger.Container:
-        source = dag.current_workspace().directory("/", include=SOURCE_INCLUDE)
+        source = self.source.filter(include=SOURCE_INCLUDE)
         return (
             self._toolchain()
+            .with_env_variable("CI", "true")
             .with_directory("/src", source)
             .with_workdir("/src")
             .with_exec(["git", "init", "-q"])
@@ -207,7 +219,7 @@ class Assay:
 
     def _base(self) -> dagger.Container:
         return (
-            dag.container(platform=PLATFORM)
+            dag.container(platform=dagger.Platform("linux/amd64"))
             .from_(PYTHON_IMAGE)
             .with_exec(["apt-get", "update"])
             .with_exec(
@@ -225,7 +237,7 @@ class Assay:
             .with_exec(["ln", "-s", "/usr/local/bin/python3", "/usr/bin/python3"])
             .with_mounted_cache("/root/.cache/uv", dag.cache_volume("assay-uv"))
             .with_mounted_cache("/root/.local/share/pnpm/store", dag.cache_volume("assay-pnpm"))
-            .with_exec(["python", "-m", "pip", "install", f"uv=={UV_VERSION}"])
+            .with_exec(["python", "-m", "pip", "install", "uv==0.11.32"])
         )
 
     def _with_actionlint(self, container: dagger.Container) -> dagger.Container:

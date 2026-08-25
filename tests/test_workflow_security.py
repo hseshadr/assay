@@ -27,6 +27,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 USES = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
 PINNED = re.compile(r"^[\w.-]+/[\w.-]+(?:/[\w./-]+)?@[0-9a-f]{40}$")
+SHARED_SECRET_SCAN = re.compile(r"^hseshadr/ci/\.github/workflows/secret-scan\.yml@[0-9a-f]{40}$")
 
 
 def _scan(directory: Path) -> tuple[list[str], int]:
@@ -120,16 +121,60 @@ def _is_publication_job(name: object, job: object) -> bool:
     )
 
 
-def test_scheduled_security_audit_scans_full_history() -> None:
+def _assert_shared_full_history_scan(job: object) -> None:
+    assert isinstance(job, dict)
+    reusable = job.get("uses")
+    assert isinstance(reusable, str)
+    assert SHARED_SECRET_SCAN.fullmatch(reusable)
+    assert job.get("with") == {"runs-on": "ubuntu-24.04", "full-history": True}
+
+
+def test_scheduled_security_audit_uses_the_shared_full_history_scan() -> None:
     workflow = _yaml(ROOT / ".github/workflows/security-audit.yml")
     triggers = workflow.get("on", workflow.get(True))
     jobs = workflow["jobs"]
     assert isinstance(triggers, dict)
     assert set(triggers) == {"push", "pull_request", "schedule"}
     assert isinstance(jobs, dict)
-    assert set(jobs) == {"secrets"}
-    checkout = jobs["secrets"]["steps"][0]
-    assert checkout["with"]["fetch-depth"] == 0
+    assert set(jobs) == {"shared-secrets", "secrets"}
+    assert jobs["shared-secrets"]["name"] == "Shared full-history secret scan"
+    assert jobs["shared-secrets"]["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+    }
+    _assert_shared_full_history_scan(jobs["shared-secrets"])
+
+
+def test_required_secret_scan_context_fails_closed_after_the_shared_scan() -> None:
+    alias = _yaml(ROOT / ".github/workflows/security-audit.yml")["jobs"]["secrets"]
+    assert alias["name"] == "Full-history secret scan"
+    assert _needs(alias) == ("shared-secrets",)
+    assert alias["if"] == "${{ always() }}"
+    assert alias["permissions"] == {}
+    step = alias["steps"][0]
+    assert step["env"] == {"SHARED_SCAN_RESULT": "${{ needs.shared-secrets.result }}"}
+    command = str(step["run"])
+    success = subprocess.run(  # noqa: S603 - execute the reviewed workflow command.
+        ["/bin/bash", "-eu", "-c", command],
+        env={"SHARED_SCAN_RESULT": "success"},
+        check=False,
+    )
+    failure = subprocess.run(  # noqa: S603 - execute the reviewed workflow command.
+        ["/bin/bash", "-eu", "-c", command],
+        env={"SHARED_SCAN_RESULT": "failure"},
+        check=False,
+    )
+    assert (success.returncode, failure.returncode) == (0, 1)
+
+
+def test_release_build_waits_for_the_shared_full_history_scan() -> None:
+    jobs = _yaml(ROOT / ".github/workflows/publish.yml")["jobs"]
+    assert isinstance(jobs, dict)
+    secret_scan = jobs["secret-scan"]
+    assert secret_scan["name"] == "Release full-history secret scan"
+    assert secret_scan["permissions"] == {"contents": "read"}
+    _assert_shared_full_history_scan(secret_scan)
+    assert "secret-scan" in _needs(jobs["build"])
 
 
 def test_dependency_update_intake_covers_both_package_ecosystems() -> None:

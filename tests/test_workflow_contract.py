@@ -31,7 +31,7 @@ _ACTION_PINS = {
     "pnpm/action-setup": "0ebf47130e4866e96fce0953f49152a61190b271",
     "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
     "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
-    "gitleaks/gitleaks-action": "e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e",
+    "hseshadr/ci/.github/workflows/secret-scan.yml": ("8166345c9355dde54c12fa95d0457c4ea97d3e64"),
     "dagger/dagger-for-github": "27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77",
     "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
 }
@@ -43,7 +43,7 @@ _ACTION_VERSIONS = {
     "pnpm/action-setup": "v6.0.9",
     "actions/upload-artifact": "v4.6.2",
     "actions/download-artifact": "v4.3.0",
-    "gitleaks/gitleaks-action": "v3.0.0",
+    "hseshadr/ci/.github/workflows/secret-scan.yml": "ci-v3.3.0",
     "dagger/dagger-for-github": "v8.4.1",
     "pypa/gh-action-pypi-publish": "v1.14.2",
 }
@@ -211,9 +211,16 @@ def _run_release_mirror(
     return result
 
 
+def _job_uses(job: dict[str, object]) -> tuple[str, ...]:
+    reusable = job.get("uses")
+    if reusable is not None:
+        return (str(reusable),)
+    return tuple(str(step["uses"]) for step in _steps(job) if "uses" in step)
+
+
 def _action_uses(workflow: dict[str, object]) -> tuple[str, ...]:
     jobs = (_mapping(value) for value in _jobs(workflow).values())
-    return tuple(str(step["uses"]) for job in jobs for step in _steps(job) if "uses" in step)
+    return tuple(use for job in jobs for use in _job_uses(job))
 
 
 def _permissions(value: object) -> dict[str, object]:
@@ -357,7 +364,7 @@ def test_should_bind_every_action_sha_to_its_exact_documented_version() -> None:
     source = "\n".join(
         (_WORKFLOW_DIR / name).read_text(encoding="utf-8") for name in _WORKFLOW_NAMES
     )
-    pattern = re.compile(r"uses:\s+([^@\s]+)@([0-9a-f]{40})\s+#\s+(v\S+)")
+    pattern = re.compile(r"uses:\s+([^@\s]+)@([0-9a-f]{40})\s+#\s+(\S+)")
     documented = {name: (sha, version) for name, sha, version in pattern.findall(source)}
     expected = {name: (_ACTION_PINS[name], _ACTION_VERSIONS[name]) for name in _ACTION_PINS}
     # When SHA pins are tied back to reviewed upstream releases
@@ -441,56 +448,6 @@ def test_should_verify_real_release_artifacts_through_clean_installs(tmp_path: P
     )
     npm = next((artifacts / "npm").glob("*.tgz"))
     assert hashlib.sha256(npm.read_bytes()).hexdigest() == _NPM_ARCHIVE_SHA256
-
-
-@pytest.mark.parametrize(
-    ("workflow", "job"),
-    [("security-audit.yml", "secrets"), ("publish.yml", "build")],
-)
-def test_should_remove_action_sarif_before_clean_tree_checks(
-    workflow: str, job: str, tmp_path: Path
-) -> None:
-    # Given the exact step after the pinned Gitleaks action and its generated report
-    steps = _steps(_job(_workflow(workflow), job))
-    action_index = next(i for i, step in enumerate(steps) if "gitleaks-action" in str(step))
-    cleanup = steps[action_index + 1]
-    report = tmp_path / "results.sarif"
-    unrelated = tmp_path / "unrelated.txt"
-    report.write_text("generated", encoding="utf-8")
-    unrelated.write_text("preserve", encoding="utf-8")
-    # When the workflow cleanup runs
-    result = subprocess.run(
-        ["bash", "-eu", "-c", str(cleanup["run"])],
-        cwd=tmp_path,
-        check=False,
-    )
-    # Then only the known action output is removed before repository cleanliness is asserted
-    assert result.returncode == 0
-    assert cleanup["name"] == "Remove action-generated SARIF"
-    assert cleanup["if"] == "${{ always() }}"
-    assert not report.exists()
-    assert unrelated.read_text(encoding="utf-8") == "preserve"
-
-
-def test_should_keep_secret_scan_cleanup_fail_closed() -> None:
-    # Given every workflow lane that invokes the pinned Gitleaks action
-    sites = (("security-audit.yml", "secrets"), ("publish.yml", "build"))
-    discovered = []
-    for workflow in _WORKFLOW_NAMES:
-        for job, value in _jobs(_workflow(workflow)).items():
-            if any("gitleaks-action" in str(step) for step in _steps(_mapping(value))):
-                discovered.append((workflow, job))
-    # Then each known lane is covered and the security lane proves the full tree clean
-    assert tuple(discovered) == sites
-    scan = _commands(_job(_workflow("security-audit.yml"), "secrets"))
-    assert "test ! -e results.sarif" in scan
-    assert "git diff --check" in scan
-    assert "git diff --exit-code" in scan
-    assert "git status --porcelain=v1 --untracked-files=all" in scan
-    ignored = subprocess.run(
-        ["git", "check-ignore", "results.sarif"], check=False, capture_output=True
-    )
-    assert ignored.returncode == 1
 
 
 def test_should_explain_node_22_requirement_before_running_release_gate(tmp_path: Path) -> None:
@@ -608,25 +565,6 @@ def test_should_build_a_small_runtime_only_python_sdist(tmp_path: Path) -> None:
     assert sdist.stat().st_size < 1_000_000
     assert roots == {"LICENSE", "PKG-INFO", "README.md", "pyproject.toml", "src"}
     assert ("src", "assay", "compose.py") in paths
-
-
-def test_should_scan_full_history_outside_dagger() -> None:
-    # Given the scheduled security workflow
-    workflow = _workflow("security-audit.yml")
-    commands = "\n".join(_commands(_mapping(job)) for job in _jobs(workflow).values())
-    checkout = _steps(_job(workflow, "secrets"))[0]
-    assert set(_jobs(workflow)) == {"secrets"}
-    assert tuple(_mapping(job)["name"] for job in _jobs(workflow).values()) == (
-        "Full-history secret scan",
-    )
-    assert {"push", "pull_request", "schedule"} == set(_mapping(workflow["on"]))
-    # Then history and the current tree remain independently scanned
-    assert _mapping(checkout["with"])["fetch-depth"] == "0"
-    assert "gitleaks git --log-opts=--all" in commands
-    assert "gitleaks dir --redact" in commands
-    assert 'GITLEAKS_VERSION: "8.30.1"' in Path(".github/workflows/security-audit.yml").read_text(
-        encoding="utf-8"
-    )
 
 
 def test_should_scope_the_historical_public_key_exception_to_one_fingerprint() -> None:
