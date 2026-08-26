@@ -6,8 +6,7 @@
 ## Supported versions
 
 Assay's Python `0.5.0.dev3` and npm `0.5.0-dev.3` versions are the authorized prerelease pair for
-the future stable 0.5.0 line. They supersede dev2 after both registries and the immutable GitHub
-mirror serve the exact provenance-bound artifacts. Until then, dev2 remains the supported pair.
+the future stable 0.5.0 line. Install only exact versions that both registries serve with provenance.
 Security fixes continue on `main` and may require a newer development release.
 
 ## Report a vulnerability
@@ -23,16 +22,15 @@ Assay validates and combines caller-provided measurements. It does not prove tha
 sign output, establish provenance, or provide a tamper-evident ledger. Applications remain
 responsible for authorization, source-data quality, retention, and any evidence-sealing policy.
 
-The protected `npm-release` GitHub environment requires approval before either registry write.
-PyPI and npm then authenticate with short-lived OIDC identities; no long-lived registry token is
-available to the workflow. The npm lane uses the repository- and workflow-bound trusted publisher
-only for `npm publish --provenance --ignore-scripts`. Builds, tests, dependency checks, secret
-scanning, benchmarks, preflights, and registry verification cannot mint that identity.
-Every release commit must be reachable from protected `main`. Missing registry bytes publish only
-that lane, exact provenance-bound bytes skip it, and every mismatch fails closed. After both
-registries serve the reviewed bytes, the same artifacts are attached to a repository-configured
-immutable GitHub Release and verified through its signed release attestation.
-The dev2 registries and immutable GitHub mirror are complete. Their recovery path remains
-hard-bound to tag `v0.5.0-dev.2`, its exact commit, and the retained reviewed artifact.
-The approved release window must have no concurrent external npm publisher or GitHub release-asset
-writer because those services do not expose a compare-and-swap primitive for the final write.
+PyPI and npm authenticate with short-lived GitHub OIDC identities; no long-lived registry token is
+available to the workflow. A manual default-branch Dagger candidate must first prove exact equality
+of the peeled release tag, protected `main`, expected SHA, source versions, and hosted Dagger gate.
+The npm lane uses the repository- and workflow-bound trusted publisher only for a source-free
+`npm publish --provenance --ignore-scripts`. The Python lane uses the official PyPI publisher.
+
+Builds, tests, dependency audits, snapshot and full-history secret scans, benchmarks, artifact
+verification, and registry preflight run without publishing authority. The privileged jobs download
+only the checksum-bound candidate; they do not check out, build, test, install, or run free-form
+shell. Missing registry bytes publish only that lane, exact provenance-bound bytes skip it, and any
+mismatch fails closed. The authorized release window must exclude concurrent external publishers
+because registries do not expose a compare-and-swap primitive for the final irreversible write.

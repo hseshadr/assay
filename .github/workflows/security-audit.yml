@@ -1,38 +1,24 @@
 name: Security audit
-
 on:
-  push:
-    branches: [main]
-  pull_request:
   schedule:
     - cron: "23 7 * * 1"
-
+  workflow_dispatch:
 permissions:
   contents: read
-
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
+  group: assay-security
   cancel-in-progress: true
-
 jobs:
-  shared-secrets:
-    name: Shared full-history secret scan
-    permissions:
-      contents: read
-      pull-requests: read # Let the shared action enumerate commits on PR events.
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
-    with:
-      runs-on: ubuntu-24.04
-      full-history: true
-
-  secrets:
-    name: Full-history secret scan
-    needs: [shared-secrets]
-    if: ${{ always() }}
-    runs-on: ubuntu-24.04
-    permissions: {}
+  security:
+    name: Dagger security audit
+    runs-on: ubuntu-latest
     steps:
-      - name: Enforce shared secret scan result
-        env:
-          SHARED_SCAN_RESULT: ${{ needs.shared-secrets.result }}
-        run: test "$SHARED_SCAN_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602 # v8.4.0
+        with:
+          version: "0.21.8"
+          verb: call
+          args: security --commit-sha=${{ github.sha }}

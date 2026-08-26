@@ -42,6 +42,7 @@ cli = [
 dev = [
     "dagger-io==0.21.8",
     "hatchling==1.27.0",
+    "pip-audit==2.10.1",
     "pytest>=9.1.1",
     "pytest-cov>=6.0",
     "mypy>=2.2.0",
@@ -50,6 +51,7 @@ dev = [
     "radon>=6.0",
     "poethepoet>=0.48.0",
     "pyyaml>=6.0.2,<7",
+    "zizmor==1.29.0",
 ]
 
 [project.scripts]
@@ -163,9 +165,9 @@ mutants = "python scripts/mutation_harness.py"
 benchmark = "python -m benchmarks.release"
 workflow-contract = "pytest tests/test_workflow_contract.py tests/test_release_contract.py -q"
 workflow-lint = "actionlint"
-workflow-security = "uvx zizmor==1.29.0 --persona=pedantic --min-severity=low --offline --strict-collection .github"
+workflow-security = "zizmor --persona=pedantic --min-severity=low --offline --strict-collection .github"
 secrets = { shell = "gitleaks git --redact --no-banner --log-opts=--all . && gitleaks dir --redact --no-banner ." }
-audit-python = { shell = "uv export --frozen --all-groups --all-extras --no-emit-project --format requirements.txt --output-file /tmp/assay-audit-requirements.txt >/dev/null && uvx --from pip-audit==2.10.1 pip-audit --requirement /tmp/assay-audit-requirements.txt --require-hashes --strict --disable-pip --progress-spinner off" }
+audit-python = { shell = "uv export --frozen --all-groups --all-extras --no-emit-project --format requirements.txt --output-file /tmp/assay-audit-requirements.txt >/dev/null && pip-audit --requirement /tmp/assay-audit-requirements.txt --require-hashes --strict --disable-pip --progress-spinner off" }
 audit-typescript = { shell = "pnpm --dir ts install --frozen-lockfile --ignore-scripts && pnpm --dir ts audit --audit-level high" }
 audit = ["audit-python", "audit-typescript"]
 artifacts = "bash scripts/build_release_artifacts.sh dist/release"
