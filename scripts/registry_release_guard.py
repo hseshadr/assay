@@ -29,6 +29,7 @@ _NPM_VERSION = re.compile(rf"^{_CORE}(?:-dev\.(0|[1-9]\d*))?$")
 _REPOSITORY = "https://github.com/hseshadr/assay"
 _PYPI_REPOSITORY = "hseshadr/assay"
 _WORKFLOW = ".github/workflows/publish.yml"
+_PUBLISH_REF = "refs/heads/main"
 _FETCH_ATTEMPTS = 3
 _METADATA_LIMIT = 1_048_576
 
@@ -193,7 +194,7 @@ def _statement(attestation: object) -> dict[str, object]:
     return _mapping(json.loads(base64.b64decode(encoded, validate=True)))
 
 
-def _workflow_matches(statement: dict[str, object], identity: ProvenanceIdentity) -> bool:
+def _workflow_matches(statement: dict[str, object]) -> bool:
     predicate = _mapping(statement.get("predicate"))
     definition = _mapping(predicate.get("buildDefinition"))
     external = _mapping(definition.get("externalParameters"))
@@ -201,13 +202,13 @@ def _workflow_matches(statement: dict[str, object], identity: ProvenanceIdentity
     return (
         workflow.get("repository") == _REPOSITORY
         and workflow.get("path") == _WORKFLOW
-        and workflow.get("ref") == f"refs/tags/{identity.tag}"
+        and workflow.get("ref") == _PUBLISH_REF
     )
 
 
 def _dependency_matches(value: object, identity: ProvenanceIdentity) -> bool:
     dependency = _mapping(value)
-    expected_uri = f"git+{_REPOSITORY}@refs/tags/{identity.tag}"
+    expected_uri = f"git+{_REPOSITORY}@{_PUBLISH_REF}"
     return dependency.get("uri") == expected_uri and _mapping(dependency.get("digest")) == {
         "gitCommit": identity.sha
     }
@@ -217,7 +218,7 @@ def _statement_header_matches(statement: dict[str, object], identity: Provenance
     return (
         statement.get("_type") == "https://in-toto.io/Statement/v1"
         and statement.get("predicateType") == _PROVENANCE_TYPE
-        and _workflow_matches(statement, identity)
+        and _workflow_matches(statement)
     )
 
 

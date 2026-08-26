@@ -63,8 +63,8 @@ uv run poe benchmark
 ## Workflow
 
 - Use red -> green -> refactor. A behavior change starts with a failing test.
-- Dagger owns the repeatable quality, parity, mutation, example, benchmark, artifact, and
-  dependency/workflow-security checks. Full-history Gitleaks remains a separate required job.
+- Dagger owns quality, parity, mutation, examples, benchmarks, exact artifacts, dependency audits,
+  workflow security, and snapshot plus full-history secret scans. GitHub only admits pinned events.
 - Run both complete language gates after shared-contract changes.
 - Keep TypeScript scoring modules above 90% branch, function, and line coverage per file.
 - `@edgeproc/assay@0.5.0-dev.3` is the authorized prerelease identity. Do not publish, tag, or

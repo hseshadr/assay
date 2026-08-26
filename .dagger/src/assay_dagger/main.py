@@ -1,49 +1,52 @@
-"""Native Dagger checks for Assay's existing repository commands."""
+"""Assay's complete quality, security, and release graph."""
 
-from typing import Annotated, Final
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Final, Self
 
 import dagger
-from dagger import DefaultPath, Ignore, check, dag, field, function, object_type
+from dagger import check, dag, field, function, object_type
 
 PYTHON_IMAGE: Final = (
     "python:3.13.14-slim@sha256:9662417aace5ae7b8e2609cce472b72a8958e134ba372808abe9cc1a0c0125e6"
 )
+UV_IMAGE: Final = (
+    "ghcr.io/astral-sh/uv:0.11.32@sha256:"
+    "df4cae8f3a96d175e2e5f992e597550000edbe78fdc2594d5cd8de1a217f504c"
+)
+NODE_IMAGE: Final = (
+    "node:24.16.0-bookworm-slim@sha256:"
+    "2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736c476489d09f560a203"
+)
+ACTIONLINT_IMAGE: Final = (
+    "rhysd/actionlint:1.7.10@sha256:"
+    "ef8299f97635c4c30e2298f48f30763ab782a4ad2c95b744649439a039421e36"
+)
+GITLEAKS_IMAGE: Final = (
+    "ghcr.io/gitleaks/gitleaks:v8.29.1@sha256:"
+    "aa036a2f4bdfe3cc3c55fa4326308efabb4a6be498c883c864fd1d0d5585438a"
+)
 NODE_URL: Final = "https://nodejs.org/dist/v22.13.0/node-v22.13.0-linux-x64.tar.xz"
 NODE_SHA256: Final = "3ff0d57063c33313d73d0bdcebc4c778ad6be948234584694a042c6fe57164f6"
-ACTIONLINT_URL: Final = (
-    "https://github.com/rhysd/actionlint/releases/download/v1.7.12/"
-    "actionlint_1.7.12_linux_amd64.tar.gz"
+NPM_PUBLISHER_SHA512: Final = (
+    "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf"
+    "9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
 )
-ACTIONLINT_SHA256: Final = "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
 PNPM_VERSION: Final = "11.5.0"
-SOURCE_INCLUDE: Final = [
-    ".dagger/src/**",
-    ".env.example",
-    ".github/**",
-    ".gitleaksignore",
-    ".gitignore",
-    "CHANGELOG.md",
-    "CLAUDE.md",
-    "LICENSE",
-    "QUICKSTART.md",
-    "README.md",
-    "SECURITY.md",
-    "benchmarks/**",
-    "dagger.json",
-    "docs/**",
-    "examples/**",
-    "pyproject.toml",
-    "scripts/**",
-    "src/**",
-    "testdata/**",
-    "tests/**",
-    "ts/**",
-    "uv.lock",
-]
+REPOSITORY: Final = "hseshadr/assay"
+REPOSITORY_URL: Final = f"https://github.com/{REPOSITORY}.git"
+SHA_LENGTH: Final = 40
+PYTHON_ARTIFACT_COUNT: Final = 2
 SOURCE_EXCLUDES: Final = [
     ".git",
     ".venv",
-    "**/.venv",
+    ".dagger/.venv",
+    ".dagger/sdk",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
     "**/__pycache__",
     "**/node_modules",
     "**/dist",
@@ -54,162 +57,441 @@ SOURCE_EXCLUDES: Final = [
     "*.pem",
     "**/*.pem",
 ]
+GITLEAKS_SNAPSHOT: Final = [
+    "gitleaks",
+    "detect",
+    "--source",
+    "/snapshot",
+    "--no-git",
+    "--redact",
+    "--no-banner",
+]
+GITLEAKS_HISTORY: Final = [
+    "gitleaks",
+    "detect",
+    "--source",
+    "/repo",
+    "--log-opts=--all",
+    "--redact",
+    "--no-banner",
+]
+NPM_ARCHIVE = re.compile(r"^edgeproc-assay-[0-9]+\.[0-9]+\.[0-9]+(?:-dev\.[0-9]+)?\.tgz$")
+PYTHON_WHEEL = re.compile(
+    r"^assay_engine-[0-9]+\.[0-9]+\.[0-9]+(?:\.dev[0-9]+)?-py3-none-any\.whl$"
+)
+PYTHON_SDIST = re.compile(r"^assay_engine-[0-9]+\.[0-9]+\.[0-9]+(?:\.dev[0-9]+)?\.tar\.gz$")
+
+
+@dataclass(frozen=True)
+class NpmPlan:
+    """The exact registry state observed by the unprivileged candidate."""
+
+    publish: bool
+    channel: str
+    publish_tag: str
+    channel_version: str
+    publish_tag_version: str
 
 
 @object_type
 class Assay:
-    """Run Assay's canonical checks and build verified package artifacts."""
+    """Run the same typed Assay graph locally and on GitHub."""
 
-    source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(SOURCE_EXCLUDES)] = field()
+    source: dagger.Directory = field()
+
+    @classmethod
+    def create(cls, workspace: dagger.Workspace) -> Self:
+        """Construct the graph from one explicit typed workspace snapshot."""
+        instance = cls.__new__(cls)
+        instance.source = workspace.directory("/", exclude=SOURCE_EXCLUDES)
+        return instance
 
     @function
-    @check
     def python(self) -> dagger.Container:
-        """Run the complete Python quality gate."""
-        return self._repository().with_exec(["uv", "run", "poe", "gate"])
+        """Run lint, format, strict typing, Grade A complexity, and tests."""
+        return self._python_gate(self._source_with_history(self.source))
 
     @function
-    @check
     def typescript(self) -> dagger.Container:
-        """Run the complete TypeScript quality gate."""
-        return self._repository().with_exec(["pnpm", "--dir", "ts", "gate"])
-
-    @function
-    @check
-    def parity(self) -> dagger.Container:
-        """Replay every shared Python and TypeScript scoring vector."""
-        return (
-            self._repository()
-            .with_exec(
-                [
-                    "uv",
-                    "run",
-                    "pytest",
-                    "tests/test_consumer_conformance.py",
-                    "tests/test_metric_vectors.py",
-                    "-q",
-                ]
-            )
-            .with_exec(
-                [
-                    "pnpm",
-                    "--dir",
-                    "ts",
-                    "exec",
-                    "vitest",
-                    "run",
-                    "src/compositionVectors.test.ts",
-                    "src/metricVectors.test.ts",
-                ]
-            )
-        )
-
-    @function
-    @check
-    def mutations(self) -> dagger.Container:
-        """Prove the retained mutation guards fail when their wiring breaks."""
-        return self._repository().with_exec(["uv", "run", "poe", "mutants"])
-
-    @function
-    @check
-    def example(self) -> dagger.Container:
-        """Run the installed-artifact Northstar example."""
-        return (
-            self._repository()
-            .with_exec(
-                ["uv", "run", "pytest", "tests/test_example.py", "tests/test_measurement.py", "-q"]
-            )
-            .with_exec(["bash", "examples/run_composite.sh"])
-        )
-
-    @function
-    @check
-    def benchmarks(self) -> dagger.Container:
-        """Enforce the frozen Python and TypeScript resource budgets."""
-        return (
-            self._repository()
-            .with_exec(["uv", "run", "poe", "benchmark"])
-            .with_exec(["pnpm", "--dir", "ts", "benchmark"])
-        )
-
-    @function
-    @check
-    def security(self) -> dagger.Container:
-        """Audit locked dependencies and workflow policy without credentials."""
-        return (
-            self._with_actionlint(self._repository())
-            .with_exec(["uv", "run", "poe", "audit"])
-            .with_exec(["uv", "run", "poe", "workflow-lint"])
-            .with_exec(["uv", "run", "poe", "workflow-security"])
-        )
+        """Run the complete TypeScript quality and package-build gate."""
+        return self._typescript_gate(self._source_with_history(self.source))
 
     @function
     def artifacts(self) -> dagger.Directory:
-        """Build and clean-install the reviewed Python and npm artifacts."""
-        return self._artifact_container().directory("/release")
+        """Build the exact three-artifact release envelope without publishing."""
+        source = self._source_with_history(self.source)
+        return self._artifact_container(source).directory("/release")
 
     @function
-    def preview(self) -> dagger.Service:
-        """Serve verified artifacts for local consumer inspection."""
-        return (
-            dag.container()
-            .from_(PYTHON_IMAGE)
-            .with_directory("/srv", self.artifacts())
-            .with_workdir("/srv")
-            .with_exposed_port(8080)
-            .as_service(args=["python", "-m", "http.server", "8080"])
-        )
+    async def security(self, commit_sha: str = "") -> str:
+        """Run dependency, workflow, shell, snapshot, and history security."""
+        complete = self._source_with_history(self.source, commit_sha)
+        await self._security(self.source, complete, commit_sha)
+        return "Assay Dagger security gate passed"
 
     @function
     @check
-    def distribution(self) -> dagger.Container:
-        """Fetch the verified checksum manifest through the artifact service."""
-        script = (
-            "import urllib.request; "
-            "urllib.request.urlopen('http://packages:8080/SHA256SUMS', timeout=30).read()"
-        )
-        return (
-            dag.container()
-            .from_(PYTHON_IMAGE)
-            .with_service_binding("packages", self.preview())
-            .with_exec(["python", "-c", script])
-        )
+    async def ci(self, commit_sha: str = "") -> str:
+        """Run Assay's canonical gate sequentially to bound runner memory."""
+        await self._run_ci(self.source, commit_sha)
+        return "Assay canonical Dagger gate passed"
+
+    async def _run_ci(self, source: dagger.Directory, commit_sha: str) -> None:
+        complete = self._source_with_history(source, commit_sha)
+        await self._python_gate(complete).sync()
+        await self._typescript_gate(complete).sync()
+        await self._release_evidence(complete).sync()
+        await self._security(source, complete, commit_sha)
+        await self._artifact_container(complete).sync()
 
     @function
-    @check
-    def publish_ready(self) -> dagger.Container:
-        """Build reviewed bytes and stage the pinned npm publisher without publishing."""
-        return self._artifact_container().with_exec(
-            ["bash", "scripts/stage_npm_publisher.sh", "/publish-tools"]
+    async def release_candidate(
+        self, tag: str, commit_sha: str, github_token: dagger.Secret
+    ) -> dagger.Directory:
+        """Build one exact, Dagger-proven dual-package candidate."""
+        self._require_sha(commit_sha)
+        await self._hosted(tag, commit_sha, github_token).sync()
+        source = self._source_with_history(self._release_source(commit_sha), commit_sha)
+        await self._identity(source, tag, commit_sha).sync()
+        await self._run_ci(source, commit_sha)
+        return self._candidate(source, tag, commit_sha).directory("/candidate")
+
+    @function
+    async def pypi_required(self, candidate: dagger.Directory, expected_sha: str) -> bool:
+        """Validate a source-free candidate and report whether PyPI is missing it."""
+        self._require_sha(expected_sha)
+        await (await self._validated_candidate(candidate)).sync()
+        return await self._pypi_decision(candidate, expected_sha)
+
+    @function
+    async def publish_npm(
+        self,
+        candidate: dagger.Directory,
+        expected_sha: str,
+        oidc_url: dagger.Secret,
+        oidc_token: dagger.Secret,
+    ) -> str:
+        """Publish one source-free npm artifact with OIDC provenance."""
+        self._require_sha(expected_sha)
+        await (await self._validated_candidate(candidate)).sync()
+        plan = await self._npm_decision(candidate, expected_sha)
+        if not plan.publish:
+            return "verified existing npm bytes and provenance"
+        return await self._publish_npm(candidate, plan, oidc_url, oidc_token)
+
+    def _python_gate(self, source: dagger.Directory) -> dagger.Container:
+        return self._repository(source).with_exec(["uv", "run", "poe", "gate"])
+
+    def _typescript_gate(self, source: dagger.Directory) -> dagger.Container:
+        return self._repository(source).with_exec(["pnpm", "--dir", "ts", "gate"])
+
+    def _release_evidence(self, source: dagger.Directory) -> dagger.Container:
+        return (
+            self._repository(source)
+            .with_exec(["uv", "run", "poe", "mutants"])
+            .with_exec(["uv", "run", "poe", "benchmark"])
+            .with_exec(["pnpm", "--dir", "ts", "benchmark"])
+            .with_exec(["bash", "examples/run_composite.sh"])
         )
 
-    def _artifact_container(self) -> dagger.Container:
-        return self._repository().with_exec(
+    async def _security(
+        self, snapshot: dagger.Directory, complete: dagger.Directory, commit_sha: str
+    ) -> None:
+        audited = self._repository(complete).with_exec(["uv", "run", "poe", "audit-python"])
+        audited = audited.with_exec(["uv", "run", "poe", "audit-typescript"])
+        audited = audited.with_exec(["uv", "run", "poe", "workflow-security"])
+        await audited.sync()
+        await self._workflow_security(complete).sync()
+        await self._shellcheck(complete).sync()
+        await self._secret_scan(snapshot, commit_sha).sync()
+
+    def _workflow_security(self, source: dagger.Directory) -> dagger.Container:
+        workflows = source.directory(".github/workflows")
+        command = (
+            "find .github/workflows -type f "
+            "\\( -name '*.yml' -o -name '*.yaml' \\) -exec actionlint {} +"
+        )
+        return (
+            self._actionlint()
+            .with_directory("/repo/.github/workflows", workflows)
+            .with_exec(["sh", "-ceu", command])
+        )
+
+    def _shellcheck(self, source: dagger.Directory) -> dagger.Container:
+        command = "shellcheck examples/*.sh scripts/*.sh"
+        return self._repository(source).with_exec(["sh", "-ceu", command])
+
+    def _secret_scan(self, source: dagger.Directory, commit_sha: str) -> dagger.Container:
+        history = self._history(commit_sha)
+        scan = self._gitleaks().with_directory("/snapshot", source)
+        scan = scan.with_exec(["sh", "-ceu", 'test -n "$(find /snapshot -type f -print -quit)"'])
+        scan = scan.with_exec(GITLEAKS_SNAPSHOT).with_directory("/repo", history)
+        return scan.with_exec(GITLEAKS_HISTORY)
+
+    def _source_with_history(
+        self, source: dagger.Directory, commit_sha: str = ""
+    ) -> dagger.Directory:
+        history = self._history(commit_sha)
+        git_metadata = history.filter(include=[".git", ".git/**"])
+        return git_metadata.with_directory("/", source)
+
+    def _hosted(self, tag: str, commit_sha: str, github_token: dagger.Secret) -> dagger.Container:
+        command = [
+            "uv",
+            "run",
+            "python",
+            "scripts/verify_release_identity.py",
+            "github",
+            REPOSITORY,
+            tag,
+            commit_sha,
+        ]
+        return (
+            self._repository(self.source)
+            .with_secret_variable("GITHUB_TOKEN", github_token)
+            .with_exec(command)
+        )
+
+    def _identity(self, source: dagger.Directory, tag: str, commit_sha: str) -> dagger.Container:
+        command = ["uv", "run", "python", "scripts/verify_release_identity.py", tag, commit_sha]
+        return self._repository(source).with_exec(command)
+
+    def _artifact_container(self, source: dagger.Directory) -> dagger.Container:
+        return self._repository(source).with_exec(
             ["bash", "scripts/build_release_artifacts.sh", "/release"]
         )
 
-    def _repository(self) -> dagger.Container:
-        source = self.source.filter(include=SOURCE_INCLUDE)
+    def _candidate(self, source: dagger.Directory, tag: str, commit_sha: str) -> dagger.Container:
+        built = self._artifact_container(source)
+        built = built.with_exec(["mkdir", "-p", "/candidate/publication"])
+        built = built.with_exec(["cp", "-R", "/release", "/candidate/release"])
+        publisher = ["bash", "scripts/stage_npm_publisher.sh", "/candidate/publish-tools"]
+        built = built.with_exec(publisher)
+        built = self._registry_preflight(built, tag, commit_sha)
+        manifest = (
+            "cd /candidate && find . -type f ! -name CANDIDATE-SHA256SUMS -print0 | "
+            "LC_ALL=C sort -z | xargs -0 sha256sum > CANDIDATE-SHA256SUMS"
+        )
+        return built.with_exec(["sh", "-ceu", manifest])
+
+    def _registry_preflight(
+        self, container: dagger.Container, tag: str, commit_sha: str
+    ) -> dagger.Container:
+        npm_version = tag.removeprefix("v")
+        python_version = npm_version.replace("-dev.", ".dev")
+        base = container.with_env_variable("RELEASE_TAG", tag)
+        base = base.with_env_variable("GITHUB_SHA", commit_sha)
+        pypi = self._registry_command("pypi", "/candidate/release/python", python_version)
+        npm = self._registry_command("npm", "/candidate/release/npm", npm_version)
+        return base.with_exec(pypi).with_exec(npm).with_exec(self._record_sha(commit_sha))
+
+    @staticmethod
+    def _registry_command(registry: str, root: str, version: str) -> list[str]:
+        output = f"/candidate/publication/{registry}.env"
+        return [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "scripts.registry_release_guard",
+            registry,
+            root,
+            version,
+            output,
+        ]
+
+    @staticmethod
+    def _record_sha(commit_sha: str) -> list[str]:
+        script = (
+            "for file in /candidate/publication/*.env; do "
+            f"printf 'expected-sha={commit_sha}\\n' >> \"$file\"; done"
+        )
+        return ["sh", "-ceu", script]
+
+    async def _validated_candidate(self, candidate: dagger.Directory) -> dagger.Container:
+        await self._require_candidate_shape(candidate)
+        return (
+            dag.container()
+            .from_(NODE_IMAGE)
+            .with_directory("/candidate", candidate)
+            .with_workdir("/candidate")
+            .with_exec(["sha256sum", "--check", "CANDIDATE-SHA256SUMS"])
+            .with_workdir("/candidate/release")
+            .with_exec(["sha256sum", "--check", "SHA256SUMS"])
+        )
+
+    @staticmethod
+    async def _require_candidate_shape(candidate: dagger.Directory) -> None:
+        roots = sorted(await candidate.entries())
+        if roots != ["CANDIDATE-SHA256SUMS", "publication", "publish-tools", "release"]:
+            raise ValueError("candidate envelope contains unexpected material")
+        publication = await candidate.directory("publication").entries()
+        if sorted(publication) != ["npm.env", "pypi.env"]:
+            raise ValueError("candidate publication plan differs")
+        tools = await candidate.directory("publish-tools").entries()
+        if tools != ["npm-12.0.2.tgz"]:
+            raise ValueError("candidate npm publisher differs")
+        await Assay._require_release_shape(candidate.directory("release"))
+
+    @staticmethod
+    async def _require_release_shape(release: dagger.Directory) -> None:
+        if sorted(await release.entries()) != ["SHA256SUMS", "npm", "python"]:
+            raise ValueError("candidate release envelope differs")
+        npm = await release.directory("npm").entries()
+        python = await release.directory("python").entries()
+        if not Assay._valid_release_artifacts(npm, python):
+            raise ValueError("candidate release envelope differs")
+
+    @staticmethod
+    def _valid_release_artifacts(npm: list[str], python: list[str]) -> bool:
+        npm_valid = len(npm) == 1 and NPM_ARCHIVE.fullmatch(npm[0]) is not None
+        wheel_valid = Assay._one_match(PYTHON_WHEEL, python)
+        sdist_valid = Assay._one_match(PYTHON_SDIST, python)
+        return npm_valid and len(python) == PYTHON_ARTIFACT_COUNT and wheel_valid and sdist_valid
+
+    @staticmethod
+    def _one_match(pattern: re.Pattern[str], entries: list[str]) -> bool:
+        return sum(pattern.fullmatch(item) is not None for item in entries) == 1
+
+    @staticmethod
+    async def _pypi_decision(candidate: dagger.Directory, expected_sha: str) -> bool:
+        values = Assay._plan(await candidate.file("publication/pypi.env").contents())
+        Assay._require_plan_sha(values, expected_sha)
+        publish = values.get("publish")
+        if publish not in ("true", "false"):
+            raise ValueError("candidate PyPI decision is malformed")
+        return publish == "true"
+
+    @staticmethod
+    async def _npm_decision(candidate: dagger.Directory, expected_sha: str) -> NpmPlan:
+        values = Assay._plan(await candidate.file("publication/npm.env").contents())
+        Assay._require_plan_sha(values, expected_sha)
+        required = ("publish", "dist-tag", "publish-tag", "channel-version", "publish-tag-version")
+        if any(not values.get(key) for key in required) or values["publish"] not in (
+            "true",
+            "false",
+        ):
+            raise ValueError("candidate npm decision is malformed")
+        return NpmPlan(
+            publish=values["publish"] == "true",
+            channel=values["dist-tag"],
+            publish_tag=values["publish-tag"],
+            channel_version=values["channel-version"],
+            publish_tag_version=values["publish-tag-version"],
+        )
+
+    @staticmethod
+    def _plan(contents: str) -> dict[str, str]:
+        pairs = tuple(Assay._plan_pair(line) for line in contents.splitlines())
+        values = dict(pairs)
+        if len(values) != len(pairs):
+            raise ValueError("candidate publication plan has duplicate fields")
+        return values
+
+    @staticmethod
+    def _plan_pair(line: str) -> tuple[str, str]:
+        key, separator, value = line.partition("=")
+        if not key or separator != "=" or not value:
+            raise ValueError("candidate publication plan is malformed")
+        return key, value
+
+    @staticmethod
+    def _require_plan_sha(values: dict[str, str], expected_sha: str) -> None:
+        if values.get("expected-sha") != expected_sha:
+            raise ValueError("candidate commit identity differs")
+
+    async def _publish_npm(
+        self,
+        candidate: dagger.Directory,
+        plan: NpmPlan,
+        oidc_url: dagger.Secret,
+        oidc_token: dagger.Secret,
+    ) -> str:
+        archive = await self._npm_archive(candidate)
+        publisher = self._npm_publisher(candidate, oidc_url, oidc_token)
+        publisher = publisher.with_exec(["sh", "-ceu", self._publisher_digest_command()])
+        publisher = publisher.with_exec(["mkdir", "-p", "/publisher"])
+        publisher = publisher.with_exec(
+            ["tar", "-xzf", "publish-tools/npm-12.0.2.tgz", "-C", "/publisher"]
+        )
+        publisher = publisher.with_exec(["node", "/publisher/package/bin/npm-cli.js", "--version"])
+        publisher = publisher.with_exec(["node", "-e", self._channel_recheck(plan)])
+        command = self._npm_publish_command(archive, plan.publish_tag)
+        return await publisher.with_exec(command).stdout()
+
+    @staticmethod
+    async def _npm_archive(candidate: dagger.Directory) -> str:
+        entries = await candidate.directory("release/npm").entries()
+        archives = tuple(entry for entry in entries if NPM_ARCHIVE.fullmatch(entry))
+        if len(entries) != 1 or len(archives) != 1:
+            raise ValueError("candidate must contain one exact npm archive")
+        return f"release/npm/{archives[0]}"
+
+    @staticmethod
+    def _npm_publisher(
+        candidate: dagger.Directory, oidc_url: dagger.Secret, oidc_token: dagger.Secret
+    ) -> dagger.Container:
+        base = dag.container().from_(NODE_IMAGE).with_directory("/candidate", candidate)
+        base = base.with_workdir("/candidate").with_secret_variable(
+            "ACTIONS_ID_TOKEN_REQUEST_URL", oidc_url
+        )
+        return base.with_secret_variable("ACTIONS_ID_TOKEN_REQUEST_TOKEN", oidc_token)
+
+    @staticmethod
+    def _publisher_digest_command() -> str:
+        archive = "publish-tools/npm-12.0.2.tgz"
+        return f'test "$(sha512sum {archive} | cut -d " " -f 1)" = "{NPM_PUBLISHER_SHA512}"'
+
+    @staticmethod
+    def _channel_recheck(plan: NpmPlan) -> str:
+        return (
+            "const u='https://registry.npmjs.org/%40edgeproc%2Fassay';"
+            "const r=await fetch(u);if(![200,404].includes(r.status))"
+            "throw Error('registry unavailable');"
+            "const t=r.status===404?{}:(await r.json())['dist-tags'];"
+            "if(typeof t!=='object'||t===null)throw Error('malformed registry tags');"
+            f"if((t['{plan.channel}']??'__ABSENT__')!=='{plan.channel_version}')"
+            "throw Error('npm channel changed after review');"
+            f"if((t['{plan.publish_tag}']??'__ABSENT__')!=='{plan.publish_tag_version}')"
+            "throw Error('npm publish tag changed after review');"
+        )
+
+    @staticmethod
+    def _npm_publish_command(archive: str, publish_tag: str) -> list[str]:
+        return [
+            "node",
+            "/publisher/package/bin/npm-cli.js",
+            "publish",
+            archive,
+            "--access",
+            "public",
+            "--provenance",
+            "--ignore-scripts",
+            "--tag",
+            publish_tag,
+        ]
+
+    def _repository(self, source: dagger.Directory) -> dagger.Container:
         return (
             self._toolchain()
             .with_env_variable("CI", "true")
             .with_directory("/src", source)
             .with_workdir("/src")
-            .with_exec(["git", "init", "-q"])
-            .with_exec(["git", "config", "user.email", "dagger@invalid"])
-            .with_exec(["git", "config", "user.name", "Dagger"])
-            .with_exec(["git", "add", "."])
-            .with_env_variable("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
-            .with_env_variable("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
-            .with_exec(["git", "commit", "-qm", "workspace"])
+            .with_mounted_cache("/root/.cache/uv", dag.cache_volume("assay-uv"))
+            .with_mounted_cache("/root/.local/share/pnpm/store", dag.cache_volume("assay-pnpm"))
             .with_exec(["uv", "sync", "--frozen", "--all-groups", "--all-extras"])
             .with_exec(["pnpm", "--dir", "ts", "install", "--frozen-lockfile", "--ignore-scripts"])
         )
 
     def _toolchain(self) -> dagger.Container:
+        uv_image = dag.container().from_(UV_IMAGE)
+        uv = uv_image.file("/uv")
+        uvx = uv_image.file("/uvx")
         node = dag.http(NODE_URL, checksum=f"sha256:{NODE_SHA256}")
         return (
             self._base()
+            .with_file("/usr/local/bin/uv", uv)
+            .with_file("/usr/local/bin/uvx", uvx)
             .with_file("/opt/node.tar.xz", node)
             .with_exec(
                 ["tar", "-xJf", "/opt/node.tar.xz", "-C", "/usr/local", "--strip-components=1"]
@@ -217,31 +499,42 @@ class Assay:
             .with_exec(["npm", "install", "--global", f"pnpm@{PNPM_VERSION}"])
         )
 
-    def _base(self) -> dagger.Container:
+    @staticmethod
+    def _base() -> dagger.Container:
+        install = (
+            "apt-get update && apt-get install -y --no-install-recommends "
+            "ca-certificates=20250419 curl=8.14.1-2+deb13u4 git=1:2.47.3-0+deb13u1 "
+            "jq=1.7.1-6+deb13u3 shellcheck=0.10.0-1 xz-utils=5.8.1-1+deb13u1 && "
+            "rm -rf /var/lib/apt/lists/*"
+        )
         return (
             dag.container(platform=dagger.Platform("linux/amd64"))
             .from_(PYTHON_IMAGE)
-            .with_exec(["apt-get", "update"])
-            .with_exec(
-                [
-                    "apt-get",
-                    "install",
-                    "-y",
-                    "--no-install-recommends",
-                    "ca-certificates",
-                    "git",
-                    "jq",
-                    "xz-utils",
-                ]
-            )
-            .with_exec(["ln", "-s", "/usr/local/bin/python3", "/usr/bin/python3"])
-            .with_mounted_cache("/root/.cache/uv", dag.cache_volume("assay-uv"))
-            .with_mounted_cache("/root/.local/share/pnpm/store", dag.cache_volume("assay-pnpm"))
-            .with_exec(["python", "-m", "pip", "install", "uv==0.11.32"])
+            .with_exec(["sh", "-ceu", install])
         )
 
-    def _with_actionlint(self, container: dagger.Container) -> dagger.Container:
-        archive = dag.http(ACTIONLINT_URL, checksum=f"sha256:{ACTIONLINT_SHA256}")
-        return container.with_file("/opt/actionlint.tar.gz", archive).with_exec(
-            ["tar", "-xzf", "/opt/actionlint.tar.gz", "-C", "/usr/local/bin", "actionlint"]
-        )
+    @staticmethod
+    def _history(commit_sha: str) -> dagger.Directory:
+        if commit_sha:
+            Assay._require_sha(commit_sha)
+            return Assay._release_source(commit_sha)
+        return dag.git(REPOSITORY_URL).branch("main").tree(depth=0, include_tags=True)
+
+    @staticmethod
+    def _release_source(commit_sha: str) -> dagger.Directory:
+        return dag.git(REPOSITORY_URL).commit(commit_sha).tree(depth=0, include_tags=True)
+
+    @staticmethod
+    def _actionlint() -> dagger.Container:
+        return dag.container().from_(ACTIONLINT_IMAGE).with_entrypoint([]).with_workdir("/repo")
+
+    @staticmethod
+    def _gitleaks() -> dagger.Container:
+        return dag.container().from_(GITLEAKS_IMAGE).with_entrypoint([])
+
+    @staticmethod
+    def _require_sha(commit_sha: str) -> None:
+        valid = len(commit_sha) == SHA_LENGTH
+        valid = valid and all(char in "0123456789abcdef" for char in commit_sha)
+        if not valid:
+            raise ValueError("commit_sha must be a lowercase 40-character Git SHA")

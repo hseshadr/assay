@@ -4,13 +4,6 @@
   "sdk": {
     "source": "python"
   },
-  "toolchains": [
-    {
-      "name": "shellcheck",
-      "source": "github.com/dagger/shellcheck@756497171e9185db48dc7961649f466b4003cfa9",
-      "pin": "756497171e9185db48dc7961649f466b4003cfa9"
-    }
-  ],
   "include": [
     ".dagger/pyproject.toml",
     ".dagger/sdk/**",

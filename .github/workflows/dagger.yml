@@ -1,28 +1,25 @@
 name: Dagger
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request:
 permissions:
   contents: read
 concurrency:
-  group: dagger-${{ github.workflow }}-${{ github.ref }}
+  group: assay-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   dagger:
     name: Dagger
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - name: Run deterministic Dagger checks
-        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+      - uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602 # v8.4.0
         with:
           version: "0.21.8"
-          verb: check
-          args: "shellcheck:check assay:distribution assay:example assay:parity assay:publish-ready assay:python assay:security"
-      - run: dagger check assay:mutations
-      - run: dagger check assay:typescript
-      - run: dagger check assay:benchmarks
+          verb: call
+          args: ci --commit-sha=${{ github.sha }}

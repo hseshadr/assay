@@ -89,36 +89,40 @@ prerelease artifacts.
 - Application policy failures are outside the engine because policy remains with the
   application.
 
-## Local release-candidate checks
+## Release candidate
 
-Run both gates and the installed-artifact example before reviewing a candidate:
+> **TL;DR:** A release starts only from a manual run on protected `main`. Dagger proves the exact
+> tag, commit, hosted gate, source history, and three artifacts before any publishing identity exists.
+
+Do not create a tag, dispatch the candidate, or publish either package without a fresh, explicit
+authorization. After authorization, run **Dagger release candidate** from the `main` branch with an
+existing `vX.Y.Z` tag. The run fails unless the peeled tag, remote `main`, requested SHA, source
+versions, and exactly one successful `Dagger` check all identify the same commit.
+
+Dagger then runs the complete Python, TypeScript, mutation, example, benchmark, security, secret,
+and artifact graph against that exact source history. It exports one checksum-bound candidate with
+one wheel, one sdist, one npm tarball, registry decisions, and the pinned npm publisher. A pinned
+artifact action persists only that directory for one day.
+
+The successful manual candidate triggers two source-free publisher jobs. They download only that
+run's exact artifact. The Python lane asks the exact-SHA Dagger module whether PyPI is missing the
+candidate, then uses the official PyPI OIDC publisher. The npm lane passes the artifact and typed
+GitHub OIDC request values to the exact-SHA Dagger publisher, which rechecks registry channel state
+and invokes the checksum-pinned npm CLI with provenance. Neither privileged job checks out source,
+installs dependencies, builds, tests, or runs free-form shell. Exact existing bytes plus provenance
+skip safely; any mismatch fails closed.
+
+Local developer checks remain available without release authority:
 
 ```bash
-uv run poe gate
-npx --yes --package=node@22.13.0 --package=corepack@0.34.0 \
-  -c 'cd ts && corepack pnpm gate'
-bash examples/run_composite.sh
+dagger call ci --commit-sha="$(git rev-parse HEAD)"
+dagger call security --commit-sha="$(git rev-parse HEAD)"
+dagger call artifacts export --path=dist/release
 ```
 
-The current package and recovery status is recorded here and in [SECURITY.md](../SECURITY.md).
-The root [README](../README.md) is the exact source snapshot embedded in each release artifact.
-Do not publish either package without a fresh, explicit authorization.
-
-Package-wide, non-cancelling workflow concurrency serializes releases started by this repository,
-but cannot lock out an external publisher. Release eligibility therefore also requires the tagged
-commit to be reachable from protected `main`. The protected `npm-release` environment requires
-approval before either registry write; PyPI and npm then use short-lived OIDC identities. No
-long-lived registry credential exists in the workflow, and no build, test, preflight, or verifier
-can mint a publishing identity. Immediate
-pre-publish and post-publish checks fail closed on external registry drift. Once both registries serve the reviewed
-bytes, the workflow publishes the same wheel, sdist, npm tarball, and checksum manifest as an
-immutable GitHub Release mirror and verifies the signed release attestation and anonymous bytes.
-The one-time manual dev2 recovery is hard-bound to tag `v0.5.0-dev.2`, commit `35c1fe9`, retained
-run `32571430932`, and the exact reviewed manifest. It can verify the already-served registries and
-create or verify only that immutable GitHub mirror, but it has no registry write authority.
-The dev2 registries and mirror are complete; the hard-bound path remains as recovery evidence.
-The release window requires exclusive package-publisher and GitHub-release-writer access; neither
-npm nor GitHub offers a compare-and-swap primitive for the final irreversible write.
+The root [README](../README.md) is embedded in each release artifact. Registry writes are irreversible;
+the release operator must keep external publishers idle during the authorized window. GitHub Release
+mirroring and historical recovery automation are deliberately outside this dual-registry path.
 
 ## Frozen release benchmarks
 

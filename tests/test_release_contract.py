@@ -147,7 +147,7 @@ def test_should_reject_a_release_commit_outside_protected_main(tmp_path: Path) -
     result = _run_identity(script, "v0.5.0-dev.2")
     # Then the release boundary fails before any publisher can receive credentials
     assert (result.returncode, result.stdout) == (1, "")
-    assert result.stderr == "release commit is not reachable from protected main\n"
+    assert result.stderr == "release commit is not exact protected main\n"
 
 
 def test_should_reject_a_release_when_protected_main_is_unavailable(tmp_path: Path) -> None:
@@ -159,10 +159,10 @@ def test_should_reject_a_release_when_protected_main_is_unavailable(tmp_path: Pa
     result = _run_identity(script, "v0.5.0-dev.2")
     # Then missing ancestry evidence cannot degrade into permission to publish
     assert (result.returncode, result.stdout) == (1, "")
-    assert result.stderr == "release commit is not reachable from protected main\n"
+    assert result.stderr == "release commit is not exact protected main\n"
 
 
-def test_should_accept_a_release_commit_behind_a_later_protected_main(tmp_path: Path) -> None:
+def test_should_reject_a_release_commit_behind_current_protected_main(tmp_path: Path) -> None:
     # Given a release commit followed by another already-merged main commit
     script = _identity_fixture(tmp_path, python_version="0.5.0.dev2", npm_version="0.5.0-dev.2")
     root = script.parents[1]
@@ -175,8 +175,37 @@ def test_should_accept_a_release_commit_behind_a_later_protected_main(tmp_path: 
     _git(root, "checkout", "--detach", release_sha)
     # When the earlier merged commit is checked as the exact release identity
     result = _run_identity(script, "v0.5.0-dev.2")
-    # Then ancestry, rather than fragile equality with the current main tip, is accepted
-    assert (result.returncode, result.stderr) == (0, "")
+    # Then a stale-but-merged tag cannot authorize publication
+    assert (result.returncode, result.stdout) == (1, "")
+    assert result.stderr == "release commit is not exact protected main\n"
+
+
+def test_should_accept_only_one_green_dagger_check_on_exact_tag_and_main() -> None:
+    # Given
+    identity = _load_module("scripts.verify_release_identity")
+    sha = "a" * 40
+    payload = json.dumps(
+        {
+            "main_sha": sha,
+            "tag_sha": sha,
+            "check_runs": [{"name": "Dagger", "head_sha": sha, "conclusion": "success"}],
+        }
+    )
+
+    # When / Then
+    identity.validate_hosted_eligibility(payload, sha)
+
+
+def test_should_reject_duplicate_or_stale_hosted_dagger_evidence() -> None:
+    # Given
+    identity = _load_module("scripts.verify_release_identity")
+    sha = "a" * 40
+    check = {"name": "Dagger", "head_sha": sha, "conclusion": "success"}
+    payload = json.dumps({"main_sha": sha, "tag_sha": "b" * 40, "check_runs": [check, check]})
+
+    # When / Then
+    with pytest.raises(ValueError, match="exact main, tag, and one green Dagger check required"):
+        identity.validate_hosted_eligibility(payload, sha)
 
 
 @pytest.mark.parametrize(
@@ -240,13 +269,15 @@ def _npm_metadata(path: Path) -> dict[str, object]:
     }
 
 
-def _npm_attestation(*, tag: str, sha: str, subject_sha512: str) -> dict[str, object]:
+def _npm_attestation(
+    *, tag: str, sha: str, subject_sha512: str, workflow_ref: str = "refs/heads/main"
+) -> dict[str, object]:
     statement = {
         "_type": "https://in-toto.io/Statement/v1",
         "predicateType": "https://slsa.dev/provenance/v1",
         "subject": [
             {
-                "name": "pkg:npm/%40edgeproc/assay@0.5.0-dev.0",
+                "name": f"pkg:npm/%40edgeproc/assay@{tag.removeprefix('v')}",
                 "digest": {"sha512": subject_sha512},
             }
         ],
@@ -256,12 +287,12 @@ def _npm_attestation(*, tag: str, sha: str, subject_sha512: str) -> dict[str, ob
                     "workflow": {
                         "repository": "https://github.com/hseshadr/assay",
                         "path": ".github/workflows/publish.yml",
-                        "ref": f"refs/tags/{tag}",
+                        "ref": workflow_ref,
                     }
                 },
                 "resolvedDependencies": [
                     {
-                        "uri": f"git+https://github.com/hseshadr/assay@refs/tags/{tag}",
+                        "uri": f"git+https://github.com/hseshadr/assay@{workflow_ref}",
                         "digest": {"gitCommit": sha},
                     }
                 ],
@@ -320,7 +351,9 @@ def test_should_reject_duplicate_pypi_filename_records() -> None:
         guard._pypi_digests(payload)
 
 
-def test_should_bind_npm_provenance_to_repository_workflow_tag_and_sha(tmp_path: Path) -> None:
+def test_should_bind_npm_provenance_to_default_branch_workflow_and_exact_sha(
+    tmp_path: Path,
+) -> None:
     # Given exact local bytes and an official-shaped npm provenance statement
     guard = _load_guard()
     tarball = tmp_path / "edgeproc-assay.tgz"
@@ -351,6 +384,26 @@ def test_should_reject_npm_provenance_bound_to_another_run(
     # Then the mismatch cannot be treated as a retry-safe skip
     with pytest.raises(ValueError, match="npm artifact or provenance mismatch"):
         guard.npm_release_state(tarball, _npm_metadata(tarball), attestation, expected)
+
+
+def test_should_reject_npm_provenance_from_the_old_tag_trigger(tmp_path: Path) -> None:
+    # Given exact bytes and SHA from the retired tag-triggered publisher
+    guard = _load_guard()
+    tarball = tmp_path / "edgeproc-assay.tgz"
+    tarball.write_bytes(b"assay-npm")
+    sha = "a" * 40
+    digest = hashlib.sha512(tarball.read_bytes()).hexdigest()
+    attestation = _npm_attestation(
+        tag="v0.5.0-dev.0",
+        sha=sha,
+        subject_sha512=digest,
+        workflow_ref="refs/tags/v0.5.0-dev.0",
+    )
+    identity = guard.ProvenanceIdentity("v0.5.0-dev.0", sha, digest)
+
+    # When / Then the default-branch candidate publisher cannot accept the old authority path
+    with pytest.raises(ValueError, match="npm artifact or provenance mismatch"):
+        guard.npm_release_state(tarball, _npm_metadata(tarball), attestation, identity)
 
 
 @pytest.mark.parametrize(
@@ -993,9 +1046,11 @@ def test_should_keep_registry_jobs_free_of_source_execution_and_broad_secret_sco
         assert "secrets." not in source
     assert [step.get("uses", "").split("@")[0] for step in jobs["publish-python"]["steps"]] == [
         "actions/download-artifact",
+        "dagger/dagger-for-github",
         "pypa/gh-action-pypi-publish",
     ]
     npm_source = json.dumps(jobs["publish-npm"]["steps"])
-    assert npm_source.count("actions/download-artifact@") == 2
-    assert npm_source.count("actions/setup-node@") == 1
+    assert npm_source.count("actions/download-artifact@") == 1
+    assert npm_source.count("dagger/dagger-for-github@") == 1
+    assert "actions/setup-node@" not in npm_source
     assert "NODE_AUTH_TOKEN" not in npm_source

@@ -1,262 +1,229 @@
-"""GitHub Actions must resolve third-party code from immutable commits.
-
-A tag (even a release tag like `ci-v2`) can be repointed at new code by whoever
-owns the upstream repo; a full 40-hex commit SHA cannot. Pinning is what turns
-"trust the publisher forever" into "trust exactly these bytes", so every
-`uses:` in this repo — including reusable workflows we own, such as
-`hseshadr/ci` — resolves to a commit. Local `./...` references are exempt:
-they resolve inside this repo, at this commit, by definition.
-
-Two ways a guard like this rots into a no-op, both closed here:
-
-* it globs `*.yml` only, so a `*.yaml` workflow is never scanned at all; and
-* it passes *vacuously* when the scan finds nothing — a moved or renamed workflow
-  directory would turn the guard green instead of red.
-"""
+"""Executable security contracts for Assay's thin GitHub ingress."""
 
 from __future__ import annotations
 
 import re
-import runpy
-import subprocess
-import sys
 from pathlib import Path
+from typing import cast
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
-USES = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
+ROOT = Path(__file__).parents[1]
+WORKFLOW_ROOT = ROOT / ".github/workflows"
+WORKFLOW_NAMES = {"dagger.yml", "publish.yml", "release-candidate.yml", "security-audit.yml"}
 PINNED = re.compile(r"^[\w.-]+/[\w.-]+(?:/[\w./-]+)?@[0-9a-f]{40}$")
-SHARED_SECRET_SCAN = re.compile(r"^hseshadr/ci/\.github/workflows/secret-scan\.yml@[0-9a-f]{40}$")
 
 
-def _scan(directory: Path) -> tuple[list[str], int]:
-    """Return (unpinned external refs, total external refs) across every workflow.
-
-    GitHub honours BOTH `.yml` and `.yaml`, so scanning one extension leaves the other
-    as an unguarded path. The ref count comes back too, so a caller can assert the scan
-    actually examined something rather than trusting an empty failure list."""
-    unpinned: list[str] = []
-    scanned = 0
-    for workflow in sorted([*directory.glob("*.yml"), *directory.glob("*.yaml")]):
-        for action in USES.findall(workflow.read_text(encoding="utf-8")):
-            if action.startswith("./"):
-                continue
-            scanned += 1
-            if PINNED.fullmatch(action) is None:
-                unpinned.append(f"{workflow.name}: {action}")
-    return unpinned, scanned
+def _mapping(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    assert all(isinstance(key, str) for key in value)
+    return cast(dict[str, object], value)
 
 
-def test_external_actions_are_pinned_to_full_commit_shas() -> None:
-    # Given every workflow this repo actually ships
-    unpinned, scanned = _scan(ROOT / ".github/workflows")
-    # Then none of them resolves to a mutable ref
-    assert unpinned == []
-    # ...and the scan was not vacuous: it really did examine external refs, so an
-    # emptied or renamed workflow directory fails here instead of passing silently.
-    assert scanned > 0
+def _workflow(name: str) -> dict[str, object]:
+    loader = yaml.BaseLoader((WORKFLOW_ROOT / name).read_text(encoding="utf-8"))
+    try:
+        return _mapping(loader.get_single_data())
+    finally:
+        loader.dispose()
 
 
-def test_the_guard_scans_yaml_as_well_as_yml_workflows(tmp_path: Path) -> None:
-    # Given an unpinned action hidden in a `.yaml` file — the extension GitHub also honours
-    (tmp_path / "sneaky.yaml").write_text(
-        "jobs:\n  a:\n    steps:\n      - uses: attacker/action@v1\n", encoding="utf-8"
-    )
-    # When the guard scans
-    unpinned, scanned = _scan(tmp_path)
-    # Then the `.yaml` file is caught rather than skipped
-    assert scanned == 1
-    assert unpinned == ["sneaky.yaml: attacker/action@v1"]
+def _jobs(workflow: dict[str, object]) -> dict[str, object]:
+    return _mapping(workflow["jobs"])
 
 
-def test_the_guard_finds_no_refs_in_an_empty_directory(tmp_path: Path) -> None:
-    # Given a directory holding no workflows (what a moved or renamed dir looks like)
-    unpinned, scanned = _scan(tmp_path)
-    # Then there is nothing to report — and that empty report is precisely the vacuous
-    # "pass" the `scanned > 0` assertion above converts into a failure.
-    assert unpinned == []
-    assert scanned == 0
+def _job(workflow: dict[str, object], name: str) -> dict[str, object]:
+    return _mapping(_jobs(workflow)[name])
 
 
-def _yaml(path: Path) -> dict[object, object]:
-    document = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert isinstance(document, dict)
-    return document
+def _steps(job: dict[str, object]) -> list[dict[str, object]]:
+    value = job["steps"]
+    assert isinstance(value, list)
+    return [_mapping(step) for step in value]
 
 
-def _needs(job: dict[object, object]) -> tuple[str, ...]:
-    dependencies = job.get("needs")
-    if dependencies is None:
-        return ()
-    if isinstance(dependencies, str):
-        return (dependencies,)
-    assert isinstance(dependencies, list)
-    assert all(isinstance(dependency, str) for dependency in dependencies)
-    return tuple(dependencies)
+def _uses(job: dict[str, object]) -> tuple[str, ...]:
+    return tuple(str(step["uses"]) for step in _steps(job) if "uses" in step)
 
 
-def _runs_disabled_release_guard(job: object) -> bool:
-    if not isinstance(job, dict):
-        return False
-    steps = job.get("steps", ())
-    if not isinstance(steps, list):
-        return False
-    return any(
-        isinstance(step, dict) and "scripts/verify_release_identity.py" in str(step.get("run", ""))
-        for step in steps
-    )
+def _with(step: dict[str, object]) -> dict[str, object]:
+    return _mapping(step.get("with", {}))
 
 
-def _is_publication_job(name: object, job: object) -> bool:
-    if not isinstance(name, str) or not isinstance(job, dict):
-        return False
-    permissions = job.get("permissions", {})
-    has_oidc = isinstance(permissions, dict) and permissions.get("id-token") == "write"
-    reusable = job.get("uses", "")
-    return (
-        name.startswith("publish")
-        or has_oidc
-        or (isinstance(reusable, str) and "publish" in reusable)
-    )
+def _action(name: str, job: dict[str, object]) -> dict[str, object]:
+    matches = [step for step in _steps(job) if str(step.get("uses", "")).startswith(f"{name}@")]
+    assert len(matches) == 1
+    return matches[0]
 
 
-def _assert_shared_full_history_scan(job: object) -> None:
-    assert isinstance(job, dict)
-    reusable = job.get("uses")
-    assert isinstance(reusable, str)
-    assert SHARED_SECRET_SCAN.fullmatch(reusable)
-    assert job.get("with") == {"runs-on": "ubuntu-24.04", "full-history": True}
-
-
-def test_scheduled_security_audit_uses_the_shared_full_history_scan() -> None:
-    workflow = _yaml(ROOT / ".github/workflows/security-audit.yml")
-    triggers = workflow.get("on", workflow.get(True))
-    jobs = workflow["jobs"]
-    assert isinstance(triggers, dict)
-    assert set(triggers) == {"push", "pull_request", "schedule"}
-    assert isinstance(jobs, dict)
-    assert set(jobs) == {"shared-secrets", "secrets"}
-    assert jobs["shared-secrets"]["name"] == "Shared full-history secret scan"
-    assert jobs["shared-secrets"]["permissions"] == {
-        "contents": "read",
-        "pull-requests": "read",
-    }
-    _assert_shared_full_history_scan(jobs["shared-secrets"])
-
-
-def test_required_secret_scan_context_fails_closed_after_the_shared_scan() -> None:
-    alias = _yaml(ROOT / ".github/workflows/security-audit.yml")["jobs"]["secrets"]
-    assert alias["name"] == "Full-history secret scan"
-    assert _needs(alias) == ("shared-secrets",)
-    assert alias["if"] == "${{ always() }}"
-    assert alias["permissions"] == {}
-    step = alias["steps"][0]
-    assert step["env"] == {"SHARED_SCAN_RESULT": "${{ needs.shared-secrets.result }}"}
-    command = str(step["run"])
-    success = subprocess.run(  # noqa: S603 - execute the reviewed workflow command.
-        ["/bin/bash", "-eu", "-c", command],
-        env={"SHARED_SCAN_RESULT": "success"},
-        check=False,
-    )
-    failure = subprocess.run(  # noqa: S603 - execute the reviewed workflow command.
-        ["/bin/bash", "-eu", "-c", command],
-        env={"SHARED_SCAN_RESULT": "failure"},
-        check=False,
-    )
-    assert (success.returncode, failure.returncode) == (0, 1)
-
-
-def test_release_build_waits_for_the_shared_full_history_scan() -> None:
-    jobs = _yaml(ROOT / ".github/workflows/publish.yml")["jobs"]
-    assert isinstance(jobs, dict)
-    secret_scan = jobs["secret-scan"]
-    assert secret_scan["name"] == "Release full-history secret scan"
-    assert secret_scan["permissions"] == {"contents": "read"}
-    _assert_shared_full_history_scan(secret_scan)
-    assert "secret-scan" in _needs(jobs["build"])
-
-
-def test_dependency_update_intake_covers_both_package_ecosystems() -> None:
-    updates = _yaml(ROOT / ".github/dependabot.yml")["updates"]
-    assert isinstance(updates, list)
-    ecosystems = {entry["package-ecosystem"] for entry in updates}
-    assert {"github-actions", "npm", "pip"} <= ecosystems
-
-
-def test_checkout_never_persists_push_credentials() -> None:
-    workflows = (ROOT / ".github/workflows").glob("*.yml")
-    offenders = []
-    for workflow in workflows:
-        source = workflow.read_text(encoding="utf-8")
-        checkouts = re.findall(
-            r"uses: actions/checkout@.*?(?=\n\s*- (?:name:|uses:)|\Z)", source, re.S
-        )
-        offenders.extend(
-            f"{workflow.name}:{index}"
-            for index, block in enumerate(checkouts)
-            if "persist-credentials: false" not in block
-        )
-    assert offenders == []
-
-
-def test_should_accept_only_an_exact_release_identity() -> None:
-    workflow = _yaml(ROOT / ".github/workflows/publish.yml")
-    jobs = workflow["jobs"]
-    assert isinstance(jobs, dict)
-    assert {"build", "preflight-python", "preflight-npm"} <= set(jobs)
-    command = str(jobs["build"])
-    assert "verify_release_identity.py" in command
-    assert '"$RELEASE_TAG" "$GITHUB_SHA"' in command
-    attempt = subprocess.run(
-        [sys.executable, "scripts/verify_release_identity.py", "v0.5.0-dev.2"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert (attempt.returncode, attempt.stdout) == (1, "")
-    assert attempt.stderr == "usage: verify_release_identity.py vX.Y.Z GITHUB_SHA\n"
-
-
-def test_should_gate_every_publication_lane_behind_both_preflights() -> None:
-    # Given the tag-triggered trusted-publication workflow
-    jobs = _yaml(ROOT / ".github/workflows/publish.yml")["jobs"]
-    assert isinstance(jobs, dict)
-    # When both OIDC-capable lanes are inspected
-    for name in ("publish-python", "publish-npm"):
-        job = jobs[name]
-        assert isinstance(job, dict)
-        # Then neither lane starts before both registries have failed closed or passed
-        assert {"build", "preflight-python", "preflight-npm"} <= set(_needs(job))
-        assert job["permissions"] == {"actions": "read", "id-token": "write"}
-
-
-def test_should_activate_only_existing_assay_mutations() -> None:
+def test_should_ship_only_the_four_dagger_ingress_workflows() -> None:
     # Given / When
-    namespace = runpy.run_path(ROOT / "scripts/mutation_harness.py")
-    mutations = namespace["MUTATIONS"]
-    targets = {mutation.target for mutation in mutations}
+    names = {path.name for path in WORKFLOW_ROOT.iterdir() if path.suffix in {".yml", ".yaml"}}
 
     # Then
-    assert targets
-    assert all(
-        target.startswith("src/assay/")
-        or target.startswith("ts/src/")
-        or target == "ts/pnpm-workspace.yaml"
-        or target in {"testdata/vectors/metrics.json", "testdata/vectors/composition.json"}
-        for target in targets
+    assert names == WORKFLOW_NAMES
+    assert all(_jobs(_workflow(name)) for name in names)
+
+
+def test_should_pin_every_external_action_and_disable_checkout_credentials() -> None:
+    # Given
+    workflows = tuple(_workflow(name) for name in WORKFLOW_NAMES)
+
+    # When
+    jobs = [_mapping(job) for workflow in workflows for job in _jobs(workflow).values()]
+    uses = [reference for job in jobs for reference in _uses(job)]
+    checkouts = [
+        step
+        for job in jobs
+        for step in _steps(job)
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+
+    # Then
+    assert uses
+    assert all(PINNED.fullmatch(reference) for reference in uses)
+    assert all(_with(step).get("persist-credentials") == "false" for step in checkouts)
+
+
+def test_should_make_ci_one_checkout_and_one_dagger_call() -> None:
+    # Given
+    workflow = _workflow("dagger.yml")
+    job = _job(workflow, "dagger")
+
+    # When
+    dagger_step = _action("dagger/dagger-for-github", job)
+
+    # Then
+    assert set(_mapping(workflow["on"])) == {"push", "pull_request"}
+    assert _uses(job) == (
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602",
     )
-    assert all((ROOT / target).is_file() for target in targets)
+    assert all("run" not in step for step in _steps(job))
+    assert _with(dagger_step) == {
+        "version": "0.21.8",
+        "verb": "call",
+        "args": "ci --commit-sha=${{ github.sha }}",
+    }
 
 
-def test_should_allow_only_exact_assay_vector_mutation_paths() -> None:
-    # Given the mutation harness's target-boundary predicate
-    namespace = runpy.run_path(ROOT / "scripts/mutation_harness.py")
-    allowed = namespace["_is_allowed_assay_target"]
-    # When exact and near-miss testdata paths are checked
-    # Then only the two owned Assay vector files cross the boundary
-    assert allowed("testdata/vectors/metrics.json")
-    assert allowed("testdata/vectors/composition.json")
-    assert not allowed("testdata/vectors/composition.json.bak")
-    assert not allowed("testdata/vectors/unrelated.json")
+def test_should_make_the_schedule_one_complete_dagger_security_call() -> None:
+    # Given
+    workflow = _workflow("security-audit.yml")
+    job = _job(workflow, "security")
+
+    # When
+    dagger_step = _action("dagger/dagger-for-github", job)
+
+    # Then
+    assert set(_mapping(workflow["on"])) == {"schedule", "workflow_dispatch"}
+    assert len(_steps(job)) == 2
+    assert all("run" not in step for step in _steps(job))
+    assert _with(dagger_step)["args"] == "security --commit-sha=${{ github.sha }}"
+
+
+def test_should_build_and_upload_only_a_manual_default_branch_candidate() -> None:
+    # Given
+    workflow = _workflow("release-candidate.yml")
+    job = _job(workflow, "candidate")
+
+    # When
+    dagger_step = _action("dagger/dagger-for-github", job)
+    upload = _action("actions/upload-artifact", job)
+
+    # Then
+    assert set(_mapping(workflow["on"])) == {"workflow_dispatch"}
+    assert job["if"] == "github.ref == 'refs/heads/main'"
+    assert all("run" not in step for step in _steps(job))
+    assert "release-candidate --tag=${{ inputs.tag }}" in str(_with(dagger_step)["args"])
+    assert "--commit-sha=${{ github.sha }}" in str(_with(dagger_step)["args"])
+    assert _with(upload) == {
+        "name": "assay-${{ github.sha }}",
+        "path": "candidate/",
+        "if-no-files-found": "error",
+        "retention-days": "1",
+    }
+
+
+def test_should_keep_both_privileged_publishers_source_free() -> None:
+    # Given
+    workflow = _workflow("publish.yml")
+    publishers = tuple(_mapping(job) for job in _jobs(workflow).values())
+
+    # When
+    sources = [str(step.get("uses", "")) for job in publishers for step in _steps(job)]
+    commands = [step for job in publishers for step in _steps(job) if "run" in step]
+
+    # Then
+    assert set(_mapping(workflow["on"])) == {"workflow_run"}
+    assert not any(reference.startswith("actions/checkout@") for reference in sources)
+    assert not any("setup-" in reference or "action-setup" in reference for reference in sources)
+    assert commands == []
+    assert all(job["environment"] == "npm-release" for job in publishers)
+    assert all(
+        _mapping(job["permissions"])
+        == {
+            "actions": "read",
+            "id-token": "write",
+        }
+        for job in publishers
+    )
+
+
+def test_should_bind_download_and_remote_dagger_to_the_candidate_run_identity() -> None:
+    # Given
+    workflow = _workflow("publish.yml")
+
+    # When / Then
+    for job in (_mapping(value) for value in _jobs(workflow).values()):
+        download = _action("actions/download-artifact", job)
+        assert _with(download) == {
+            "name": "assay-${{ github.event.workflow_run.head_sha }}",
+            "path": "candidate",
+            "github-token": "${{ github.token }}",
+            "run-id": "${{ github.event.workflow_run.id }}",
+        }
+        dagger_step = _action("dagger/dagger-for-github", job)
+        assert _with(dagger_step)["module"] == (
+            "github.com/hseshadr/assay@${{ github.event.workflow_run.head_sha }}"
+        )
+
+
+def test_should_gate_publishers_on_successful_manual_default_branch_candidate() -> None:
+    # Given / When
+    jobs = _jobs(_workflow("publish.yml"))
+    conditions = {str(_mapping(job)["if"]) for job in jobs.values()}
+
+    # Then
+    assert conditions == {
+        "github.event.workflow_run.conclusion == 'success' && "
+        "github.event.workflow_run.event == 'workflow_dispatch' && "
+        "github.event.workflow_run.head_branch == github.event.repository.default_branch"
+    }
+
+
+def test_should_give_no_fork_or_shell_path_privileged_base_authority() -> None:
+    # Given
+    source = "\n".join(
+        (WORKFLOW_ROOT / name).read_text(encoding="utf-8") for name in WORKFLOW_NAMES
+    )
+
+    # When / Then
+    assert "pull_request_target" not in source
+    assert "dangerously-allow-all-builds" not in source
+    assert "secrets." not in source
+
+
+def test_should_serialize_every_graph_and_scope_the_one_trigger_exception() -> None:
+    # Given
+    workflows = {name: _workflow(name) for name in WORKFLOW_NAMES}
+    sources = {name: (WORKFLOW_ROOT / name).read_text(encoding="utf-8") for name in WORKFLOW_NAMES}
+
+    # When / Then
+    for workflow in workflows.values():
+        concurrency = _mapping(workflow["concurrency"])
+        assert str(concurrency["group"]).startswith("assay-")
+        assert concurrency["cancel-in-progress"] in {"true", "false"}
+    exception = "zizmor: ignore[dangerous-triggers]"
+    assert exception in sources["publish.yml"]
+    assert sum(source.count(exception) for source in sources.values()) == 1

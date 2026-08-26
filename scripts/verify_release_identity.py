@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+from pydantic import BaseModel, ConfigDict
 
 ROOT = Path(__file__).resolve().parents[1]
 _ARGUMENT_COUNT = 3
@@ -14,6 +19,102 @@ _CORE = r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
 _STABLE = re.compile(rf"^{_CORE}$")
 _PYTHON_PRERELEASE = re.compile(rf"^({_CORE})\.dev(0|[1-9]\d*)$")
 _NPM_PRERELEASE = re.compile(rf"^({_CORE})-dev\.(0|[1-9]\d*)$")
+
+
+class CheckRun(BaseModel):
+    """The hosted check fields needed for exact release eligibility."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str
+    head_sha: str
+    conclusion: str | None
+
+
+class HostedPayload(BaseModel):
+    """Exact remote identities and hosted checks observed from GitHub."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    main_sha: str
+    tag_sha: str
+    check_runs: tuple[CheckRun, ...]
+
+
+def validate_hosted_eligibility(payload: str, expected_sha: str) -> None:
+    """Require current main, tag, expected SHA, and one green Dagger check."""
+    observed = HostedPayload.model_validate_json(payload)
+    valid = (_valid_sha(expected_sha), _identities_match_hosted(observed, expected_sha))
+    if not all(valid) or not _one_green_dagger(observed, expected_sha):
+        raise ValueError("exact main, tag, and one green Dagger check required")
+
+
+def _valid_sha(value: str) -> bool:
+    return re.fullmatch(r"[0-9a-f]{40}", value) is not None
+
+
+def _identities_match_hosted(observed: HostedPayload, expected_sha: str) -> bool:
+    return len({observed.main_sha, observed.tag_sha, expected_sha}) == 1
+
+
+def _one_green_dagger(observed: HostedPayload, expected_sha: str) -> bool:
+    matching = tuple(run for run in observed.check_runs if run.name == "Dagger")
+    return len(matching) == 1 and _green_check(matching[0], expected_sha)
+
+
+def _green_check(run: CheckRun, expected_sha: str) -> bool:
+    return run.head_sha == expected_sha and run.conclusion == "success"
+
+
+def _github_json(url: str, token: str) -> dict[str, object]:
+    request = Request(  # noqa: S310 - URL is built from the fixed GitHub API origin.
+        url,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+    )
+    with urlopen(request, timeout=30) as response:  # noqa: S310
+        payload = json.load(response)
+    if not isinstance(payload, dict):
+        raise ValueError("GitHub release evidence is malformed")
+    return payload
+
+
+def _check_run(value: object) -> CheckRun:
+    if not isinstance(value, dict):
+        raise ValueError("GitHub release evidence is malformed")
+    fields = ("name", "head_sha", "conclusion")
+    return CheckRun.model_validate({field: value.get(field) for field in fields})
+
+
+def _hosted_payload(repository: str, tag: str, sha: str, token: str) -> str:
+    root = f"https://api.github.com/repos/{repository}/commits"
+    main = _github_json(f"{root}/main", token)
+    tagged = _github_json(f"{root}/{quote(tag, safe='')}", token)
+    checks = _github_json(f"{root}/{sha}/check-runs?per_page=100", token)
+    runs = checks.get("check_runs")
+    if not isinstance(main.get("sha"), str) or not isinstance(tagged.get("sha"), str):
+        raise ValueError("GitHub release evidence is malformed")
+    if not isinstance(runs, list):
+        raise ValueError("GitHub release evidence is malformed")
+    return HostedPayload(
+        main_sha=str(main["sha"]),
+        tag_sha=str(tagged["sha"]),
+        check_runs=tuple(_check_run(run) for run in runs),
+    ).model_dump_json()
+
+
+def _github_main() -> int:
+    if len(sys.argv) != 5:  # noqa: PLR2004
+        print("usage: verify_release_identity.py github OWNER/REPO TAG SHA", file=sys.stderr)
+        return 1
+    repository, tag, sha = sys.argv[2:]
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if re.fullmatch(r"[\w.-]+/[\w.-]+", repository) is None or not token:
+        print("hosted release evidence is unavailable", file=sys.stderr)
+        return 1
+    try:
+        validate_hosted_eligibility(_hosted_payload(repository, tag, sha, token), sha)
+    except (OSError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    return 0
 
 
 def _python_version() -> str:
@@ -65,14 +166,7 @@ def _release_commit_matches(tag: str, github_sha: str) -> bool:
 
 
 def _protected_main_contains(github_sha: str) -> bool:
-    result = subprocess.run(  # noqa: S603
-        ["git", "merge-base", "--is-ancestor", github_sha, "refs/remotes/origin/main"],  # noqa: S607
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
+    return _revision("refs/remotes/origin/main") == github_sha
 
 
 def _arguments() -> tuple[str, str] | None:
@@ -92,7 +186,7 @@ def _commit_matches(tag: str, github_sha: str) -> bool:
 def _main_contains(github_sha: str) -> bool:
     try:
         return _protected_main_contains(github_sha)
-    except OSError:
+    except (OSError, subprocess.CalledProcessError):
         return False
 
 
@@ -103,11 +197,13 @@ def _validation_error(tag: str, github_sha: str) -> str | None:
     if not _commit_matches(tag, github_sha):
         return "release tag, commit, and artifact versions do not match"
     if not _main_contains(github_sha):
-        return "release commit is not reachable from protected main"
+        return "release commit is not exact protected main"
     return None
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "github":
+        return _github_main()
     arguments = _arguments()
     if arguments is None:
         return 1
