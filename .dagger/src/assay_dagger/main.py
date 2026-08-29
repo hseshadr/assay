@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Final, Self
+from typing import Final, Protocol, Self, cast
 
 import dagger
 from dagger import check, dag, field, function, object_type
@@ -19,14 +19,6 @@ UV_IMAGE: Final = (
 NODE_IMAGE: Final = (
     "node:24.16.0-bookworm-slim@sha256:"
     "2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736c476489d09f560a203"
-)
-ACTIONLINT_IMAGE: Final = (
-    "rhysd/actionlint:1.7.10@sha256:"
-    "ef8299f97635c4c30e2298f48f30763ab782a4ad2c95b744649439a039421e36"
-)
-GITLEAKS_IMAGE: Final = (
-    "ghcr.io/gitleaks/gitleaks:v8.29.1@sha256:"
-    "aa036a2f4bdfe3cc3c55fa4326308efabb4a6be498c883c864fd1d0d5585438a"
 )
 NODE_URL: Final = "https://nodejs.org/dist/v22.13.0/node-v22.13.0-linux-x64.tar.xz"
 NODE_SHA256: Final = "3ff0d57063c33313d73d0bdcebc4c778ad6be948234584694a042c6fe57164f6"
@@ -57,29 +49,28 @@ SOURCE_EXCLUDES: Final = [
     "*.pem",
     "**/*.pem",
 ]
-GITLEAKS_SNAPSHOT: Final = [
-    "gitleaks",
-    "detect",
-    "--source",
-    "/snapshot",
-    "--no-git",
-    "--redact",
-    "--no-banner",
-]
-GITLEAKS_HISTORY: Final = [
-    "gitleaks",
-    "detect",
-    "--source",
-    "/repo",
-    "--log-opts=--all",
-    "--redact",
-    "--no-banner",
-]
 NPM_ARCHIVE = re.compile(r"^edgeproc-assay-[0-9]+\.[0-9]+\.[0-9]+(?:-dev\.[0-9]+)?\.tgz$")
 PYTHON_WHEEL = re.compile(
     r"^assay_engine-[0-9]+\.[0-9]+\.[0-9]+(?:\.dev[0-9]+)?-py3-none-any\.whl$"
 )
 PYTHON_SDIST = re.compile(r"^assay_engine-[0-9]+\.[0-9]+\.[0-9]+(?:\.dev[0-9]+)?\.tar\.gz$")
+
+
+class FoundationClient(Protocol):
+    """The generated Foundation surface used by Assay's local adapter."""
+
+    def source(
+        self, source: dagger.Directory, repository: str, commit_sha: str
+    ) -> dagger.Directory: ...
+
+    def guard(
+        self, source: dagger.Directory, repository: str, commit_sha: str
+    ) -> dagger.Container: ...
+
+
+def _foundation() -> FoundationClient:
+    """Return the exact-SHA generated Foundation dependency."""
+    return cast(FoundationClient, dag.foundation())  # type: ignore[attr-defined]
 
 
 @dataclass(frozen=True)
@@ -125,8 +116,8 @@ class Assay:
     @function
     async def security(self, commit_sha: str = "") -> str:
         """Run dependency, workflow, shell, snapshot, and history security."""
-        complete = self._source_with_history(self.source, commit_sha)
-        await self._security(self.source, complete, commit_sha)
+        complete = await self._verified_source(self.source, commit_sha)
+        await self._security(complete)
         return "Assay Dagger security gate passed"
 
     @function
@@ -137,11 +128,11 @@ class Assay:
         return "Assay canonical Dagger gate passed"
 
     async def _run_ci(self, source: dagger.Directory, commit_sha: str) -> None:
-        complete = self._source_with_history(source, commit_sha)
+        complete = await self._verified_source(source, commit_sha)
         await self._python_gate(complete).sync()
         await self._typescript_gate(complete).sync()
         await self._release_evidence(complete).sync()
-        await self._security(source, complete, commit_sha)
+        await self._security(complete)
         await self._artifact_container(complete).sync()
 
     @function
@@ -194,39 +185,33 @@ class Assay:
             .with_exec(["bash", "examples/run_composite.sh"])
         )
 
-    async def _security(
-        self, snapshot: dagger.Directory, complete: dagger.Directory, commit_sha: str
-    ) -> None:
-        audited = self._repository(complete).with_exec(["uv", "run", "poe", "audit-python"])
+    async def _security(self, source: dagger.Directory) -> None:
+        audited = self._repository(source).with_exec(["uv", "run", "poe", "audit-python"])
         audited = audited.with_exec(["uv", "run", "poe", "audit-typescript"])
         audited = audited.with_exec(["uv", "run", "poe", "workflow-security"])
         await audited.sync()
-        await self._workflow_security(complete).sync()
-        await self._shellcheck(complete).sync()
-        await self._secret_scan(snapshot, commit_sha).sync()
+        await self._shellcheck(source).sync()
 
-    def _workflow_security(self, source: dagger.Directory) -> dagger.Container:
-        workflows = source.directory(".github/workflows")
-        command = (
-            "find .github/workflows -type f "
-            "\\( -name '*.yml' -o -name '*.yaml' \\) -exec actionlint {} +"
+    async def _verified_source(self, source: dagger.Directory, commit_sha: str) -> dagger.Directory:
+        complete = self._canonical_source(source, commit_sha)
+        await self._shared_guard(complete, commit_sha).sync()
+        return self._source_with_history(complete, commit_sha)
+
+    @staticmethod
+    def _canonical_source(source: dagger.Directory, commit_sha: str) -> dagger.Directory:
+        return _foundation().source(
+            source=source,
+            repository=REPOSITORY,
+            commit_sha=commit_sha,
         )
-        return (
-            self._actionlint()
-            .with_directory("/repo/.github/workflows", workflows)
-            .with_exec(["sh", "-ceu", command])
-        )
+
+    @staticmethod
+    def _shared_guard(source: dagger.Directory, commit_sha: str) -> dagger.Container:
+        return _foundation().guard(source=source, repository=REPOSITORY, commit_sha=commit_sha)
 
     def _shellcheck(self, source: dagger.Directory) -> dagger.Container:
         command = "shellcheck examples/*.sh scripts/*.sh"
         return self._repository(source).with_exec(["sh", "-ceu", command])
-
-    def _secret_scan(self, source: dagger.Directory, commit_sha: str) -> dagger.Container:
-        history = self._history(commit_sha)
-        scan = self._gitleaks().with_directory("/snapshot", source)
-        scan = scan.with_exec(["sh", "-ceu", 'test -n "$(find /snapshot -type f -print -quit)"'])
-        scan = scan.with_exec(GITLEAKS_SNAPSHOT).with_directory("/repo", history)
-        return scan.with_exec(GITLEAKS_HISTORY)
 
     def _source_with_history(
         self, source: dagger.Directory, commit_sha: str = ""
@@ -523,14 +508,6 @@ class Assay:
     @staticmethod
     def _release_source(commit_sha: str) -> dagger.Directory:
         return dag.git(REPOSITORY_URL).commit(commit_sha).tree(depth=0, include_tags=True)
-
-    @staticmethod
-    def _actionlint() -> dagger.Container:
-        return dag.container().from_(ACTIONLINT_IMAGE).with_entrypoint([]).with_workdir("/repo")
-
-    @staticmethod
-    def _gitleaks() -> dagger.Container:
-        return dag.container().from_(GITLEAKS_IMAGE).with_entrypoint([])
 
     @staticmethod
     def _require_sha(commit_sha: str) -> None:

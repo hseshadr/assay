@@ -4,17 +4,192 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+import os
+import shutil
+import subprocess
 import sys
+import tomllib
 from pathlib import Path
-from typing import cast
+from typing import Self, cast
 
 import dagger
 import pytest
 
 ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / ".dagger/src"))
 
+import assay_dagger.main as dagger_module  # noqa: E402
 from assay_dagger.main import Assay  # noqa: E402
+from scripts.release_epoch import source_date_epoch  # noqa: E402
+
+FOUNDATION_SHA = "8d9e0c04fcc4093947024d0bdfad2cd9a233b43c"
+REPOSITORY = "hseshadr/assay"
+
+
+class FoundationRejectedError(RuntimeError):
+    """Controlled fail-closed response from the shared Foundation boundary."""
+
+
+class HistoryUnavailableError(RuntimeError):
+    """Controlled failure to resolve the already verified exact history."""
+
+
+class RecordingFoundation:
+    """Record the typed values sent across the generated Foundation API."""
+
+    def __init__(self) -> None:
+        self.bound = cast(dagger.Directory, object())
+        self.checked = cast(dagger.Container, object())
+        self.source_call: tuple[dagger.Directory, str, str] | None = None
+        self.guard_call: tuple[dagger.Directory, str, str] | None = None
+        self.reject_guard = False
+
+    def source(
+        self, source: dagger.Directory, repository: str, commit_sha: str
+    ) -> dagger.Directory:
+        self.source_call = source, repository, commit_sha
+        return self.bound
+
+    def guard(self, source: dagger.Directory, repository: str, commit_sha: str) -> dagger.Container:
+        self.guard_call = source, repository, commit_sha
+        if self.reject_guard:
+            raise FoundationRejectedError("shared guard rejected the source")
+        return self.checked
+
+
+class SyncResult:
+    """Record completion of one lazy product gate."""
+
+    def __init__(self, name: str, completed: list[str]) -> None:
+        self._name = name
+        self._completed = completed
+
+    async def sync(self) -> Self:
+        self._completed.append(self._name)
+        return self
+
+
+class RejectingSyncResult:
+    """Raise a controlled Foundation rejection when the lazy guard executes."""
+
+    def __init__(self, error: FoundationRejectedError) -> None:
+        self._error = error
+
+    async def sync(self) -> Self:
+        raise self._error
+
+
+class RecordingAssay(Assay):
+    """Expose the source composition selected by the canonical CI graph."""
+
+    def configure(self, bound: dagger.Directory, history: dagger.Directory | None = None) -> None:
+        self.bound = bound
+        self.history = history if history is not None else cast(dagger.Directory, object())
+        self.guard_error: FoundationRejectedError | None = None
+        self.history_error: HistoryUnavailableError | None = None
+        self.inputs: list[tuple[str, dagger.Directory]] = []
+        self.completed: list[str] = []
+        self.security_call: dagger.Directory | None = None
+
+    def _canonical_source(self, source: dagger.Directory, commit_sha: str) -> dagger.Directory:
+        self.inputs.append((f"bind:{commit_sha}", source))
+        return self.bound
+
+    def _source_with_history(
+        self, source: dagger.Directory, commit_sha: str = ""
+    ) -> dagger.Directory:
+        self.inputs.append((f"history:{commit_sha}", source))
+        if self.history_error is not None:
+            raise self.history_error
+        return self.history
+
+    def _shared_guard(self, source: dagger.Directory, commit_sha: str) -> dagger.Container:
+        self.inputs.append((f"guard:{commit_sha}", source))
+        if self.guard_error is not None:
+            return cast(dagger.Container, RejectingSyncResult(self.guard_error))
+        return cast(dagger.Container, SyncResult("foundation-guard", self.completed))
+
+    def _node(self, name: str, source: dagger.Directory) -> dagger.Container:
+        self.inputs.append((name, source))
+        return cast(dagger.Container, SyncResult(name, self.completed))
+
+    def _python_gate(self, source: dagger.Directory) -> dagger.Container:
+        return self._node("python", source)
+
+    def _typescript_gate(self, source: dagger.Directory) -> dagger.Container:
+        return self._node("typescript", source)
+
+    def _release_evidence(self, source: dagger.Directory) -> dagger.Container:
+        return self._node("evidence", source)
+
+    def _artifact_container(self, source: dagger.Directory) -> dagger.Container:
+        return self._node("artifact", source)
+
+    async def _security(self, source: dagger.Directory) -> None:
+        self.inputs.append(("security", source))
+        self.security_call = source
+        self.completed.append("security")
+
+
+class ReleaseEpochResult:
+    """Run the real artifact epoch read against one controlled source tree."""
+
+    def __init__(self, source: Path, assay: EpochRecordingAssay) -> None:
+        self._source = source
+        self._assay = assay
+
+    async def sync(self) -> Self:
+        self._assay.artifact_epoch = source_date_epoch(self._source)
+        self._assay.completed.append("artifact")
+        return self
+
+
+def _product_history(root: Path) -> tuple[int, int]:
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],  # noqa: S607
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return status.returncode, source_date_epoch(root)
+
+
+class ProductHistoryResult:
+    """Exercise the hosted product gate against its selected source tree."""
+
+    def __init__(self, source: Path, assay: EpochRecordingAssay) -> None:
+        self._source = source
+        self._assay = assay
+
+    async def sync(self) -> Self:
+        status, epoch = await asyncio.to_thread(_product_history, self._source)
+        self._assay.product_git_status = status
+        self._assay.product_epoch = epoch
+        self._assay.completed.append("python")
+        return self
+
+
+class EpochRecordingAssay(RecordingAssay):
+    """Exercise the artifact boundary with a real git-archive-like source."""
+
+    def configure_paths(self, snapshot: Path, overlay: Path) -> None:
+        self.configure(cast(dagger.Directory, snapshot), cast(dagger.Directory, overlay))
+        self.artifact_epoch: int | None = None
+        self.product_epoch: int | None = None
+        self.product_git_status: int | None = None
+
+    def _python_gate(self, source: dagger.Directory) -> dagger.Container:
+        self.inputs.append(("python", source))
+        result = ProductHistoryResult(cast(Path, source), self)
+        return cast(dagger.Container, result)
+
+    def _artifact_container(self, source: dagger.Directory) -> dagger.Container:
+        self.inputs.append(("artifact", source))
+        result = ReleaseEpochResult(cast(Path, source), self)
+        return cast(dagger.Container, result)
 
 
 class RecordingWorkspace:
@@ -65,6 +240,44 @@ class RecordingCandidate:
         return cast(dagger.File, CandidateFile(self._files[path]))
 
 
+def _git(root: Path, *arguments: str, env: dict[str, str] | None = None) -> str:
+    completed = subprocess.run(
+        ["git", *arguments],  # noqa: S607
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return completed.stdout.strip()
+
+
+def _committed_source(root: Path) -> int:
+    root.mkdir()
+    (root / "README.md").write_text("verified artifact source\n", encoding="utf-8")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "ci@example.invalid")
+    _git(root, "config", "user.name", "CI")
+    _git(root, "add", "README.md")
+    dates = os.environ | {
+        "GIT_AUTHOR_DATE": "1700000000 +0000",
+        "GIT_COMMITTER_DATE": "1700000000 +0000",
+    }
+    _git(root, "commit", "-qm", "verified source", env=dates)
+    return int(_git(root, "log", "-1", "--pretty=%ct"))
+
+
+def _archive_and_history_overlay(tmp_path: Path) -> tuple[Path, Path, int]:
+    history = tmp_path / "history"
+    epoch = _committed_source(history)
+    snapshot = tmp_path / "snapshot"
+    shutil.copytree(history, snapshot, ignore=shutil.ignore_patterns(".git"))
+    overlay = tmp_path / "overlay"
+    shutil.copytree(snapshot, overlay)
+    shutil.copytree(history / ".git", overlay / ".git")
+    return snapshot, overlay, epoch
+
+
 def test_should_construct_from_one_explicit_typed_workspace() -> None:
     # Given
     workspace = RecordingWorkspace()
@@ -79,6 +292,190 @@ def test_should_construct_from_one_explicit_typed_workspace() -> None:
     assert {".env", "**/.env", "*.key", "**/*.key", "*.pem", "**/*.pem"} <= set(workspace.excludes)
     signature = inspect.signature(Assay.create, eval_str=True)
     assert signature.parameters["workspace"].annotation is dagger.Workspace
+
+
+def test_should_pin_the_exact_foundation_dependency_and_lock() -> None:
+    # Given / When
+    config = json.loads((ROOT / "dagger.json").read_text(encoding="utf-8"))
+
+    # Then
+    assert config["dependencies"] == [
+        {
+            "name": "foundation",
+            "source": f"github.com/hseshadr/ci/modules/portfolio-foundation@{FOUNDATION_SHA}",
+            "pin": FOUNDATION_SHA,
+        }
+    ]
+    assert ".dagger/uv.lock" in config["include"]
+    assert (ROOT / ".dagger/uv.lock").is_file()
+
+
+def test_should_declare_the_dagger_main_object_for_clean_bootstrap() -> None:
+    # Given / When
+    project = tomllib.loads((ROOT / ".dagger/pyproject.toml").read_text(encoding="utf-8"))
+
+    # Then
+    assert project["project"]["entry-points"]["dagger.mod"] == {"main_object": "assay_dagger:Assay"}
+    assert project["build-system"] == {
+        "requires": ["uv_build>=0.8.4,<0.9.0"],
+        "build-backend": "uv_build",
+    }
+
+
+def test_should_send_the_caller_snapshot_and_exact_identity_to_foundation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    foundation = RecordingFoundation()
+    monkeypatch.setattr(dagger_module, "_foundation", lambda: foundation, raising=False)
+
+    # When
+    bound = Assay._canonical_source(source, "a" * 40)
+    checked = Assay._shared_guard(source, "a" * 40)
+
+    # Then
+    assert bound is foundation.bound
+    assert checked is foundation.checked
+    assert foundation.source_call == (source, REPOSITORY, "a" * 40)
+    assert foundation.guard_call == (source, REPOSITORY, "a" * 40)
+
+
+def test_should_propagate_a_foundation_rejection_without_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    foundation = RecordingFoundation()
+    foundation.reject_guard = True
+    monkeypatch.setattr(dagger_module, "_foundation", lambda: foundation, raising=False)
+
+    # When / Then
+    with pytest.raises(FoundationRejectedError, match="shared guard rejected the source"):
+        Assay._shared_guard(source, "b" * 40)
+    assert foundation.guard_call == (source, REPOSITORY, "b" * 40)
+
+
+def test_should_run_canonical_ci_on_the_history_bound_verified_source() -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    bound = cast(dagger.Directory, object())
+    history = cast(dagger.Directory, object())
+    assay = RecordingAssay.__new__(RecordingAssay)
+    assay.configure(bound, history)
+
+    # When
+    asyncio.run(assay._run_ci(source, "c" * 40))
+
+    # Then
+    assert assay.inputs == [
+        (f"bind:{'c' * 40}", source),
+        (f"guard:{'c' * 40}", bound),
+        (f"history:{'c' * 40}", bound),
+        ("python", history),
+        ("typescript", history),
+        ("evidence", history),
+        ("security", history),
+        ("artifact", history),
+    ]
+    assert assay.security_call is history
+    assert assay.completed == [
+        "foundation-guard",
+        "python",
+        "typescript",
+        "evidence",
+        "security",
+        "artifact",
+    ]
+
+
+def test_should_overlay_exact_history_before_product_and_artifact_gates(tmp_path: Path) -> None:
+    # Given
+    snapshot, overlay, expected_epoch = _archive_and_history_overlay(tmp_path)
+    assay = EpochRecordingAssay.__new__(EpochRecordingAssay)
+    assay.configure_paths(snapshot, overlay)
+
+    # When
+    asyncio.run(assay._run_ci(cast(dagger.Directory, snapshot), "e" * 40))
+
+    # Then
+    assert assay.product_git_status == 0
+    assert assay.product_epoch == expected_epoch
+    assert assay.artifact_epoch == expected_epoch
+    assert (f"history:{'e' * 40}", cast(dagger.Directory, snapshot)) in assay.inputs
+    assert assay.inputs[-1] == ("artifact", cast(dagger.Directory, overlay))
+
+
+@pytest.mark.parametrize("message", ["exact history is missing", "exact history is wrong"])
+def test_should_fail_closed_before_product_or_artifacts_when_exact_history_is_unavailable(
+    message: str,
+) -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    bound = cast(dagger.Directory, object())
+    assay = RecordingAssay.__new__(RecordingAssay)
+    assay.configure(bound)
+    assay.history_error = HistoryUnavailableError(message)
+
+    # When / Then
+    with pytest.raises(HistoryUnavailableError, match=message):
+        asyncio.run(assay._run_ci(source, "f" * 40))
+    assert assay.completed == ["foundation-guard"]
+
+
+def test_should_fail_closed_before_history_or_product_when_foundation_guard_rejects() -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    bound = cast(dagger.Directory, object())
+    assay = RecordingAssay.__new__(RecordingAssay)
+    assay.configure(bound)
+    assay.guard_error = FoundationRejectedError("shared guard rejected the source")
+
+    # When / Then
+    with pytest.raises(FoundationRejectedError, match="shared guard rejected the source"):
+        asyncio.run(assay._run_ci(source, "b" * 40))
+    assert assay.inputs == [
+        (f"bind:{'b' * 40}", source),
+        (f"guard:{'b' * 40}", bound),
+    ]
+    assert assay.completed == []
+
+
+def test_should_run_scheduled_security_on_the_foundation_bound_snapshot() -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    bound = cast(dagger.Directory, object())
+    assay = RecordingAssay.__new__(RecordingAssay)
+    assay.source = source
+    assay.configure(bound)
+
+    # When
+    result = asyncio.run(assay.security("d" * 40))
+
+    # Then
+    assert assay.inputs == [
+        (f"bind:{'d' * 40}", source),
+        (f"guard:{'d' * 40}", bound),
+        (f"history:{'d' * 40}", bound),
+        ("security", assay.history),
+    ]
+    assert assay.security_call is assay.history
+    assert assay.completed == ["foundation-guard", "security"]
+    assert result == "Assay Dagger security gate passed"
+
+
+def test_should_leave_shared_guard_work_out_of_the_local_adapter() -> None:
+    # Given / When
+    module = inspect.getmodule(Assay)
+
+    # Then
+    assert module is not None
+    assert not hasattr(Assay, "_workflow_security")
+    assert not hasattr(Assay, "_secret_scan")
+    assert not hasattr(Assay, "_actionlint")
+    assert not hasattr(Assay, "_gitleaks")
+    assert not hasattr(module, "ACTIONLINT_IMAGE")
+    assert not hasattr(module, "GITLEAKS_IMAGE")
 
 
 def test_should_expose_one_complete_ci_and_release_graph() -> None:
@@ -125,18 +522,17 @@ def test_should_keep_quality_on_the_typed_source_but_overlay_only_git_history() 
     assert 'history.with_directory("/", source)' not in implementation
 
 
-def test_should_run_both_dependency_audits_and_both_secret_scans() -> None:
+def test_should_run_product_audits_after_shared_guard_and_history_binding() -> None:
     # Given / When
+    verification = inspect.getsource(Assay._verified_source)
     security = inspect.getsource(Assay._security)
-    secrets = inspect.getsource(Assay._secret_scan)
-    module = inspect.getmodule(Assay)
 
     # Then
-    assert module is not None
-    assert "GITLEAKS_SNAPSHOT" in secrets
-    assert "GITLEAKS_HISTORY" in secrets
+    assert "_shared_guard" in verification
+    assert "_source_with_history" in verification
     assert "audit-python" in security
     assert "audit-typescript" in security
+    assert "_shellcheck" in security
 
 
 def test_should_build_candidate_from_exact_history_and_record_registry_decisions() -> None:
@@ -228,8 +624,6 @@ def test_should_pin_every_downloaded_tool_and_package_manager() -> None:
     assert "@sha256:" in module.PYTHON_IMAGE
     assert "@sha256:" in module.NODE_IMAGE
     assert "@sha256:" in module.UV_IMAGE
-    assert "@sha256:" in module.GITLEAKS_IMAGE
-    assert "@sha256:" in module.ACTIONLINT_IMAGE
     assert module.PNPM_VERSION == "11.5.0"
 
 

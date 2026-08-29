@@ -6,8 +6,16 @@
   },
   "include": [
     ".dagger/pyproject.toml",
+    ".dagger/uv.lock",
     ".dagger/sdk/**",
     ".dagger/src/**"
+  ],
+  "dependencies": [
+    {
+      "name": "foundation",
+      "source": "github.com/hseshadr/ci/modules/portfolio-foundation@8d9e0c04fcc4093947024d0bdfad2cd9a233b43c",
+      "pin": "8d9e0c04fcc4093947024d0bdfad2cd9a233b43c"
+    }
   ],
   "source": ".dagger"
 }
