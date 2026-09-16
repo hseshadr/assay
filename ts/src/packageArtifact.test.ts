@@ -132,7 +132,11 @@ describe("the real npm artifact", () => {
       const archive = pack(destination);
       writeFileSync(
         join(destination, "package.json"),
-        JSON.stringify({ private: true, type: "module" }),
+        JSON.stringify({
+          private: true,
+          type: "module",
+          packageManager: "pnpm@11.5.0",
+        }),
       );
       runAt(destination, "pnpm", ["add", "--ignore-scripts", archive]);
       writeFileSync(
