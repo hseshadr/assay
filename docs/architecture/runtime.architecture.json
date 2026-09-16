@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Assay Runtime Architecture",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/hseshadr/assay",
+      "revision": "877de6ed773ff864a193090d0af853136671914d"
+    },
+    "viewBox": [1360, 700],
+    "views": [
+      {
+        "id": "score-path",
+        "label": "Deterministic score path",
+        "focus": ["caller", "public-api", "request-parser", "composition-core", "score-result"],
+        "note": "Follow one validated request from a caller to an explainable, replay-checked score."
+      },
+      {
+        "id": "package-surfaces",
+        "label": "Package surfaces",
+        "focus": ["cli-adapter", "public-api", "metric-calculators"],
+        "note": "See the Python CLI and optional calculators around the shared composition contract."
+      },
+      {
+        "id": "cross-language-parity",
+        "label": "Cross-language parity",
+        "focus": ["public-api", "request-parser", "composition-core", "shared-vectors", "score-result"],
+        "note": "Python and TypeScript implement the same contract; shared vectors prove agreement without a runtime bridge."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Application",
+      "sublabel": "declares formula + inputs",
+      "pos": [30, 300],
+      "size": [140, 72],
+      "sources": [
+        {"path": "docs/ARCHITECTURE.md", "line": 91, "end_line": 100, "label": "Application boundary"}
+      ]
+    },
+    {
+      "id": "cli-adapter",
+      "type": "frontend",
+      "label": "assay CLI",
+      "sublabel": "explicit file adapter",
+      "tag": "Python cli extra",
+      "pos": [265, 80],
+      "size": [180, 76],
+      "sources": [
+        {"path": "src/assay/cli.py", "line": 46, "end_line": 55, "label": "CLI entrypoint"},
+        {"path": "src/assay/_cli_app.py", "line": 26, "end_line": 45, "label": "Compose and measure commands"}
+      ]
+    },
+    {
+      "id": "public-api",
+      "type": "backend",
+      "label": "Public Package APIs",
+      "sublabel": "assay / @edgeproc/assay",
+      "tag": "two independent artifacts",
+      "pos": [265, 300],
+      "size": [180, 78],
+      "sources": [
+        {"path": "src/assay/__init__.py", "line": 5, "end_line": 44, "label": "Python exports"},
+        {"path": "ts/src/index.ts", "line": 1, "end_line": 54, "label": "TypeScript exports"},
+        {"path": "docs/ARCHITECTURE.md", "line": 6, "end_line": 21, "label": "Artifact map"}
+      ]
+    },
+    {
+      "id": "request-parser",
+      "type": "security",
+      "label": "Strict Request Parser",
+      "sublabel": "closed typed contract",
+      "tag": "rejects unknown shapes",
+      "pos": [555, 300],
+      "size": [180, 78],
+      "sources": [
+        {"path": "src/assay/contracts.py", "line": 856, "end_line": 886, "label": "Python parser"},
+        {"path": "ts/src/compose.ts", "line": 13, "end_line": 21, "label": "TypeScript validation path"}
+      ]
+    },
+    {
+      "id": "composition-core",
+      "type": "backend",
+      "label": "Composition Core",
+      "sublabel": "weighted · additive · minimum",
+      "tag": "declared-order binary64",
+      "pos": [850, 300],
+      "size": [200, 80],
+      "sources": [
+        {"path": "src/assay/compose.py", "line": 13, "end_line": 31, "label": "Closed dispatcher"},
+        {"path": "docs/ARCHITECTURE.md", "line": 49, "end_line": 61, "label": "Portable methods"},
+        {"path": "ts/src/compose.ts", "line": 13, "end_line": 21, "label": "TypeScript composition"}
+      ]
+    },
+    {
+      "id": "score-result",
+      "type": "database",
+      "label": "ScoreResult",
+      "sublabel": "score + explanation + hash",
+      "tag": "assay.result/v1",
+      "pos": [1165, 300],
+      "size": [160, 80],
+      "sources": [
+        {"path": "src/assay/contracts.py", "line": 605, "end_line": 625, "label": "Result contract"}
+      ]
+    },
+    {
+      "id": "metric-calculators",
+      "type": "backend",
+      "label": "Optional Metrics",
+      "sublabel": "binary · ranking · agreement",
+      "tag": "scientific extras",
+      "pos": [265, 510],
+      "size": [180, 78],
+      "sources": [
+        {"path": "src/assay/metrics.py", "line": 222, "end_line": 238, "label": "Binary metrics"},
+        {"path": "docs/ARCHITECTURE.md", "line": 71, "end_line": 80, "label": "Optional dependency boundary"}
+      ]
+    },
+    {
+      "id": "shared-vectors",
+      "type": "database",
+      "label": "Shared Test Vectors",
+      "sublabel": "language-neutral parity",
+      "tag": "not runtime state",
+      "pos": [555, 510],
+      "size": [180, 76],
+      "sources": [
+        {"path": "testdata/vectors/composition.json", "line": 1, "end_line": 10, "label": "Composition vectors"},
+        {"path": "docs/ARCHITECTURE.md", "line": 82, "end_line": 89, "label": "Parity contract"}
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Portable composition core",
+      "wraps": ["public-api", "request-parser", "composition-core", "score-result"]
+    }
+  ],
+  "connections": [
+    {"id": "caller-api", "from": "caller", "to": "public-api", "label": "typed request", "variant": "emphasis"},
+    {"id": "cli-api", "from": "cli-adapter", "to": "public-api", "label": "compose / measure", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [355, 170]},
+    {"id": "api-parser", "from": "public-api", "to": "request-parser", "label": "unknown JSON"},
+    {"id": "parser-core", "from": "request-parser", "to": "composition-core", "label": "immutable request", "variant": "security"},
+    {"id": "core-result", "from": "composition-core", "to": "score-result", "label": "explained score", "variant": "emphasis"},
+    {"id": "api-metrics", "from": "public-api", "to": "metric-calculators", "label": "optional measurement", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [355, 392]},
+    {"id": "vectors-parser", "from": "shared-vectors", "to": "request-parser", "label": "parity fixtures", "variant": "dashed", "fromSide": "top", "toSide": "bottom"}
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Portable contract",
+      "items": [
+        "Python wheel and npm tarball implement the same three composition methods",
+        "Shared vectors prove semantic agreement; there is no runtime language bridge"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Deterministic output",
+      "items": [
+        "Declared input order is preserved through finite binary64 arithmetic",
+        "Every ScoreResult carries ordered explanations, interval data, and inputs_hash"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Deliberate boundary",
+      "items": [
+        "Applications own formula choice, policy thresholds, fairness review, and decisions",
+        "The core performs no implicit persistence or network I/O"
+      ]
+    }
+  ]
+}
