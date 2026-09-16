@@ -146,7 +146,7 @@ src/assay/  ──> assay-engine wheel ──> import assay
 ts/src/     ──> @edgeproc/assay npm tarball ──> import "@edgeproc/assay"
 ```
 
-Open the [interactive architecture map](docs/architecture/index.html) for an explorable view.
+Open the [interactive architecture map](https://github.com/hseshadr/assay/blob/main/docs/architecture/index.html) for an explorable view.
 
 `examples/`, `docs/`, `tests/`, and `testdata/` are repository support files, not
 runtime packages. The Python package is the broader surface: composition is in the
