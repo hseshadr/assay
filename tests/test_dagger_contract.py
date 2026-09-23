@@ -634,7 +634,7 @@ def test_should_lock_temporal_audit_tools_in_the_repository_environment() -> Non
 
     # Then scheduled audits cannot resolve an unreviewed uvx environment at runtime
     assert '"pip-audit==2.10.1"' in project
-    assert '"zizmor==1.29.0"' in project
+    assert '"zizmor==1.30.1"' in project
     assert "uvx --from pip-audit" not in project
     assert "uvx zizmor" not in project
     assert 'name = "pip-audit"' in lock

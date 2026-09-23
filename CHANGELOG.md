@@ -14,7 +14,7 @@
   registry verification, exact artifacts are mirrored in an immutable GitHub Release.
 - Security automation now scans the complete Git history and current tree with Gitleaks
   8.30.1, audits both locked dependency graphs, and checks workflows with actionlint,
-  ShellCheck, and zizmor 1.29.0 in pedantic mode.
+  ShellCheck, and zizmor 1.30.1 in pedantic mode.
 - `v0.5.0-dev.0` stopped before artifact construction because a source-built actionlint
   binary did not expose the audited release version. No registry bytes were published.
   The `0.5.0.dev1` / `0.5.0-dev.1` candidate installs the official actionlint 1.7.12
