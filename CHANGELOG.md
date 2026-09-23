@@ -4,6 +4,11 @@
 
 ### Changed
 
+- The README follows the portfolio template: a plain-language first screen, a runnable
+  60-second example whose real output is the hero, and a `tests/test_readme_contract.py`
+  gate that re-runs that example. The Python and npm package descriptions now equal the
+  README tagline, which changes the pinned npm archive SHA-256 to `df935452…010dfd9`;
+  scoring sources are unchanged and nothing was re-published.
 - The scoring-only release candidate now has independent Python 3.13 and Node 22.13.0
   gates, cross-runtime parity, 120 mutation guards, installed-artifact examples, frozen
   benchmarks, reproducible minimal artifacts, and fail-closed registry verification.

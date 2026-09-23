@@ -24,13 +24,13 @@ _PUBLIC_DOCS = (
     _ROOT / "docs" / "OPERATIONS.md",
     _METHODS,
 )
-_TLDR = (
-    "> **TL;DR:** Assay combines measurements recorded on different scales into one "
-    "explainable score while preserving every input, transformation, and contribution."
+_TAGLINE = (
+    "Turns measurements on different scales into one score that shows its math "
+    "\N{EM DASH} for developers who must explain a score."
 )
 _STATUS = (
     "> **Status:** `assay-engine` 0.5.0.dev3 and `@edgeproc/assay` 0.5.0-dev.3 are "
-    "the authorized prerelease pair. Check both registries before installing."
+    "the authorized prerelease pair, and both registries serve them."
 )
 _OPTIONAL = (
     "Assay computes scores; Avow seals evidence. They are separate products in separate "
@@ -136,38 +136,46 @@ def test_should_open_with_exact_product_identity_and_status() -> None:
     # Given the root product page
     readme = _read(_README)
     # When its opening and installation status are read
-    # Then one product identity and the exact prerelease status are immediate
-    assert readme.startswith(f"# Assay\n\n{_TLDR}\n")
+    # Then one product identity, its tagline, and the exact prerelease status are present
+    assert readme.startswith(f"# Assay\n\n{_TAGLINE}\n")
     assert readme.count("# Assay") == 1
     assert _STATUS in readme
-    assert readme.index(_TLDR) < readme.index("## Installation status")
+    assert readme.index(_TAGLINE) < readme.index("## Install\n") < readme.index(_STATUS)
     assert "`pip install assay-engine`" in readme
     assert "`npm install @edgeproc/assay`" in readme
 
 
-def test_should_make_the_real_demo_the_first_runnable_block() -> None:
-    # Given every fenced block in README order
-    blocks = _blocks(_read(_README))
+def test_should_make_one_install_line_the_first_runnable_block() -> None:
+    # Given every shell block in README order
+    readme = _read(_README)
+    blocks = _blocks(readme, "bash")
     # When a cold reader reaches the first runnable material
-    # Then it is the one-line artifact-backed Northstar demo
-    assert blocks[0] == "bash examples/run_composite.sh\n"
-    assert len(blocks[0].splitlines()) <= 15
+    # Then it is one pinned install line, and the artifact-backed demo stays one line
+    assert blocks[0] == "pip install assay-engine==0.5.0.dev3\n"
+    assert "bash examples/run_composite.sh\n" in blocks
+    assert readme.index("## Try it in 60 seconds") < readme.index(f"```bash\n{blocks[0]}")
 
 
 def test_should_order_explanation_and_limits_before_optional_integration() -> None:
-    # Given the README section hierarchy
-    headings = _headings(_read(_README))
+    # Given the README text
+    readme = _read(_README)
     required = (
-        "## Run the Northstar example",
-        "## How the score is calculated",
-        "## What this proves",
-        "## What this does not prove",
-        "## Architecture",
+        "## Try it in 60 seconds",
+        "## How it works",
+        "### Source to artifact map",
+        "## What this proves / what it does not prove",
+        "### Run the Northstar example",
+        "### How the score is calculated",
+        "### What this proves",
+        "### What this does not prove",
+        "## Install",
+        "## Usage & API",
         "## Optional integration",
     )
     # When the required sections are located
-    # Then computation, proof scope, and architecture precede optional integration
-    assert tuple(sorted(required, key=headings.index)) == required
+    positions = tuple(readme.index(f"\n{heading}\n") for heading in required)
+    # Then example, computation, proof scope, and architecture precede optional integration
+    assert positions == tuple(sorted(positions))
 
 
 def test_should_bound_all_cross_product_vocabulary_to_optional_integration() -> None:

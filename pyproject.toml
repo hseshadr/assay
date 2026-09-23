@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "assay-engine"
 dynamic = ["version"]
-description = "Explainable composition of measurements recorded on heterogeneous scales."
+description = "Turns measurements on different scales into one score that shows its math — for developers who must explain a score."
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
