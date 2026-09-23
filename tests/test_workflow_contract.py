@@ -11,7 +11,7 @@ import yaml
 
 ROOT = Path(__file__).parents[1]
 WORKFLOW_ROOT = ROOT / ".github/workflows"
-EXPECTED_NPM_SHA256 = "8d8448a7e621a2c54c5f0e95478adc99bbc9b026f31e910af3a2b9c9e9e299ae"
+EXPECTED_NPM_SHA256 = "df93545217880e646a2c7ffb3b67d7bf8cd6ebd9ef4a6115d5cf34e9e010dfd9"
 
 
 def _node_environment() -> dict[str, str]:
