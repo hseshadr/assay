@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import cast
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).parents[1]
@@ -122,6 +125,84 @@ def test_should_make_the_schedule_one_complete_dagger_security_call() -> None:
     assert _with(dagger_step)["args"] == "security --commit-sha=${{ github.sha }}"
 
 
+#: The release invocation, as `dagger/dagger-for-github` args. The action pastes args into
+#: its bash script, so every value is a double-quoted environment variable: bash expands it
+#: as one literal word and never parses it as code. No `${{ }}` expression appears.
+RELEASE_ARGS = (
+    'release-candidate --tag="$TAG" --commit-sha="$GITHUB_SHA" '
+    "--github-token=env:GITHUB_TOKEN export --path=candidate"
+)
+
+#: Expression roots whose values a dispatcher or event author controls.
+ATTACKER_EXPRESSIONS = ("${{ inputs.", "${{ github.event.", "${{ github.head_ref")
+
+#: Dispatch tags an attacker could type; each must reach Dagger as one inert argument.
+HOSTILE_TAGS = (
+    "v0.5.0",
+    "",
+    "v0.5.0 --commit-sha=0",
+    "v0.5.0;touch pwned",
+    "$(touch pwned)",
+    "`touch pwned`",
+    "v0.5.0\ntouch pwned",
+    'v0.5.0" ; touch pwned ; "',
+)
+
+
+def _dagger_invocations() -> list[tuple[str, str]]:
+    return [
+        (name, str(_with(step).get(key, "")))
+        for name in sorted(WORKFLOW_NAMES)
+        for job in _jobs(_workflow(name)).values()
+        for step in _steps(_mapping(job))
+        if str(step.get("uses", "")).startswith("dagger/dagger-for-github@")
+        for key in ("args", "call")
+    ]
+
+
+def _expand_action_args(args: str, tag: str, cwd: Path) -> list[str]:
+    """Expand args exactly as dagger-for-github's final bash step does, but print them."""
+    bash = shutil.which("bash")
+    assert bash is not None
+    env = {"TAG": tag, "GITHUB_SHA": "a" * 40, "PATH": "/usr/bin:/bin"}
+    result = subprocess.run(  # noqa: S603 - fixed bash, test-owned argv
+        [bash, "-c", f"printf '%s\\0' {args}"], env=env, cwd=cwd, capture_output=True, check=True
+    )
+    return result.stdout.decode().split("\0")[:-1]
+
+
+def test_should_paste_no_attacker_controlled_expression_into_any_dagger_args() -> None:
+    # Given every dagger-for-github invocation (the action pastes args/call into bash)
+    invocations = _dagger_invocations()
+
+    # Then none carries an expression whose value the dispatcher or event author controls
+    assert invocations
+    assert [
+        (name, text)
+        for name, text in invocations
+        if any(expression in text for expression in ATTACKER_EXPRESSIONS)
+    ] == []
+
+
+@pytest.mark.parametrize("tag", HOSTILE_TAGS)
+def test_should_pass_any_dispatched_tag_to_dagger_as_one_inert_argument(
+    tag: str, tmp_path: Path
+) -> None:
+    # Given the real release args, expanded by bash with a hostile TAG
+    argv = _expand_action_args(RELEASE_ARGS, tag, tmp_path)
+
+    # Then the tag is one literal argument and bash ran nothing
+    assert argv == [
+        "release-candidate",
+        f"--tag={tag}",
+        "--commit-sha=" + "a" * 40,
+        "--github-token=env:GITHUB_TOKEN",
+        "export",
+        "--path=candidate",
+    ]
+    assert not (tmp_path / "pwned").exists()
+
+
 def test_should_build_and_upload_only_a_manual_default_branch_candidate() -> None:
     # Given
     workflow = _workflow("release-candidate.yml")
@@ -135,8 +216,14 @@ def test_should_build_and_upload_only_a_manual_default_branch_candidate() -> Non
     assert set(_mapping(workflow["on"])) == {"workflow_dispatch"}
     assert job["if"] == "github.ref == 'refs/heads/main'"
     assert all("run" not in step for step in _steps(job))
-    assert "release-candidate --tag=${{ inputs.tag }}" in str(_with(dagger_step)["args"])
-    assert "--commit-sha=${{ github.sha }}" in str(_with(dagger_step)["args"])
+    # Inverted contract (was: the args must contain `--tag=${{ inputs.tag }}`, which pasted
+    # the dispatch input into dagger-for-github's bash script). The tag now arrives only as
+    # the TAG environment variable and the args hold only double-quoted variables.
+    assert _with(dagger_step) == {"version": "0.21.8", "verb": "call", "args": RELEASE_ARGS}
+    assert _mapping(dagger_step["env"]) == {
+        "GITHUB_TOKEN": "${{ github.token }}",
+        "TAG": "${{ inputs.tag }}",
+    }
     assert _with(upload) == {
         "name": "assay-${{ github.sha }}",
         "path": "candidate/",
