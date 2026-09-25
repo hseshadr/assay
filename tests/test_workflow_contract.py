@@ -122,7 +122,8 @@ def test_should_publish_npm_only_inside_the_source_free_dagger_function() -> Non
     # Then
     assert len(steps) == 2
     assert "publish-npm --candidate=candidate" in arguments
-    assert "--expected-sha=${{ github.event.workflow_run.head_sha }}" in arguments
+    assert '--expected-sha="$HEAD_SHA"' in arguments
+    assert dagger["env"] == {"HEAD_SHA": "${{ github.event.workflow_run.head_sha }}"}
     assert "--oidc-url=env:ACTIONS_ID_TOKEN_REQUEST_URL" in arguments
     assert "--oidc-token=env:ACTIONS_ID_TOKEN_REQUEST_TOKEN" in arguments
 

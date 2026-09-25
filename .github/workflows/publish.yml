@@ -26,13 +26,16 @@ jobs:
           path: candidate
           github-token: ${{ github.token }}
           run-id: ${{ github.event.workflow_run.id }}
+      # Event values reach dagger-for-github's bash only as quoted variables.
       - id: plan
         uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602 # v8.4.0
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         with:
           version: "0.21.8"
           verb: call
           module: github.com/hseshadr/assay@${{ github.event.workflow_run.head_sha }}
-          args: pypi-required --candidate=candidate --expected-sha=${{ github.event.workflow_run.head_sha }}
+          args: pypi-required --candidate=candidate --expected-sha="$HEAD_SHA"
       - if: steps.plan.outputs.output == 'true'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
@@ -58,8 +61,10 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ github.event.workflow_run.id }}
       - uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602 # v8.4.0
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         with:
           version: "0.21.8"
           verb: call
           module: github.com/hseshadr/assay@${{ github.event.workflow_run.head_sha }}
-          args: publish-npm --candidate=candidate --expected-sha=${{ github.event.workflow_run.head_sha }} --oidc-url=env:ACTIONS_ID_TOKEN_REQUEST_URL --oidc-token=env:ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          args: publish-npm --candidate=candidate --expected-sha="$HEAD_SHA" --oidc-url=env:ACTIONS_ID_TOKEN_REQUEST_URL --oidc-token=env:ACTIONS_ID_TOKEN_REQUEST_TOKEN

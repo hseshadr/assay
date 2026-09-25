@@ -25,13 +25,19 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # The dispatched tag is attacker-shapeable text. It never appears as a
+      # `${{ }}` expression: it reaches the step only as the TAG environment
+      # variable. dagger-for-github pastes `args` into bash, so every value there
+      # is a double-quoted variable that bash expands as one inert word. Dagger
+      # then rejects any tag that is not the metadata-derived tag on exact main.
       - uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602 # v8.4.0
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
         with:
           version: "0.21.8"
           verb: call
-          args: release-candidate --tag=${{ inputs.tag }} --commit-sha=${{ github.sha }} --github-token=env:GITHUB_TOKEN export --path=candidate
+          args: release-candidate --tag="$TAG" --commit-sha="$GITHUB_SHA" --github-token=env:GITHUB_TOKEN export --path=candidate
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: assay-${{ github.sha }}
